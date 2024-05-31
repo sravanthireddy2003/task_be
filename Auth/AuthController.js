@@ -6,41 +6,84 @@ const router = express.Router();
 const db = require(__root + "db");
 const jwt = require("jsonwebtoken"); 
 const bcrypt = require("bcryptjs");
-const config = require("./config"); 
+require('dotenv').config();
 
 
+// router.post("/login", (req, res) => {
+//   const { loginId, password } = req.body;
+//   let sql = `SELECT * FROM users WHERE loginId='${loginId}'`;
+ 
+//   db.query(sql, (err, result) => {
+//     if (err)
+//       return res
+//         .status(500)
+//         .send({ auth: false, status: "error", message: err });
+//     if (!result)
+//       return res
+//         .status(404)
+//         .send({ auth: false, message: "Sorry! No user found." });
+//     if (result && result.length > 0) {
+
+//       const user=result[0];
+
+//       const passwordIsValid = bcrypt.compareSync(password, user.password);
+//       console.log(user)
+
+//       const { password, ...safeUser } = user;
+//       console.log(safeUser)
+
+//       if (!passwordIsValid)
+//         return res.status(401).send({ auth: false, token: null });
+//       // Create a token
+//       const token = jwt.sign({ id: user.loginId }, process.env.SECRET, {
+//         expiresIn: 86400, 
+//       });
+
+//       return res
+//         .status(200)
+//         .send({ auth: true, token: token, user: safeUser });
+//     } 
+//     else {
+//       return res
+//         .status(404)
+//         .send({ auth: false, message: "Sorry! No user found." });
+//     }
+//   });
+// });
 
 router.post("/login", (req, res) => {
   const { loginId, password } = req.body;
-  let sql = `SELECT * FROM users WHERE loginId='${loginId}'`;
- 
-  db.query(sql, (err, result) => {
-    if (err)
-      return res
-        .status(500)
-        .send({ auth: false, status: "error", message: err });
-    if (!result)
-      return res
-        .status(404)
-        .send({ auth: false, message: "Sorry! No user found." });
-    if (result && result.length > 0) {
 
-      // check if the password is valid
-      const passwordIsValid = bcrypt.compareSync(password, result[0].password);
-      if (!passwordIsValid)
-        return res.status(401).send({ auth: false, token: null });
-      // Create a token
-      const token = jwt.sign({ id: result.insertId }, config.secret, {
-        expiresIn: 86400, 
-      });
-      return res
-        .status(200)
-        .send({ auth: true, token: token, user: result[0] });
-    } else {
-      return res
-        .status(404)
-        .send({ auth: false, message: "Sorry! No user found." });
+  if (!loginId || !password) {
+    return res.status(400).send({ auth: false, message: "Please provide loginId and password." });
+  }
+
+  const sql = `SELECT * FROM users WHERE loginId = ?`;
+
+  db.query(sql, [loginId], (err, result) => {
+    if (err) {
+      return res.status(500).send({ auth: false, status: "error", message: err.message });
     }
+    
+    if (!result || result.length === 0) {
+      return res.status(404).send({ auth: false, message: "Sorry! No user found." });
+    }
+
+    const user = result[0];
+
+    const passwordIsValid = bcrypt.compareSync(password, user.password);
+
+    if (!passwordIsValid) {
+      return res.status(401).send({ auth: false, token: null, message: "Invalid password!" });
+    }
+
+    
+    const { password: userPassword, ...safeUser } = user;   // Rename password during destructuring to avoid conflict please check once back
+
+    // Create a token
+    const token = jwt.sign({ id: user.loginId }, process.env.SECRET, { expiresIn: 86400 });
+
+    return res.status(200).send({ auth: true, token: token, user: safeUser });
   });
 });
 
@@ -48,22 +91,28 @@ router.post("/login", (req, res) => {
 router.post("/register", (req, res) => {
   const { name, loginId, email, designation, password } = req.body;
   let hashedPassword = bcrypt.hashSync(password, 8);
+
+  let sqlFind = `SELECT * FROM users WHERE loginId='${loginId}'`;
  
   const sql = `INSERT INTO users (name, loginId, email, designation,password)
   VALUES ("${name}", "${loginId}", "${email}", "${designation}", "${hashedPassword}")`;
-  
-  db.query(sql, (err, result) => {
-    if (err && err.code === "ER_DUP_ENTRY") {
-      return res
-        .status(501)
-        .send({ auth: false, status: 2, message: "Email already exists" });
+
+  db.query(sqlFind,(err,result)=>{
+    if(result && result.length > 0){
+      return res.status(500)
+      .send({ auth: false, status: "error", message: "loginId already exists" });
     }
-    if (err) return res.status(500).send({ auth: false, message: err.message });
-    const token = jwt.sign({ id: result.insertId }, config.secret, {
-      expiresIn: 86400, 
+    db.query(sql, (err, result) => {
+      if (err && err.code === "ER_DUP_ENTRY") {
+        return res
+          .status(501)
+          .send({ auth: false, status: 2, message: "Email already exists" });
+      }
+      if (err) return res.status(500).send({ auth: false, message: err.message });
+     
+      return res.status(200).send({ user: result });
     });
-    res.status(200).send({ auth: true, token: token, user: result });
-  });
+  })  
 });
 
 
