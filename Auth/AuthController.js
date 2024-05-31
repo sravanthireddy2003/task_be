@@ -4,14 +4,16 @@
 const express = require("express");
 const router = express.Router();
 const db = require(__root + "db");
-const jwt = require("jsonwebtoken"); // used to create, sign, and verify tokens
+const jwt = require("jsonwebtoken"); 
 const bcrypt = require("bcryptjs");
-const config = require("../config"); // get config file
+const config = require("./config"); 
+
+
 
 router.post("/login", (req, res) => {
-  const { username, password } = req.body;
-  let sql = `SELECT users.*,company.company_name, company.company_address FROM users JOIN company ON company.id = users.company_id WHERE email='${username}'`;
-
+  const { loginId, password } = req.body;
+  let sql = `SELECT * FROM users WHERE loginId='${loginId}'`;
+ 
   db.query(sql, (err, result) => {
     if (err)
       return res
@@ -21,15 +23,15 @@ router.post("/login", (req, res) => {
       return res
         .status(404)
         .send({ auth: false, message: "Sorry! No user found." });
-    // if (!result[0].role) return res.status(404).send({ auth: false, message: 'Please wait for Admin approval.' });
     if (result && result.length > 0) {
+
       // check if the password is valid
       const passwordIsValid = bcrypt.compareSync(password, result[0].password);
       if (!passwordIsValid)
         return res.status(401).send({ auth: false, token: null });
       // Create a token
       const token = jwt.sign({ id: result.insertId }, config.secret, {
-        expiresIn: 86400, // expires in 24 hours
+        expiresIn: 86400, 
       });
       return res
         .status(200)
@@ -42,13 +44,14 @@ router.post("/login", (req, res) => {
   });
 });
 
-router.post("/register", (req, res) => {
-  const { name, email, password, companyName } = req.body;
-  let hashedPassword = bcrypt.hashSync(password, 8);
 
-  const sql = `INSERT INTO users (name, username, email, role, company_id, password, status)
-      VALUES ("${name}", "${name}", "${email}", "USER", "${companyName}", "${hashedPassword}", 1)`;
-  //   const sql123 = `SELECT email FROM users WHERE email="${email}"`;
+router.post("/register", (req, res) => {
+  const { name, loginId, email, designation, password } = req.body;
+  let hashedPassword = bcrypt.hashSync(password, 8);
+ 
+  const sql = `INSERT INTO users (name, loginId, email, designation,password)
+  VALUES ("${name}", "${loginId}", "${email}", "${designation}", "${hashedPassword}")`;
+  
   db.query(sql, (err, result) => {
     if (err && err.code === "ER_DUP_ENTRY") {
       return res
@@ -56,13 +59,15 @@ router.post("/register", (req, res) => {
         .send({ auth: false, status: 2, message: "Email already exists" });
     }
     if (err) return res.status(500).send({ auth: false, message: err.message });
-    // Create a token
     const token = jwt.sign({ id: result.insertId }, config.secret, {
-      expiresIn: 86400, // expires in 24 hours
+      expiresIn: 86400, 
     });
     res.status(200).send({ auth: true, token: token, user: result });
   });
 });
+
+
+
 
 router.post("/change_password", (req, res) => {
   const { email, password, oldPassword } = req.body;

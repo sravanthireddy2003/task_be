@@ -18,21 +18,21 @@ app.get('/api', function (req, res) {
 const AuthController = require(__root + 'Auth/AuthController');
 app.use('/api/auth', AuthController);
 
-const IndividualController = require(__root + 'app/Individual/IndividualController');
-app.use('/api/individual', IndividualController);
+// const IndividualController = require(__root + 'app/Individual/IndividualController');
+// app.use('/api/individual', IndividualController);
 
-const EntityController = require(__root + 'app/Entity/EntityController');
-app.use('/api/entity', EntityController);
-// const UserController = require(__root + 'app/User/UserController');
-// app.use('/api/user', UserController); 
+// const EntityController = require(__root + 'app/Entity/EntityController');
+// app.use('/api/entity', EntityController);
+// // const UserController = require(__root + 'app/User/UserController');
+// // app.use('/api/user', UserController); 
 
-const AuditController = require(__root + 'app/Audit/AuditController');
-app.use('/api/audit', AuditController);
+// const AuditController = require(__root + 'app/Audit/AuditController');
+// app.use('/api/audit', AuditController);
 
-const AdminController = require(__root + 'app/Admin/AdminController');
-app.use('/api/admin', AdminController);
+// const AdminController = require(__root + 'app/Admin/AdminController');
+// app.use('/api/admin', AdminController);
 
-const CompanyController = require(__root + 'app/Company/CompanyController.js');
-app.use('/api/company', CompanyController);
+// const CompanyController = require(__root + 'app/Company/CompanyController.js');
+// app.use('/api/company', CompanyController);
 
 module.exports = app;
