@@ -9,48 +9,6 @@ const bcrypt = require("bcryptjs");
 require('dotenv').config();
 
 
-// router.post("/login", (req, res) => {
-//   const { loginId, password } = req.body;
-//   let sql = `SELECT * FROM users WHERE loginId='${loginId}'`;
- 
-//   db.query(sql, (err, result) => {
-//     if (err)
-//       return res
-//         .status(500)
-//         .send({ auth: false, status: "error", message: err });
-//     if (!result)
-//       return res
-//         .status(404)
-//         .send({ auth: false, message: "Sorry! No user found." });
-//     if (result && result.length > 0) {
-
-//       const user=result[0];
-
-//       const passwordIsValid = bcrypt.compareSync(password, user.password);
-//       console.log(user)
-
-//       const { password, ...safeUser } = user;
-//       console.log(safeUser)
-
-//       if (!passwordIsValid)
-//         return res.status(401).send({ auth: false, token: null });
-//       // Create a token
-//       const token = jwt.sign({ id: user.loginId }, process.env.SECRET, {
-//         expiresIn: 86400, 
-//       });
-
-//       return res
-//         .status(200)
-//         .send({ auth: true, token: token, user: safeUser });
-//     } 
-//     else {
-//       return res
-//         .status(404)
-//         .send({ auth: false, message: "Sorry! No user found." });
-//     }
-//   });
-// });
-
 router.post("/login", (req, res) => {
   const { loginId, password } = req.body;
 
@@ -88,14 +46,16 @@ router.post("/login", (req, res) => {
 });
 
 
+
+
 router.post("/register", (req, res) => {
   const { name, loginId, email, designation, password } = req.body;
   let hashedPassword = bcrypt.hashSync(password, 8);
 
   let sqlFind = `SELECT * FROM users WHERE loginId='${loginId}'`;
  
-  const sql = `INSERT INTO users (name, loginId, email, designation,password)
-  VALUES ("${name}", "${loginId}", "${email}", "${designation}", "${hashedPassword}")`;
+  const sql = `INSERT INTO users (name, loginId, email, designation,password,status)
+  VALUES ("${name}", "${loginId}", "${email}", "${designation}", "${hashedPassword}",'1')`;
 
   db.query(sqlFind,(err,result)=>{
     if(result && result.length > 0){
