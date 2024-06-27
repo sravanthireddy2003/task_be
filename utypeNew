@@ -1,0 +1,1472 @@
+import { CustomValidatorService } from './../../utilities/custom-validator.service';
+import { ChangeDetectorRef, Component, ViewChild, TemplateRef, ElementRef } from '@angular/core';
+import { FormControl, FormGroup, Validators } from '@angular/forms';
+import { ActivatedRoute, Router } from '@angular/router';
+import { TranslateService } from '@ngx-translate/core';
+import * as moment from 'moment';
+import { DatePipe } from '@angular/common';
+import { ToastrService } from 'ngx-toastr';
+import { forkJoin } from 'rxjs';
+
+import { InternationalizationService } from '../../core/services/internationalization/internationalization.service';
+import { MultiselectDropdownComponent } from '../../shared/components/multiselect-dropdown/multiselect-dropdown.component';
+import { VariableConstants } from '../../variable.constants';
+import { DropDownSettingModel } from './../../shared/models/category-rule';
+import { EncryptedStorage } from '../../utilities/encrypted-storage';
+import { Location } from './../../shared/models/location';
+import { PromoCodeService } from '../../core/services/promo-code.service';
+import { ManageComponentDataService } from '../../shared/utility/manage-component-data.service';
+import { DropdownType } from '../../shared/models/common-class.modal';
+import { ErrorHandlerService } from '../../core/services/error-handler.service';
+import { FormCanDeactivate } from '../../core/can-deactivate/form-can-deactivate.component';
+import { BsModalRef, BsModalService } from 'ngx-bootstrap/modal';
+
+@Component({
+    selector: 'app-add-promo-code',
+    templateUrl: './add-promo-code.component.html',
+    styleUrls: ['./add-promo-code.component.scss'],
+})
+export class AddPromoCodeComponent extends FormCanDeactivate {
+    // @ViewChild('ngSelectHoursType') ngSelectHoursType: MultiselectDropdownComponent;
+    // @ViewChild('ngSelectMinutesType') ngSelectMinutesType: MultiselectDropdownComponent;
+
+    @ViewChild('ngSelectPurchaseType') ngSelectPurchaseType: MultiselectDropdownComponent;
+    @ViewChild('ngSelectChannelType') ngSelectChannelType: MultiselectDropdownComponent;
+
+    // @ViewChild('ngSelectEndUserDevice') ngSelectEndUserDevice: MultiselectDropdownComponent;
+
+    @ViewChild('ngSelectDistributionType') ngSelectDistributionType: MultiselectDropdownComponent;
+    // @ViewChild('ngSelectRateCategory') ngSelectRateCategory: MultiselectDropdownComponent;
+
+    // @ViewChild('ngSelectCityType') ngSelectCityType: MultiselectDropdownComponent;
+    // @ViewChild('ngSelectStateType') ngSelectStateType: MultiselectDropdownComponent;
+    @ViewChild('ngSelectLocationIdType') ngSelectLocationIdType: MultiselectDropdownComponent;
+
+
+
+    @ViewChild('usageTemplate', { static: true }) usageTemplate: TemplateRef<any>;
+    @ViewChild('hdrTpl', { static: true }) hdrTpl: TemplateRef<any>;
+    @ViewChild('checkBoxAll', { static: true }) checkBoxAll: TemplateRef<any>;
+    @ViewChild('checkBoxRow', { static: true }) checkBoxRow: TemplateRef<any>;
+    @ViewChild('cellTplStartDate', { static: true }) cellTplStartDate: TemplateRef<any>;
+    @ViewChild('cellTplEndDate', { static: true }) cellTplEndDate: TemplateRef<any>;
+    @ViewChild('cellTplPurchaseDate', { static: true }) cellTplPurchaseDate: TemplateRef<any>;
+    @ViewChild('customDatatable', { static: true }) customDatatable: TemplateRef<any>;
+
+    locationIdTypeSettings: DropDownSettingModel;
+    stateSettings: DropDownSettingModel;
+    citySettings: DropDownSettingModel;
+    hourTypeSettings: DropDownSettingModel;
+    minuteTypeSettings: DropDownSettingModel;
+    multiSelectSettings: DropDownSettingModel;
+    singleSelectSettings: DropDownSettingModel;
+    distributionCategorySettings: DropDownSettingModel;
+    rateCategorySettings: DropDownSettingModel;
+    productTable: any;
+    channelType: Array<DropdownType>;
+    enduserDeviceType: Array<DropdownType>;
+    purchaseType: Array<DropdownType>;
+    distributionCategoryType: Array<DropdownType>;
+    rateCategoryType: Array<DropdownType>;
+    hoursType: Array<DropdownType> = this.dataService.getParkingTimeLimit();
+    minuteType: Array<DropdownType> = this.dataService.getTotalMinutes();
+    cityList: Array<any>;
+    cityAllList: Array<any>;
+
+    stateList: Array<any>;
+    locationIdType: Array<any>;
+
+    addPromoCodeForm: FormGroup;
+    promoCodeInfo: any;
+
+    discountType = VariableConstants.ZERO;
+    discountTypeRadio = VariableConstants.AMOUNT;
+
+    geoGraphyTypeRadio: any;
+    isNational = true;
+    promoCodeKey: number;
+    checkDropdown = false;
+    showLoader = false;
+    protected storage: EncryptedStorage;
+    locationInfo: Location;
+
+    minDate: Date;
+    minSaleStartDate: Date;
+
+    selectedParkingStartDate: any;
+    selectedParkingEndDate: any;
+    selectedSaleEndDate: any;
+    selectedSaleStartDate: any;
+
+    isPromoCodeEditable = false;
+    promoCodeId: any;
+
+    maxNumberPattern = '^[0-9]*$';
+    amountPattern = '^[1-9][0-9]?.[0-9]{2}$';
+    hideOnChange = false;
+    ONE_TIME_LIMIT = 'One Time Limit';
+    DAILY_LIMIT = 'Daily Limit';
+    NO_LIMIT = 'No Limit';
+    locationTimestamp: any;
+    hideUsageTrend = true;
+    barChartLabels: Array<any>;
+    barChartData1: any;
+    barChartData2: any;
+    barChartMax: any;
+    checkAlreadyExistPromocode = false;
+    allLocationsList: any;
+    subscriptionParkingTypeSelected = false;
+    promoPeriodData = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    promoPeriodSettings: {};
+    headerHeight: number;
+    rowHeight: number;
+    pageLimit: number;
+    scrollbarV: boolean;
+    reservationColumns = [];
+    guidanceReservationRows = [];
+    productRows = [];
+    metaData: any;
+    isLoading: boolean;
+    selectedProducts: any;
+    showProductTable = false;
+    showRateCategory: false;
+    showPromoPeriod = false;
+    purchaseTypeSettings: { singleSelection: boolean; idField: string; textField: string; enableCheckAll: boolean; unSelectAllText: string; allowSearchFilter: boolean };
+    allProductChecked = true;
+    showHideRateParameter = true;
+
+    constructor(
+        private dataService: ManageComponentDataService,
+        private router: Router,
+        private datePipe: DatePipe,
+        private promoCodeService: PromoCodeService,
+        private translate: TranslateService,
+        private internationalization: InternationalizationService,
+        private activatedroute: ActivatedRoute,
+        private toastr: ToastrService,
+        private errorHandlerService: ErrorHandlerService,
+        private customValidatorService: CustomValidatorService,
+        private changeDetectorRef: ChangeDetectorRef,
+        private bsUsageModalRef: BsModalRef,
+        private modalService: BsModalService,
+        private el: ElementRef
+    ) {
+        super();
+        this.storage = new EncryptedStorage(window.origin);
+        this.internationalization.selectedLanguage.subscribe((lang) => {
+            this.translate.use(lang);
+        });
+    }
+
+    ngOnInit() {
+        this.reservationColumns = [
+            { name: 'Actions', text: '', width: 50, headerTemplate: this.checkBoxAll, cellTemplate: this.checkBoxRow, sortable: false },
+            { name: 'locationId', text: 'Location Id', headerTemplate: this.hdrTpl },
+            { name: 'productName', text: 'Rate/Product Name', headerTemplate: this.hdrTpl },
+            { name: 'distributionCategory', text: 'Distribution Category', headerTemplate: this.hdrTpl },
+            { name: 'price', text: 'Price (pre-discount)', headerTemplate: this.hdrTpl },
+        ];
+        this.initFormsData();
+        this.showLoader = true;
+        this.minDate = new Date(moment().format('MM DD YYYY')); // start min Date
+        this.minSaleStartDate = new Date(moment().format('MM DD YYYY')); // start min Date
+        forkJoin({
+            stateTypeResult: this.promoCodeService.getDropDownTypes(VariableConstants.PROMO_STATE_TYPE),
+            locationTypeResult: this.promoCodeService.getDropDownTypes(VariableConstants.PROMO_LOCATION_TYPE),
+            cityTypeResult: this.promoCodeService.getDropDownTypes(VariableConstants.PROMO_CITY_TYPE),
+            channelTypeResult: this.promoCodeService.getDropDownTypes(VariableConstants.PROMO_CHANNEL_TYPE),
+            purchaseTypeResult: this.promoCodeService.getDropDownTypes(VariableConstants.PROMO_PURCHASE_TYPE),
+            distributionTypeResult: this.promoCodeService.getDropDownTypes(VariableConstants.PROMO_DISTRIBUTION_TYPE),
+            endUserDeviceTypeResult: this.promoCodeService.getDropDownTypes(VariableConstants.PROMO_END_USER_DEVICE_TYPE),
+            rateCategoryTypeResult: this.promoCodeService.getDropDownTypes(VariableConstants.PROMO_RATE_CATEGORY_TYPE),
+        }).subscribe(
+            ({
+                stateTypeResult,
+                locationTypeResult,
+                cityTypeResult,
+                channelTypeResult,
+                purchaseTypeResult,
+                distributionTypeResult,
+                endUserDeviceTypeResult,
+                rateCategoryTypeResult,
+            }) => {
+                this.stateList = stateTypeResult.data ? stateTypeResult.data : [];
+                this.locationIdType = locationTypeResult.data ? locationTypeResult.data : [];
+                this.cityAllList = cityTypeResult.data ? cityTypeResult.data : [];
+                this.cityList = cityTypeResult.data ? cityTypeResult.data : [];
+                this.channelType = channelTypeResult.data ? channelTypeResult.data : [];
+                this.purchaseType = purchaseTypeResult.data ? purchaseTypeResult.data : [];
+                this.distributionCategoryType = distributionTypeResult.data ? distributionTypeResult.data : [];
+                this.enduserDeviceType = endUserDeviceTypeResult.data ? endUserDeviceTypeResult.data : [];
+                this.rateCategoryType = rateCategoryTypeResult.data ? rateCategoryTypeResult.data : [];
+                this.purchaseType.forEach((item) => {
+                    if (item.value == VariableConstants.CHECK_IN_CHECK_OUT) item.value = VariableConstants.DIGITAL_TICKET;
+                });
+                this.allLocationsList = this.locationIdType;
+
+                this.activatedroute.paramMap.subscribe(
+                    (params) => {
+                        this.promoCodeId = params.get('id');
+                        if (this.promoCodeId != null && this.promoCodeId != 0) {
+                            this.isPromoCodeEditable = true;
+                            this.getPromoCodeDetails();
+                        } else {
+                            this.distributionCategoryType = this.distributionCategoryType.filter((item) => {
+                                return item.name != VariableConstants.DISTRIBUTION_CATEGORY_MONTHLY;
+                            });
+                            this.showLoader = false;
+                            this.isPromoCodeEditable = false;
+                        }
+                    },
+                    (err) => {
+                        this.handleError(err);
+                    }
+                );
+            }
+        );
+    }
+
+    selectAllProducts(flag) {
+        if (flag) {
+            this.productRows = this.productRows.map((item) => {
+                item.checked = true;
+                return item;
+            });
+        } else {
+            this.productRows = this.productRows.map((item) => {
+                item.checked = false;
+                return item;
+            });
+        }
+        this.selectProducts();
+    }
+
+    getPromoCodeDetails() {
+        this.promoCodeService.getPromoCodeDetails(this.promoCodeId).subscribe(
+            (results) => {
+                this.showLoader = false;
+                this.promoCodeInfo = results.data;
+                const monthlyDistributionCategory = this.distributionCategoryType.filter((item) => {
+                    return item.name == VariableConstants.DISTRIBUTION_CATEGORY_MONTHLY;
+                });
+                if (!this.promoCodeInfo.distributionCategoryKey.includes(monthlyDistributionCategory[0].distributionCategoryKey)) {
+                    this.distributionCategoryType = this.distributionCategoryType.filter((item) => {
+                        return item.name != VariableConstants.DISTRIBUTION_CATEGORY_MONTHLY;
+                    });
+                }
+
+                this.bindValues();
+            },
+            (err) => {
+                this.handleError(err);
+            }
+        );
+    }
+
+    initFormsData() {
+        const locationString = this.storage.getItem('location');
+        if (locationString) {
+            this.locationInfo = JSON.parse(locationString);
+        }
+
+        this.addPromoCodeForm = new FormGroup({
+            promoCode: new FormControl('', [Validators.required, this.customValidatorService.textValidator(this.toastr), this.customValidatorService.spaceValidator(this.toastr)]),
+            promoCodeDescription: new FormControl('', [Validators.required, this.customValidatorService.textValidator(this.toastr)]),
+            discountAmount: new FormControl('', [Validators.required]),
+            discountTypeRadio: new FormControl(''),
+            saleStartDate: new FormControl(''),
+            saleEndDate: new FormControl(''),
+            parkingStartDate: new FormControl('', [Validators.required]),
+            parkingEndDate: new FormControl('', [Validators.required]),
+            geoGraphyTypeRadio: new FormControl(''),
+            usageType: new FormControl(null, [Validators.required]),
+            totalCount: new FormControl(null),
+            remainingCount: new FormControl(null),
+            usedCount: new FormControl(null),
+            state: new FormControl([]),
+            city: new FormControl([]),
+            locationIdType: new FormControl([]),
+            promoPeriod: new FormControl([]),
+            deviceType: new FormControl([]),
+            rateCategory: new FormControl('', [Validators.required]),
+            rateIdType: new FormControl(''),
+            minimumParkingTimeHours: new FormControl(''),
+            minimumParkingTimeMinutes: new FormControl(''),
+            maximumParkingTimeHours: new FormControl(''),
+            maximumParkingTimeMinutes: new FormControl(''),
+            channel: new FormControl([]),
+
+
+        });
+
+        this.locationIdTypeSettings = {
+            singleSelection: false,
+            idField: 'locationId',
+            textField: 'locationId',
+            enableCheckAll: true,
+            unSelectAllText: 'UnSelect All',
+            allowSearchFilter: true,
+        };
+
+        this.stateSettings = {
+            singleSelection: true,
+            idField: 'stateKey',
+            textField: 'stateName',
+            enableCheckAll: true,
+            unSelectAllText: 'UnSelect All',
+            allowSearchFilter: true,
+        };
+        this.citySettings = {
+            singleSelection: false,
+            idField: 'cityKey',
+            textField: 'cityName',
+            enableCheckAll: true,
+            unSelectAllText: 'UnSelect All',
+            allowSearchFilter: true,
+        };
+
+        this.minuteTypeSettings = {
+            singleSelection: true,
+            idField: 'value',
+            textField: 'label',
+            enableCheckAll: true,
+            unSelectAllText: 'UnSelect All',
+            allowSearchFilter: true,
+        };
+
+        this.multiSelectSettings = {
+            singleSelection: false,
+            idField: 'key',
+            textField: 'value',
+            enableCheckAll: true,
+            unSelectAllText: 'UnSelect All',
+            allowSearchFilter: true,
+        };
+
+        this.purchaseTypeSettings = {
+            singleSelection: false,
+            idField: 'key',
+            textField: 'value',
+            enableCheckAll: false,
+            unSelectAllText: 'UnSelect All',
+            allowSearchFilter: true,
+        };
+
+        this.hourTypeSettings = {
+            singleSelection: true,
+            idField: 'value',
+            textField: 'label',
+            enableCheckAll: true,
+            unSelectAllText: 'UnSelect All',
+            allowSearchFilter: true,
+        };
+
+        this.distributionCategorySettings = {
+            singleSelection: false,
+            idField: 'distributionCategoryKey',
+            textField: 'name',
+            enableCheckAll: false,
+            unSelectAllText: 'UnSelect All',
+            allowSearchFilter: true,
+        };
+
+        this.rateCategorySettings = {
+            singleSelection: false,
+            idField: 'rateCategoryKey',
+            textField: 'name',
+            enableCheckAll: true,
+            unSelectAllText: 'UnSelect All',
+            allowSearchFilter: true,
+        };
+
+        this.singleSelectSettings = {
+            singleSelection: true,
+            idField: 'key',
+            textField: 'value',
+            enableCheckAll: true,
+            unSelectAllText: 'UnSelect All',
+            allowSearchFilter: true,
+        };
+        this.promoPeriodSettings = {
+            singleSelection: true,
+            idField: 'key',
+            textField: 'value',
+            unSelectAllText: 'UnSelect All',
+            allowSearchFilter: true,
+        };
+    }
+
+    bindMaxParkingTime() {
+        if (this.promoCodeInfo.minimumParkingTimeHours) {
+            const minParkingHours = [...this.hoursType.filter((a) => a.value == this.promoCodeInfo.minimumParkingTimeHours)];
+            this.addPromoCodeForm.controls['minimumParkingTimeHours'].setValue(minParkingHours);
+        }
+        if (this.promoCodeInfo.minimumParkingTimeMinutes) {
+            const minParkingMinutes = [...this.minuteType.filter((a) => a.value == this.promoCodeInfo.minimumParkingTimeMinutes)];
+            this.addPromoCodeForm.controls['minimumParkingTimeMinutes'].setValue(minParkingMinutes);
+        }
+    }
+
+    bindDropdownValues() {
+        this.changeDetectorRef.detectChanges();
+        // if (this.promoCodeInfo.maximumParkingTimeHours) {
+        //     this.ngSelectHoursType.selData = [...this.ngSelectHoursType.optionData.filter((a) => a.value == this.promoCodeInfo.maximumParkingTimeHours)];
+        // }
+        // if (this.promoCodeInfo.maximumParkingTimeMinutes) {
+        //     this.ngSelectMinutesType.selData = [...this.ngSelectMinutesType.optionData.filter((a) => a.value == this.promoCodeInfo.maximumParkingTimeMinutes)];
+        // }
+
+        if (this.promoCodeInfo.maximumParkingTimeHours) {
+            const hoursOption = this.addPromoCodeForm.controls['maximumParkingTimeHours'].value.find((a) => a.value == this.promoCodeInfo.maximumParkingTimeHours);
+            this.addPromoCodeForm.controls['maximumParkingTimeHours'].setValue(hoursOption ? [hoursOption] : []);
+          }
+          
+          if (this.promoCodeInfo.maximumParkingTimeMinutes) {
+            const minutesOption = this.addPromoCodeForm.controls['maximumParkingTimeMinutes'].value.find((a) => a.value == this.promoCodeInfo.maximumParkingTimeMinutes);
+            this.addPromoCodeForm.controls['maximumParkingTimeMinutes'].setValue(minutesOption ? [minutesOption] : []);
+          }
+
+
+
+        this.bindMaxParkingTime();
+
+        if (this.promoCodeInfo.purchaseTypeKey != null) {
+            const purchaseTypes = this.promoCodeInfo.purchaseTypeKey.split(',');
+            purchaseTypes.forEach((element) => {
+                const tempPurchase = this.ngSelectPurchaseType.optionData.filter((a) => a.key == element.trim());
+                this.ngSelectPurchaseType.selData = [...this.ngSelectPurchaseType.selData, ...tempPurchase];
+            });
+        }
+
+        if (this.promoCodeInfo.distributionCategoryKey != null) {
+            const distributionCategories = this.promoCodeInfo.distributionCategoryKey.split(',');
+            distributionCategories.forEach((element) => {
+                const tempDistribution = this.ngSelectDistributionType.optionData.filter((a) => a.distributionCategoryKey == element.trim());
+                this.ngSelectDistributionType.selData = [...this.ngSelectDistributionType.selData, ...tempDistribution];
+            });
+        }
+
+        // if (this.promoCodeInfo.rateCategoryKey != null) {
+        //     const rateCategories = this.promoCodeInfo.rateCategoryKey.split(',');
+        //     rateCategories.forEach((element) => {
+        //         const temprateCatgory = this.ngSelectRateCategory.optionData.filter((a) => a.rateCategoryKey == element.trim());
+        //         this.ngSelectRateCategory.selData = [...this.ngSelectRateCategory.selData, ...temprateCatgory];
+        //         this.addPromoCodeForm.controls['rateCategory'].setValue(this.ngSelectRateCategory.selData);
+        //     });
+        // }
+
+        if (this.promoCodeInfo.rateCategoryKey != null) {
+            const rateCategories = this.promoCodeInfo.rateCategoryKey.split(',');
+            const selectedRateCategories = rateCategories
+                .map((element) => this.addPromoCodeForm.controls['rateCategory'].value.find((a) => a.rateCategoryKey == element.trim()))
+                .filter((option) => option);
+            this.addPromoCodeForm.controls['rateCategory'].setValue(selectedRateCategories);
+        }
+
+
+        // if (this.promoCodeInfo.endUserDeviceKey) {
+        //     const endUserDevices = this.promoCodeInfo.endUserDeviceKey.split(',');
+        //     endUserDevices.forEach((element) => {
+        //         const tempEnduserDevice = this.ngSelectEndUserDevice.optionData.filter((a) => a.key == element.trim());
+        //         this.ngSelectEndUserDevice.selData = [...this.ngSelectEndUserDevice.selData, ...tempEnduserDevice];
+        //     });
+        // }
+
+        if (this.promoCodeInfo.endUserDeviceKey) {
+            const endUserDevices = this.promoCodeInfo.endUserDeviceKey.split(',');
+            const selectedEndUserDevices = endUserDevices
+                .map((element) => this.addPromoCodeForm.controls['maximumParkingTimeHours'].value.find((a) => a.key == element.trim()))
+                .filter((option) => option);
+            this.addPromoCodeForm.controls['deviceType'].setValue(selectedEndUserDevices);
+        }
+
+        if (this.promoCodeInfo.channelKey != null) {
+            const channels = this.promoCodeInfo.channelKey.split(',');
+            channels.forEach((element, index) => {
+                const tempChannel = this.ngSelectChannelType.optionData.filter((a) => a.key == element.trim());
+                this.ngSelectChannelType.selData = [...this.ngSelectChannelType.selData, ...tempChannel];
+            });
+        }
+
+        this.geoGraphyTypeRadio = this.promoCodeInfo.geographicOption;
+
+        if (this.promoCodeInfo.geographicOption == VariableConstants.GEO_LOCATION_SPECIFIC && this.promoCodeInfo.locationId != null) {
+            this.geoGraphyTypeRadio = VariableConstants.GEO_LOCATION_SPECIFIC;
+            this.changeDetectorRef.detectChanges();
+            const locationIds = this.promoCodeInfo.locationId.split(',');
+            locationIds.forEach((element, index) => {
+                const tempLocationIds = this.locationIdType.filter((a) => a.locationId == element.trim());
+                this.ngSelectLocationIdType.selData = [...this.ngSelectLocationIdType.selData, ...tempLocationIds];
+            });
+        }
+
+        this.bindGeographicValues();
+        this.hideShowRateOption();
+    }
+
+    // bindGeographicValues() {
+    //     if (this.promoCodeInfo.geographicOption == VariableConstants.GEO_GEOGRAPHIC) {
+    //         this.geoGraphyTypeRadio = VariableConstants.GEO_GEOGRAPHIC;
+    //         this.changeDetectorRef.detectChanges();
+    //         if (this.promoCodeInfo.stateKey != null) {
+    //             const states = this.promoCodeInfo.stateKey.split(',');
+    //             states.forEach((element, index) => {
+    //                 const tempStateIds = this.ngSelectStateType.optionData.filter((a) => a.stateKey == element.trim());
+    //                 this.ngSelectStateType.selData = [...this.ngSelectStateType.selData, ...tempStateIds];
+    //             });
+    //         }
+
+    //         if (this.promoCodeInfo.cityKey != null) {
+    //             const cities = this.promoCodeInfo.cityKey.split(',');
+    //             cities.forEach((element, index) => {
+    //                 const tempStateIds = this.ngSelectCityType.optionData.filter((a) => a.cityKey == element.trim());
+    //                 this.ngSelectCityType.selData = [...this.ngSelectCityType.selData, ...tempStateIds];
+    //             });
+    //         }
+
+    //         this.onDistributionCategorySelect();
+    //     } else if (this.promoCodeInfo.isNational == '1') {
+    //         this.geoGraphyTypeRadio = VariableConstants.GEO_NATIONAL;
+    //     }
+
+    //     if (this.promoCodeInfo.geographicOption == VariableConstants.GEO_RATE) {
+    //         const locationIds = this.promoCodeInfo.locationId.split(',');
+    //         locationIds.forEach((element, index) => {
+    //             const tempLocationIds = this.locationIdType.filter((a) => a.locationId == element.trim());
+    //             this.addPromoCodeForm.controls['rateIdType'].setValue(tempLocationIds);
+    //         });
+    //         this.addValidations(['rateIdType']);
+    //     }
+    //     this.changeDetectorRef.detectChanges();
+    // }
+
+    bindGeographicValues() {
+        if (this.promoCodeInfo.geographicOption == VariableConstants.GEO_GEOGRAPHIC) {
+            this.geoGraphyTypeRadio = VariableConstants.GEO_GEOGRAPHIC;
+            this.changeDetectorRef.detectChanges();
+            
+            if (this.promoCodeInfo.stateKey != null) {
+                const states = this.promoCodeInfo.stateKey.split(',');
+                const selectedStates = states.map((element) => this.addPromoCodeForm.controls['state'].value.find((a) => a.stateKey == element.trim())).filter((option) => option);
+                this.addPromoCodeForm.controls['state'].setValue(selectedStates);
+            }
+    
+            // if (this.promoCodeInfo.cityKey != null) {
+            //     const cities = this.promoCodeInfo.cityKey.split(',');
+            //     cities.forEach((element, index) => {
+            //         const tempStateIds = this.ngSelectCityType.optionData.filter((a) => a.cityKey == element.trim());
+            //         this.ngSelectCityType.selData = [...this.ngSelectCityType.selData, ...tempStateIds];
+            //     });
+            // }
+
+            if (this.promoCodeInfo.cityKey != null) {
+                const cities = this.promoCodeInfo.cityKey.split(',');
+                const selectedCities = cities.map((element) => this.addPromoCodeForm.controls['city'].value.find((a) => a.cityKey == element.trim())).filter((option) => option);
+                this.addPromoCodeForm.controls['city'].setValue(selectedCities);
+            }
+    
+            this.onDistributionCategorySelect();
+        } else if (this.promoCodeInfo.isNational == '1') {
+            this.geoGraphyTypeRadio = VariableConstants.GEO_NATIONAL;
+        }
+    
+        if (this.promoCodeInfo.geographicOption == VariableConstants.GEO_RATE) {
+            const locationIds = this.promoCodeInfo.locationId.split(',');
+            locationIds.forEach((element, index) => {
+                const tempLocationIds = this.locationIdType.filter((a) => a.locationId == element.trim());
+                this.addPromoCodeForm.controls['rateIdType'].setValue(tempLocationIds);
+            });
+            this.addValidations(['rateIdType']);
+        }
+        this.changeDetectorRef.detectChanges();
+    }
+    
+
+    setLocationProductData() {
+        if (this.promoCodeInfo.locationId && this.geoGraphyTypeRadio == VariableConstants.GEO_RATE) {
+            this.setRateParameterData();
+        }
+    }
+
+    discountTypeRadioClicked() {
+        this.addPromoCodeForm.controls['discountAmount'].setValue(null);
+        if (this.discountTypeRadio == VariableConstants.PERCENTAGE) {
+            this.discountType = VariableConstants.ONE;
+        } else {
+            this.discountType = VariableConstants.ZERO;
+        }
+    }
+
+    checkGeographicRadio() {
+        this.clearValidations(['rateIdType']);
+        this.addPromoCodeForm.controls['rateIdType'].setValue([]);
+        this.showProductTable = false;
+        this.productRows = [];
+        console.log(this.geoGraphyTypeRadio);
+        // if (this.ngSelectCityType) {
+        //     this.ngSelectCityType.selData = [];
+        // }
+
+        if (this.addPromoCodeForm.controls['city']) {
+            this.addPromoCodeForm.controls['city'].setValue([]);
+        }
+
+        // if (this.ngSelectStateType) {
+        //     this.ngSelectStateType.selData = [];
+        // }
+
+        if (this.addPromoCodeForm.controls['state']) {
+            this.addPromoCodeForm.controls['state'].setValue([]);
+        }
+
+        if (this.ngSelectLocationIdType) {
+            this.ngSelectLocationIdType.selData = [];
+        }
+        if (this.geoGraphyTypeRadio == VariableConstants.GEO_NATIONAL) {
+            this.isNational = true;
+        } else {
+            this.isNational = false;
+        }
+    }
+
+    checkRateRadio() {
+        this.addValidations(['rateIdType']);
+        console.log(this.geoGraphyTypeRadio);
+    }
+
+    cancelAddPromoCode() {
+        this.backToPreviousPage();
+    }
+
+    onItemSelectEmit() {
+        if (this.geoGraphyTypeRadio == VariableConstants.GEO_LOCATION_SPECIFIC) {
+            if (
+                this.ngSelectLocationIdType.selData.length > 0 &&
+                this.ngSelectPurchaseType.selData.length > 0 &&
+                this.ngSelectChannelType.selData.length > 0 &&
+                this.ngSelectDistributionType.selData.length > 0
+            ) {
+                this.checkDropdown = false;
+            }
+        } else {
+            if (this.ngSelectPurchaseType.selData.length > 0 && this.ngSelectChannelType.selData.length > 0 && this.ngSelectDistributionType.selData.length > 0) {
+                this.checkDropdown = false;
+            }
+        }
+    }
+
+    onDeSelect() {
+        if (this.geoGraphyTypeRadio == VariableConstants.GEO_LOCATION_SPECIFIC) {
+            if (
+                this.ngSelectLocationIdType.selData.length <= 0 &&
+                this.ngSelectChannelType.selData.length <= 0 &&
+                this.ngSelectPurchaseType.selData.length <= 0 &&
+                this.ngSelectDistributionType.selData.length <= 0
+            ) {
+                this.checkDropdown = true;
+                this.showError('Please select all the mandatory dropdown');
+            }
+        } else {
+            if (this.ngSelectChannelType.selData.length <= 0 && this.ngSelectPurchaseType.selData.length <= 0 && this.ngSelectDistributionType.selData.length <= 0) {
+                this.checkDropdown = true;
+                this.showError('Please select all the mandatory dropdown values');
+            }
+        }
+    }
+
+    filterCityBasedOnState() {
+        this.addPromoCodeForm.controls['city'].setValue([]);
+        if (this.addPromoCodeForm.value.state && this.addPromoCodeForm.value.state.length > 0) {
+            const stateId = [...this.stateList.filter((a) => a.stateKey == this.addPromoCodeForm.value.state[0].stateKey)];
+            this.cityList = [...this.cityAllList.filter((a) => a.stateId == stateId[0].stateId)];
+        } else {
+            this.cityList = [];
+        }
+    }
+
+    bindProductData() {
+        if (this.promoCodeInfo.productList) {
+            this.productRows = this.promoCodeInfo.productList;
+        }
+    }
+
+    bindValues() {
+        this.bindDropdownValues();
+        this.bindProductData();
+        this.addPromoCodeForm.controls['promoCode'].setValue(this.promoCodeInfo.promoCode);
+        this.addPromoCodeForm.controls['promoCodeDescription'].setValue(this.promoCodeInfo.promoCodeDescription);
+        this.isNational = this.promoCodeInfo.isNational;
+        this.promoCodeKey = this.promoCodeInfo.promoCodeKey;
+        this.discountType = this.promoCodeInfo.discountType;
+        if (this.discountType == VariableConstants.ZERO) {
+            this.discountTypeRadio = VariableConstants.AMOUNT;
+        } else {
+            this.discountTypeRadio = VariableConstants.PERCENTAGE;
+        }
+        this.addPromoCodeForm.controls['discountAmount'].setValue(this.promoCodeInfo.discountAmount);
+        if (this.promoCodeInfo.saleStartDate && this.promoCodeInfo.saleStartDate != '') {
+            const ssDate = moment(this.promoCodeInfo.saleStartDate).format('MM DD YYYY');
+            this.addPromoCodeForm.controls['saleStartDate'].setValue(ssDate);
+            this.minDate = moment(this.promoCodeInfo.saleStartDate).toDate();
+            this.minSaleStartDate = moment(this.promoCodeInfo.saleStartDate).toDate();
+        } else {
+            this.minSaleStartDate = moment(this.promoCodeInfo.parkingStartDate).toDate();
+        }
+        if (this.promoCodeInfo.saleEndDate && this.promoCodeInfo.saleEndDate != '') {
+            const seDate = moment(this.promoCodeInfo.saleEndDate).format('MM DD YYYY');
+            this.addPromoCodeForm.controls['saleEndDate'].setValue(seDate);
+        }
+
+        const psDate = moment(this.promoCodeInfo.parkingStartDate).format('MM DD YYYY');
+        const peDate = moment(this.promoCodeInfo.parkingEndDate).format('MM DD YYYY');
+
+        this.addPromoCodeForm.controls['parkingStartDate'].setValue(psDate);
+        this.addPromoCodeForm.controls['parkingEndDate'].setValue(peDate);
+        this.addPromoCodeForm.controls['usageType'].setValue(this.promoCodeInfo.usageType);
+        this.addPromoCodeForm.controls['totalCount'].setValue(this.promoCodeInfo.totalCount);
+        this.addPromoCodeForm.controls['remainingCount'].setValue(this.promoCodeInfo.remainingCount);
+        this.addPromoCodeForm.controls['usedCount'].setValue(this.promoCodeInfo.usedCount);
+        this.addPromoCodeForm.controls['promoPeriod'].setValue(this.promoPeriodData.filter((item) => item === this.promoCodeInfo.promoPeriod));
+        if (this.promoCodeInfo.usageType) {
+            this.validateUsageType(this.promoCodeInfo.usageType);
+        } else {
+            this.onSelectParkingPurchaseType();
+        }
+        if (this.promoCodeInfo.locationId) this.setLocationProductData();
+    }
+
+    checkValidation() {
+        if (this.ngSelectChannelType.selData.length == 0 || this.ngSelectPurchaseType.selData.length == 0 || this.ngSelectDistributionType.selData.length == 0) {
+            this.checkDropdown = true;
+            this.toastr.warning('Please select all the mandatory dropdown');
+            return false;
+        }
+        if (this.geoGraphyTypeRadio == VariableConstants.GEO_LOCATION_SPECIFIC && this.ngSelectLocationIdType.selData.length == 0) {
+            this.checkDropdown = true;
+            this.toastr.warning('Please select all the mandatory dropdown');
+            return false;
+        } else if (
+            this.geoGraphyTypeRadio == VariableConstants.GEO_GEOGRAPHIC &&
+            (this.addPromoCodeForm.controls['state'].value.length == 0 || this.addPromoCodeForm.controls['city'].value.length == 0)
+        ) {
+            this.toastr.warning('Please select all the mandatory dropdown');
+            this.checkDropdown = true;
+            return false;
+        }
+
+        if (this.addPromoCodeForm.controls['discountAmount'].value == '.') {
+            this.addPromoCodeForm.controls['discountAmount'].setValue(null);
+            return false;
+        }
+
+        const str = this.datePipe.transform(this.addPromoCodeForm.value.saleStartDate, 'yyyy-MM-dd');
+        const etr = this.datePipe.transform(this.addPromoCodeForm.value.saleEndDate, 'yyyy-MM-dd');
+        const pstr = this.datePipe.transform(this.addPromoCodeForm.value.parkingStartDate, 'yyyy-MM-dd');
+        const petr = this.datePipe.transform(this.addPromoCodeForm.value.parkingEndDate, 'yyyy-MM-dd');
+
+        if (str && str != '' && pstr < str) {
+            this.toastr.warning('Parking Start Date cannot be less than the Sale Start Date.');
+            return false;
+        }
+
+        if (etr != null && etr != '' && petr < etr) {
+            this.toastr.warning('Parking End Date cannot be less than the Sale End Date.');
+            return false;
+        }
+
+        if (pstr == null || petr == null || pstr > petr) {
+            this.toastr.warning('Parking End Date must be greater than Parking Start Date.');
+            return false;
+        }
+
+        return true;
+    }
+
+    checkPromoCode(type) {
+        const promoCodeExist = false;
+        if (this.promoCodeInfo) {
+            if (this.addPromoCodeForm.controls['promoCode'].value && this.addPromoCodeForm.controls['promoCode'].value != this.promoCodeInfo.promoCode) {
+                this.checkAndSavePromo(type, promoCodeExist);
+            } else if (type == 'save') {
+                this.savePromoCode(promoCodeExist);
+            }
+        } else {
+            if (this.addPromoCodeForm.controls['promoCode'].value) {
+                this.checkAndSavePromo(type, promoCodeExist);
+            } else if (type == 'save') {
+                this.savePromoCode(promoCodeExist);
+            }
+        }
+    }
+
+    checkAndSavePromo(type, promoCodeExist) {
+        this.showLoader = true;
+        this.promoCodeService.checkPromoCode(this.addPromoCodeForm.controls['promoCode'].value).subscribe((result) => {
+            this.showLoader = false;
+            if (result.data.isDuplicate) {
+                this.toastr.warning('There is already an existing promo code or access code with the same name. Please enter a new Promo code.');
+                promoCodeExist = true;
+            } else {
+                promoCodeExist = false;
+                if (type == 'save') {
+                    this.savePromoCode(promoCodeExist);
+                }
+            }
+        });
+    }
+
+    getProductList() {
+        if (this.selectedProducts?.length) {
+            this.selectedProducts = this.selectedProducts.map((item) => item.productKey);
+            return this.productRows.filter((item) => this.selectedProducts.includes(item.productKey));
+        } else {
+            return '';
+        }
+    }
+
+    checkRateProducts() {
+        if (this.geoGraphyTypeRadio == 'RATE') {
+            const uniqueProductLocationIds = [...new Set(this.selectedProducts.map((product) => product.locationId))];
+            return this.addPromoCodeForm.value.rateIdType.every((locId) => uniqueProductLocationIds.includes(locId.locationId));
+        }
+        return true;
+    }
+
+    savePromoCode(promoCodeExist) {
+        if (promoCodeExist) {
+            return;
+        }
+        if (!this.checkRateProducts()) {
+            this.toastr.error('Please select atleast one product for each location selected');
+            return;
+        }
+        this.showLoader = true;
+        let body = Object.assign({});
+        body = this.getDropdownValues(body);
+        body = this.getGeographicParameters(body);
+        body = this.getLocationLotIds(body);
+        body.promoPeriod = this.addPromoCodeForm.controls['promoPeriod'].value[0] ?? null;
+        body.promoCode = this.addPromoCodeForm.controls['promoCode'].value;
+        body.promoCodeDescription = this.addPromoCodeForm.controls['promoCodeDescription'].value;
+        body.discountAmount = parseFloat(this.addPromoCodeForm.controls['discountAmount'].value);
+        body.discountType = this.discountType;
+        body.productList = this.getProductList();
+
+        if ((typeof this.isNational == 'string' && this.isNational == '1') || (typeof this.isNational == 'boolean' && this.isNational)) {
+            body.isNational = true;
+        } else {
+            body.isNational = false;
+        }
+        body.geographicOption = this.geoGraphyTypeRadio;
+        body.saleStartDate = null;
+        body.saleEndDate = null;
+        if (this.addPromoCodeForm.controls['saleStartDate'].value && this.addPromoCodeForm.controls['saleStartDate'].value != '') {
+            body.saleStartDate = moment(this.addPromoCodeForm.controls['saleStartDate'].value).format('MM/DD/YYYY');
+        }
+        if (this.addPromoCodeForm.controls['saleEndDate'].value && this.addPromoCodeForm.controls['saleEndDate'].value != '') {
+            body.saleEndDate = moment(this.addPromoCodeForm.controls['saleEndDate'].value).format('MM/DD/YYYY');
+        }
+        body.parkingStartDate = moment(this.addPromoCodeForm.controls['parkingStartDate'].value).format('MM/DD/YYYY');
+        body.parkingEndDate = moment(this.addPromoCodeForm.controls['parkingEndDate'].value).format('MM/DD/YYYY');
+        body.usageType = this.addPromoCodeForm.controls['usageType'].value;
+        body.totalCount = this.addPromoCodeForm.controls['totalCount'].value;
+        body.remainingCount = this.addPromoCodeForm.controls['remainingCount'].value;
+        body.usedCount = this.addPromoCodeForm.controls['usedCount'].value;
+        if (this.isPromoCodeEditable) {
+            body.promoCodeKey = this.promoCodeId;
+            this.showLoader = true;
+            this.promoCodeService.updatePromoCode(body, this.promoCodeId).subscribe((results) => {
+                this.showLoader = false;
+                this.addPromoCodeForm.markAsPristine();
+                this.toastr.success(results.data.message);
+                this.backToPreviousPage();
+            });
+        } else {
+            this.showLoader = true;
+            this.promoCodeService.addPromoCode(body).subscribe((results) => {
+                this.toastr.success(results.data.message);
+                this.addPromoCodeForm.markAsPristine();
+                this.showLoader = false;
+                this.backToPreviousPage();
+            });
+        }
+    }
+
+    addPromoCode() {
+        const res = this.checkValidation();
+        if (!res) {
+            return;
+        }
+
+        this.checkPromoCode('save');
+    }
+
+    getGeographicParameters(body) {
+        if (this.geoGraphyTypeRadio == VariableConstants.GEO_GEOGRAPHIC) {
+            const stateControl = this.addPromoCodeForm.controls['state'];
+            const cityControl = this.addPromoCodeForm.controls['city'];
+
+
+            body.stateKey = stateControl.value.length != 0 ? stateControl.value[0].stateKey : null;
+            body.cityKey = '';
+            cityControl.value.forEach((element, index) => {
+                if (index == cityControl.value.length - 1) body.cityKey = body.cityKey + element.cityKey;
+                else body.cityKey = body.cityKey + element.cityKey + ',';
+            });
+        } else {
+            body.stateKey = null;
+            body.cityKey = null;
+        }
+        return body;
+    }
+
+    getLocationLotIds(body) {
+        // body.maximumParkingTimeHours = this.ngSelectHoursType?.selData.length != 0 ? this.ngSelectHoursType?.selData[0].value : null;
+        // body.maximumParkingTimeMinutes = this.ngSelectMinutesType?.selData.length != 0 ? this.ngSelectMinutesType?.selData[0].value : null;
+
+        body.maximumParkingTimeHours = this.addPromoCodeForm.value.maximumParkingTimeHours?.length != 0 ? this.addPromoCodeForm.value.maximumParkingTimeHours : null;
+        body.maximumParkingTimeMinutes = this.addPromoCodeForm.value.maximumParkingTimeHours?.length != 0 ? this.addPromoCodeForm.value.maximumParkingTimeHours : null;
+
+        body.minimumParkingTimeHours = this.addPromoCodeForm.value.minimumParkingTimeHours.length != 0 ? this.addPromoCodeForm.value.minimumParkingTimeHours[0].value : null;
+        body.minimumParkingTimeMinutes = this.addPromoCodeForm.value.minimumParkingTimeMinutes.length != 0 ? this.addPromoCodeForm.value.minimumParkingTimeMinutes[0].value : null;
+
+        if (this.geoGraphyTypeRadio == VariableConstants.GEO_LOCATION_SPECIFIC) {
+            body.locationId = '';
+            this.ngSelectLocationIdType.selData.forEach((element, index) => {
+                if (index == this.ngSelectLocationIdType.selData.length - 1) body.locationId = body.locationId + element.locationId;
+                else body.locationId = body.locationId + element.locationId + ',';
+            });
+        } else if (this.geoGraphyTypeRadio == VariableConstants.GEO_RATE) {
+            body.locationId = this.addPromoCodeForm.controls['rateIdType'].value.map((item) => {
+                return item.locationId;
+            });
+            body.locationId = body.locationId.toString();
+        } else {
+            body.locationId = null;
+        }
+        return body;
+    }
+
+    getDropdownValues(body: any) {
+        body.channelKey = '';
+        this.ngSelectChannelType.selData.forEach((element, index) => {
+            if (index == this.ngSelectChannelType.selData.length - 1) body.channelKey = body.channelKey + element.key;
+            else body.channelKey = body.channelKey + element.key + ',';
+        });
+
+        body.purchaseTypeKey = '';
+        this.ngSelectPurchaseType.selData.forEach((element, index) => {
+            if (index == this.ngSelectPurchaseType.selData.length - 1) body.purchaseTypeKey = body.purchaseTypeKey + element.key;
+            else body.purchaseTypeKey = body.purchaseTypeKey + element.key + ',';
+        });
+
+        body.distributionCategoryKey = '';
+        this.ngSelectDistributionType.selData.forEach((element, index) => {
+            if (index == this.ngSelectDistributionType.selData.length - 1) body.distributionCategoryKey = body.distributionCategoryKey + element.distributionCategoryKey;
+            else body.distributionCategoryKey = body.distributionCategoryKey + element.distributionCategoryKey + ',';
+        });
+
+        // body.endUserDeviceKey = null;
+        // this.ngSelectEndUserDevice?.selData.forEach((element, index) => {
+        //     if (index == this.ngSelectEndUserDevice.selData.length - 1) body.endUserDeviceKey = body.endUserDeviceKey + element.key;
+        //     else body.endUserDeviceKey = body.endUserDeviceKey + element.key + ',';
+        // });
+
+        const endUserDeviceControl = this.addPromoCodeForm.controls['deviceType'];
+        body.endUserDeviceKey = null;
+        endUserDeviceControl.value.forEach((element: any, index: number) => {
+            if (index == endUserDeviceControl.value.length - 1) body.endUserDeviceKey = body.endUserDeviceKey + element.key;
+            else body.endUserDeviceKey = body.endUserDeviceKey + element.key + ',';
+        });
+
+        body = this.setRateCategory(body);
+
+        return body;
+    }
+
+    // setRateCategory(body) {
+    //     body.rateCategoryKey = '';
+    //     if (this.ngSelectRateCategory?.selData.length) {
+    //         this.ngSelectRateCategory.selData.forEach((element, index) => {
+    //             if (index == this.ngSelectRateCategory.selData.length - 1) body.rateCategoryKey = body.rateCategoryKey + element.rateCategoryKey;
+    //             else body.rateCategoryKey = body.rateCategoryKey + element.rateCategoryKey + ',';
+    //         });
+    //     }
+    //     return body;
+    // }
+
+    setRateCategory(body) {
+        body.rateCategoryKey = '';
+        const rateCategoryControl = this.addPromoCodeForm.controls['rateCategory'];
+    
+        if (rateCategoryControl?.value.length) {
+            rateCategoryControl.value.forEach((element, index) => {
+                if (index == rateCategoryControl.value.length - 1) {
+                    body.rateCategoryKey = body.rateCategoryKey + element.rateCategoryKey;
+                } else {
+                    body.rateCategoryKey = body.rateCategoryKey + element.rateCategoryKey + ',';
+                }
+            });
+        }
+    
+        return body;
+    }
+    
+
+    backToPreviousPage() {
+        this.router.navigate(['default-layout/promo-code']);
+    }
+
+    onSaleStartDateSelect() {
+        if (this.addPromoCodeForm.controls['saleStartDate'].value) {
+            this.minSaleStartDate = this.addPromoCodeForm.controls['saleStartDate'].value;
+        }
+    }
+
+    onParkingStartDateSelect() {
+        this.selectedParkingStartDate = this.addPromoCodeForm.controls['parkingStartDate'].value;
+    }
+
+    showError(msg: string) {
+        const position = 'toast-top-right';
+        this.toastr.error(msg, 'Error', {
+            closeButton: true,
+            positionClass: position,
+        });
+    }
+
+    handleError(err: any) {
+        this.showLoader = false;
+        this.errorHandlerService.checkError(err);
+    }
+
+    amountCustom(event) {
+        this.dataService.amountCustom(event);
+    }
+
+    percentageCustom(event) {
+        this.dataService.percentCustom(event);
+    }
+
+    form() {
+        return this.addPromoCodeForm;
+    }
+
+    onUsageTypeChange(e) {
+        if (this.addPromoCodeForm.controls['usageType'].value != e) {
+            this.validateUsageType(e);
+            this.updateRemainingUsageCount();
+        }
+        this.hideOnChange = true;
+    }
+
+    validateUsageType(e) {
+        if (e == this.NO_LIMIT) {
+            this.clearValidations(['totalCount']);
+            this.addPromoCodeForm.controls['totalCount'].setValue(null);
+        } else {
+            this.addValidations(['totalCount']);
+        }
+        this.onSelectParkingPurchaseType();
+    }
+
+    updateRemainingUsageCount() {
+        this.addPromoCodeForm.controls['remainingCount'].setValue(null);
+        this.addPromoCodeForm.controls['usedCount'].setValue(null);
+    }
+
+    hideCountFields() {
+        this.hideOnChange = true;
+    }
+
+    clearValidations(validationOf: any) {
+        validationOf.forEach((element) => {
+            const abstractControl = this.addPromoCodeForm.get(element);
+            if (abstractControl) {
+                abstractControl.setValidators(null);
+                abstractControl.setErrors(null);
+            }
+        });
+    }
+
+    addValidations(controls: any) {
+        controls.forEach((control) => {
+            const abstractControl = this.addPromoCodeForm.get(control);
+            if (abstractControl) {
+                abstractControl.setValidators(Validators.required);
+            }
+        });
+        this.markFormAsDirty();
+    }
+
+    markFormAsDirty() {
+        for (const inner in this.addPromoCodeForm.controls) {
+            if (this.addPromoCodeForm.get(inner) == null) {
+                continue;
+            }
+            this.addPromoCodeForm.get(inner).updateValueAndValidity();
+        }
+    }
+
+    showUsageTrend() {
+        this.hideUsageTrend = false;
+        const dates = [];
+        const startString = this.addPromoCodeForm.controls['parkingStartDate'].value
+            ? this.datePipe.transform(this.addPromoCodeForm.value.parkingStartDate, 'yyyy-MM-dd')
+            : this.addPromoCodeForm.controls['parkingStartDate'].value;
+        const endString = this.addPromoCodeForm.controls['parkingEndDate'].value
+            ? this.datePipe.transform(this.addPromoCodeForm.value.parkingEndDate, 'yyyy-MM-dd')
+            : this.addPromoCodeForm.controls['parkingEndDate'].value;
+        const startDate = moment(startString, 'YYYY-MM-DD');
+        const endDate = moment(endString);
+        this.locationTimestamp = moment().format('YYYY-MM-DD HH:mm:ss');
+        const curDate = moment(this.locationTimestamp);
+        let dateToConsider;
+        let bg, ed, usedCnt, remCnt;
+        if (curDate.diff(startDate, 'days') >= 0) {
+            bg = curDate.diff(startDate, 'days');
+            ed = endDate.diff(startDate, 'days') + 1;
+            dateToConsider = curDate;
+        } else {
+            bg = 0;
+            ed = endDate.diff(startDate, 'days') + 1;
+            dateToConsider = startDate;
+        }
+        if (ed - bg > 15) {
+            usedCnt = this.addPromoCodeForm.controls['usedCount'].value.slice(bg, bg + 15);
+            remCnt = this.addPromoCodeForm.controls['remainingCount'].value.slice(bg, bg + 15);
+        } else {
+            usedCnt = this.addPromoCodeForm.controls['usedCount'].value.slice(bg, ed);
+            remCnt = this.addPromoCodeForm.controls['remainingCount'].value.slice(bg, ed);
+        }
+        dates.push(dateToConsider.format('MMMM Do'));
+        for (let i = 1; i <= usedCnt.length - 1; i++) {
+            dates.push(dateToConsider.add(1, 'days').format('MMMM Do'));
+        }
+        this.barChartLabels = dates;
+        this.barChartData1 = usedCnt;
+        this.barChartData2 = remCnt;
+        this.barChartMax = this.addPromoCodeForm.controls['totalCount'].value;
+        this.bsUsageModalRef = this.modalService.show(this.usageTemplate, Object.assign({}, { class: 'modal-lg' }));
+    }
+
+    getQueryParamsToLoadMoreProducts() {
+        const queryParam = {};
+        queryParam['locationCodes'] = this.ngSelectLocationIdType?.selData.map((item) => item.locationId).join(',');
+        const hasSubscriptions = this.ngSelectDistributionType.selData.some((item) => item.name === VariableConstants.SUBSCRIPTION_MONTHLY);
+        if (hasSubscriptions) {
+            if (this.ngSelectDistributionType.selData.length > 1) {
+                queryParam['productType'] = 'both';
+            } else {
+                queryParam['productType'] = 'subscription';
+                this.clearValidations(['rateCategory']);
+                this.addPromoCodeForm.controls['rateCategory'].setValue(null);
+            }
+        } else if (this.ngSelectDistributionType.selData.length > 0) {
+            queryParam['productType'] = 'rate';
+        }
+        queryParam['page'] = this.metaData.nextPageNo;
+        queryParam['limit'] = VariableConstants.PAGE_LIMIT;
+        queryParam['distributionCatagories'] = this.ngSelectDistributionType.selData.map((item) => item.name).join(',');
+        return queryParam;
+    }
+
+    loadMoreProducts() {
+        if (this.metaData && this.metaData.nextPageNo != null) {
+            this.isLoading = true;
+            const queryParam = this.getQueryParamsToLoadMoreProducts();
+
+            this.showLoader = true;
+            this.isLoading = true;
+            this.promoCodeService.getProductsByLocation(queryParam).subscribe(
+                (results) => {
+                    this.metaData = results.metaData;
+                    const data = results.data;
+                    this.productRows = [...this.productRows, ...data].map((item) => {
+                        if (item.promoCodeProductKey) item.checked = true;
+                        return item;
+                    });
+                    this.showLoader = false;
+                    this.isLoading = false;
+                },
+                (err) => {
+                    this.handleError(err);
+                }
+            );
+        }
+    }
+
+    filterData(locationIds) {
+        locationIds = locationIds.trim();
+        let selectedLocations = [...this.addPromoCodeForm.controls['locationIdType'].value];
+
+        if (locationIds.includes(',')) {
+            const eventIds = locationIds
+                .split(',')
+                .map((id) => id.trim())
+                .filter(Boolean);
+
+            const newLocations = this.allLocationsList.filter((item) => eventIds.includes(item.locationId));
+            const uniqueSelectedLocations = new Set([...selectedLocations, ...newLocations]);
+            selectedLocations = Array.from(new Set(Array.from(uniqueSelectedLocations).map((location) => location.locationId))).map((locationId) => ({ locationId }));
+            this.addPromoCodeForm.controls['locationIdType'].setValue(selectedLocations);
+            if (selectedLocations) this.setRateParameterData();
+        }
+    }
+    setRateParameterData() {
+        if (this.ngSelectDistributionType.selData.length && this.ngSelectPurchaseType.selData.length) {
+            const queryParam = {};
+            queryParam['locationCodes'] = this.addPromoCodeForm.controls['rateIdType'].value.length
+                ? this.addPromoCodeForm.controls['rateIdType'].value.map((item) => item.locationId).join(',')
+                : '';
+
+            if (!queryParam['locationCodes'].length) {
+                this.showProductTable = false;
+                this.productRows = [];
+            }
+
+            const hasSubscriptions = this.ngSelectDistributionType.selData.some((item) => item.name === VariableConstants.SUBSCRIPTION_MONTHLY);
+            if (hasSubscriptions) {
+                if (this.ngSelectDistributionType.selData.length > 1) {
+                    queryParam['productType'] = 'both';
+                } else {
+                    queryParam['productType'] = 'subscription';
+                }
+            } else if (this.ngSelectDistributionType.selData.length > 0) {
+                queryParam['productType'] = 'rate';
+            }
+            this.fetchProducts(queryParam);
+        }
+    }
+
+    getQueryParamsToFetchProducts(queryParam) {
+        queryParam['distributionCatagories'] = this.ngSelectDistributionType.selData.map((item) => item.name).join(',');
+        if (this.promoCodeId != null && this.promoCodeId != 0) {
+            queryParam['promoCodeKey'] = this.promoCodeId;
+        }
+        return queryParam;
+    }
+
+    fetchProducts(queryParam) {
+        queryParam = this.getQueryParamsToFetchProducts(queryParam);
+
+        if (queryParam['locationCodes']) {
+            this.showProductTable = true;
+
+            this.promoCodeService.getProductsByLocation(queryParam).subscribe(
+                (res) => {
+                    this.metaData = res.metaData;
+                    let checkOccurence = 0;
+
+                    res.data.forEach((item) => {
+                        if (item.promoCodeProductKey) checkOccurence++;
+                    });
+                    if (!checkOccurence) {
+                        this.productRows = res.data.map((item) => {
+                            item.checked = true;
+                            return item;
+                        });
+                    } else {
+                        this.productRows = res.data.map((item) => {
+                            if (item.promoCodeProductKey) item.checked = true;
+                            return item;
+                        });
+                    }
+
+                    this.selectProducts();
+
+                    this.isLoading = false;
+                    this.showLoader = false;
+                },
+                (error) => {
+                    this.handleError(error);
+                }
+            );
+            this.headerHeight = 50;
+            this.rowHeight = 40;
+            this.pageLimit = 10;
+            this.scrollbarV = true;
+        }
+    }
+
+    onDistributionCategorySelect() {
+        const hasSubscriptions = this.ngSelectDistributionType.selData.some((item) => item.name === VariableConstants.SUBSCRIPTION_MONTHLY);
+        if (hasSubscriptions) {
+            this.showPromoPeriod = true;
+            this.addValidations(['promoPeriod']);
+            const [subscriptionPurchaseType] = this.purchaseType.filter((item) => {
+                return item.key == 'SUBSCRIPTIONS';
+            });
+
+            const subscriptionAlreadyExist = this.ngSelectPurchaseType.selData.some((item) => item.key === 'SUBSCRIPTIONS');
+            if (!subscriptionAlreadyExist) {
+                this.ngSelectPurchaseType.selData = [subscriptionPurchaseType];
+            }
+            if (this.ngSelectPurchaseType.selData.length == 1) this.subscriptionParkingTypeSelected = true;
+
+            if (this.ngSelectDistributionType.selData.length == 1) {
+                this.showRateCategory = hasSubscriptions;
+                this.clearValidations(['rateCategory']);
+            } else {
+                this.showRateCategory = false;
+            }
+            this.enablePurchaseTypeSubscription();
+            this.enableSubscriptionMonthly();
+        } else {
+            this.showPromoPeriod = false;
+            this.clearValidations(['promoPeriod']);
+            this.showRateCategory = hasSubscriptions;
+
+            this.ngSelectPurchaseType.selData = this.ngSelectPurchaseType.selData.filter((item) => {
+                return item.key != 'SUBSCRIPTIONS';
+            });
+            this.subscriptionParkingTypeSelected = false;
+            this.addValidations(['rateCategory']);
+
+            this.disableSubscriptionDitributionCategory();
+            this.disableSubscriptionPurchaseType();
+        }
+        this.hideShowRateOption();
+    }
+
+    disableSubscriptionPurchaseType() {
+        this.purchaseType = this.purchaseType.map((item) => {
+            if (item.key != 'SUBSCRIPTIONS') {
+                return { key: item.key, value: item.value, isDisabled: false };
+            } else {
+                return { key: item.key, value: item.value, isDisabled: true };
+            }
+        });
+    }
+
+    disableSubscriptionDitributionCategory() {
+        this.distributionCategoryType = this.distributionCategoryType.map((item) => {
+            if (item.name != VariableConstants.SUBSCRIPTION_MONTHLY) {
+                return { name: item.name, distributionCategoryKey: item.distributionCategoryKey, isDisabled: false };
+            } else {
+                return { name: item.name, distributionCategoryKey: item.distributionCategoryKey, isDisabled: true };
+            }
+        });
+    }
+
+    hideShowRateOption() {
+        if (this.ngSelectDistributionType.selData.length == 1) {
+            const hasEventDc = this.ngSelectDistributionType.selData.some((item) => item.name === 'EVENT_DC');
+            if (hasEventDc) {
+                this.showHideRateParameter = false;
+                if (this.addPromoCodeForm.controls['geoGraphyTypeRadio'].value == 'RATE') this.addPromoCodeForm.controls['geoGraphyTypeRadio'].setValue(null);
+                return;
+            }
+        }
+        this.showHideRateParameter = true;
+    }
+
+    onSelectParkingPurchaseType() {
+        const hasSubscriptions = this.ngSelectPurchaseType.selData.some((item) => item.key === 'SUBSCRIPTIONS');
+
+        if (this.ngSelectPurchaseType.selData.length) {
+            if (hasSubscriptions) {
+                this.showPromoPeriod = true;
+                this.addValidations(['promoPeriod']);
+                if (this.ngSelectPurchaseType.selData.length == 1) {
+                    this.subscriptionParkingTypeSelected = true;
+                    this.clearValidations(['usageType', 'totalCount']);
+                    this.addValidations(['promoPeriod']);
+                    this.addPromoCodeForm.controls['usageType'].setValue(null);
+                } else {
+                    this.subscriptionParkingTypeSelected = false;
+                }
+
+                const [subscriptionMonthly] = this.distributionCategoryType.filter((item) => {
+                    return item.name == VariableConstants.SUBSCRIPTION_MONTHLY;
+                });
+                const hasSubscriptionMonthly = this.ngSelectDistributionType.selData.some((item) => item.name === VariableConstants.SUBSCRIPTION_MONTHLY);
+                if (!hasSubscriptionMonthly) this.ngSelectDistributionType.selData = [subscriptionMonthly];
+                if (this.ngSelectDistributionType.selData.length == 1) {
+                    this.showRateCategory = hasSubscriptions;
+                    this.clearValidations(['rateCategory']);
+                }
+
+                this.enableSubscriptionMonthly();
+                this.enablePurchaseTypeSubscription();
+
+                // this.ngSelectHoursType.selData = '';
+                // this.ngSelectMinutesType.selData = '';
+
+                this.addPromoCodeForm.controls['maximumParkingTimeHours'].setValue('');
+                this.addPromoCodeForm.controls['maximumParkingTimeMinutes'].setValue('');
+
+
+                this.addPromoCodeForm.controls['minimumParkingTimeHours'].setValue('');
+                this.addPromoCodeForm.controls['minimumParkingTimeMinutes'].setValue('');
+            } else {
+                this.showPromoPeriod = false;
+                this.showRateCategory = hasSubscriptions;
+
+                this.ngSelectDistributionType.selData = this.ngSelectDistributionType.selData.filter((item) => {
+                    return item.name != VariableConstants.SUBSCRIPTION_MONTHLY;
+                });
+                this.subscriptionParkingTypeSelected = false;
+                this.clearValidations(['promoPeriod']);
+                this.addValidations(['usageType', 'rateCategory']);
+                this.addPromoCodeForm.controls['promoPeriod'].setValue('');
+                this.disableSubscriptionDitributionCategory();
+                this.disableSubscriptionPurchaseType();
+            }
+        } else {
+            this.ngSelectDistributionType.selData = this.ngSelectDistributionType.selData.filter((item) => {
+                return item.name != VariableConstants.SUBSCRIPTION_MONTHLY;
+            });
+            this.purchaseType = this.purchaseType.map((item) => {
+                return { key: item.key, value: item.value, isDisabled: false };
+            });
+            this.distributionCategoryType = this.distributionCategoryType.map((item) => {
+                return { name: item.name, distributionCategoryKey: item.distributionCategoryKey, isDisabled: false };
+            });
+        }
+    }
+
+    enableSubscriptionMonthly() {
+        this.distributionCategoryType = this.distributionCategoryType.map((item) => {
+            if (item.name != VariableConstants.SUBSCRIPTION_MONTHLY) {
+                return { name: item.name, distributionCategoryKey: item.distributionCategoryKey, isDisabled: true };
+            } else {
+                return { name: item.name, distributionCategoryKey: item.distributionCategoryKey, isDisabled: false };
+            }
+        });
+    }
+
+    enablePurchaseTypeSubscription() {
+        this.purchaseType = this.purchaseType.map((item) => {
+            if (item.key != 'SUBSCRIPTIONS') {
+                return { key: item.key, value: item.value, isDisabled: true };
+            } else {
+                return { key: item.key, value: item.value, isDisabled: false };
+            }
+        });
+    }
+
+    selectProducts() {
+        this.selectedProducts = [];
+
+        for (let i = 0; i < this.productRows.length; i++) {
+            if (this.productRows[i].checked) {
+                const obj = {
+                    productKey: this.productRows[i]['productKey'],
+                    locationId: this.productRows[i]['locationId'],
+                };
+                this.selectedProducts.push(obj);
+            }
+        }
+        if (this.selectedProducts.length != this.productRows.length) {
+            this.allProductChecked = false;
+        } else {
+            this.allProductChecked = true;
+        }
+    }
+
+    clearDate(control) {
+        this.addPromoCodeForm.get(control).setValue(null); // Clear the datepicker value
+    }
+}
+

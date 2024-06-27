@@ -1,6 +1,7 @@
 var jwt = require("jsonwebtoken"); // used to create, sign, and verify tokens
 require("dotenv").config();
 
+
 function verifyToken(req, res, next) {
   var token = req.headers["x-access-token"];
   if (!token)

@@ -1,0 +1,734 @@
+<div class="container-fluid body-bg-color add-consumer">
+    <div class="container category-add-section px-mb-1">
+        <div class="row pg-head-top">
+            <div class="col-md-6 pt-3 d-flex col-9">
+                <div class="d-flex justify-content-center align-items-center">
+                    <div class="back-prev-button d-flex justify-content-center align-items-center cursor-pointer" (click)="backToPreviousPage()">
+                        <div><em class="fa text-primary fa-angle-left font-20 font-weight-bold pt-1"></em></div>
+                        <div class="child-page-title ml-3 mob-xs-d-none mob-sm-d-none">
+                            <span>{{ 'myPromocodes' | translate }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card category-main-bg border-0 mt-4 mb-c-b">
+            <div class="input-flied-head px-3 px-md-4 px-lg-4">{{ 'allFieldsText' | translate }}<span class="red">*</span> {{ 'areMandatoryText' | translate }}</div>
+
+            <form [formGroup]="addPromoCodeForm">
+                <div class="row mx-0 px-1 px-lg-3 pl-md-3 mt-4">
+                    <h4 class="category-title mb-3 mb-lg-4">{{ 'myPromoParameters' | translate }}</h4>
+                    <div class="col-lg-5 col-md-6 col-sm-12 col-12 pr-lg-5 mb-3" *rbacShow="'AddPromoCodeComponent|promoCodeNameTxt'">
+                        <app-input
+                            [mandatory]="true"
+                            inputType="text"
+                            [maxlength]="12"
+                            formControlName="promoCode"
+                            fxFlex="100"
+                            placeholder="Promo Code"
+                            label="Promo Code"
+                            (onBlur)="checkPromoCode('blur')"
+                        >
+                        </app-input>
+                    </div>
+                    <div class="col-lg-5 col-md-6 col-sm-12 col-12 pr-lg-5 mb-3" *rbacShow="'AddPromoCodeComponent|promoCodeDescriptionTxt'">
+                        <app-input
+                            [mandatory]="true"
+                            inputType="text"
+                            [maxlength]="64"
+                            formControlName="promoCodeDescription"
+                            fxFlex="100"
+                            placeholder="Promo Code Description"
+                            label="Promo Code Description"
+                        >
+                        </app-input>
+                    </div>
+                </div>
+                <div class="row mx-0 px-1 px-lg-3 pl-md-3 mt-2">
+                    <div class="row mx-0 px-1 px-lg-3 pl-md-3 mt-2" *rbacShow="'AddPromoCodeComponent|promoCodediscountTypeDrpDwn'">
+                        <h5 class="mb-3 pb-1 font-14">{{ 'promoDiscountType' | translate }} <span class="mandatory-field"> *</span></h5>
+                        <div class="container-small-radio col-lg-5 col-md-6 col-sm-12 col-12 pr-lg-5 mb-3 d-flex justify-content-start align-items-center">
+                            <div class="radio py-1 px-0 radio-box-shadow pl-1 shadow-none bg-transparent mr-4 pr-1">
+                                <input
+                                    id="discountTypePercentageRadio"
+                                    formControlName="discountTypeRadio"
+                                    name="discountTypeRadio"
+                                    type="radio"
+                                    (change)="discountTypeRadioClicked()"
+                                    value="AMOUNT"
+                                    [(ngModel)]="discountTypeRadio"
+                                />
+                                <label for="discountTypePercentageRadio" class="radio-label mb-0">{{ 'fixedAmount' | translate }}</label>
+                            </div>
+                            <div class="radio py-1 px-2 radio-box-shadow shadow-none bg-transparent mr-3 mr-md-3 mr-lg-0 pl-2 pl-md-0 pl-lg-0">
+                                <input
+                                    id="discountAmountRadio"
+                                    type="radio"
+                                    formControlName="discountTypeRadio"
+                                    name="discountTypeRadio"
+                                    (change)="discountTypeRadioClicked()"
+                                    value="PERCENTAGE"
+                                    [(ngModel)]="discountTypeRadio"
+                                />
+                                <label for="discountAmountRadio" class="radio-label mb-0 font-weight-bold">{{ 'percentage' | translate }}</label>
+                            </div>
+                        </div>
+
+                        <div
+                            class="col-lg-5 col-md-6 col-sm-12 col-12 pr-lg-5 mb-3 remove-clear-all"
+                            [ngClass]="!showPromoPeriod ? 'remove-mandatory-field' : ''"
+                            *ngIf="showPromoPeriod"
+                        >
+                            <app-multiselect-dropdown
+                                formControlName="promoPeriod"
+                                placeholder="Promo Period"
+                                [dropdownSettings]="promoPeriodSettings"
+                                [optionData]="promoPeriodData"
+                            >
+                            </app-multiselect-dropdown>
+                        </div>
+                    </div>
+                    <div class="row pl-3 pr-0" *rbacShow="'AddPromoCodeComponent|promoCodeDiscountAmt'">
+                        <div class="col-md-12 pl-0 pr-0 pl-md-2 pl-lg-3 pr-md-0 pr-lg-0">
+                            <div class="row ml-3 ml-lg-0 mt-1 py-3 mr-0 rate-calculation p-0 p-lg-3 p-md-3 fees-shows-section">
+                                <div class="col-lg-4 col-md-6 col-sm-12 col-12 px-3 px-md-0 px-lg-0" *ngIf="discountTypeRadio == 'AMOUNT'">
+                                    <app-input
+                                        [mandatory]="true"
+                                        focus="true"
+                                        [isNumber]="true"
+                                        DecimalPlaces="2"
+                                        (keydownEmit)="percentageCustom($event)"
+                                        [divClasses]="'mb-1'"
+                                        formControlName="discountAmount"
+                                        fxFlex="100"
+                                        label="Discount Amount ($)"
+                                    >
+                                    </app-input>
+                                </div>
+                                <div class="col-lg-4 col-md-6 col-sm-8 col-12 px-3 px-md-0 px-lg-0" *ngIf="discountTypeRadio == 'PERCENTAGE'">
+                                    <app-input
+                                        [mandatory]="true"
+                                        focus="true"
+                                        inputType="string"
+                                        onlyNumberDirective="true"
+                                        AllowDot="false"
+                                        (keydownEmit)="percentageCustom($event)"
+                                        [divClasses]="'mb-1'"
+                                        formControlName="discountAmount"
+                                        fxFlex="100"
+                                        label="Discount Amount (%)"
+                                    >
+                                    </app-input>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row mx-0 px-0 px-lg-3 pl-md-3 mt-2">
+                    <div class="col-md-12">
+                        <hr />
+                    </div>
+                </div>
+                <div class="row mx-0 px-0 px-lg-3 pl-md-3 mt-2">
+                    <h4 class="category-title mb-3 mb-lg-4">{{ 'pormoChanneldevicePartnr' | translate }}</h4>
+                    <div class="col-md-6 col-lg-6 col-sm-6 col-12 pr-lg-5 mb-3" *rbacShow="'AddPromoCodeComponent|purchaseTypeDrpDwn'">
+                        <div class="remove-clear-all">
+                            <app-multiselect-dropdown
+                                #ngSelectPurchaseType
+                                placeholder="Purchase Type"
+                                (onSelectAllEmit)="onItemSelectEmit(); onSelectParkingPurchaseType(); setRateParameterData()"
+                                (onDeSelectAllEmit)="onItemSelectEmit(); onSelectParkingPurchaseType(); setRateParameterData()"
+                                (onItemSelectEmit)="onItemSelectEmit(); onSelectParkingPurchaseType(); setRateParameterData()"
+                                (onItemDeSelectEmit)="onDeSelect(); onSelectParkingPurchaseType(); setRateParameterData()"
+                                [dropdownSettings]="purchaseTypeSettings"
+                                [optionData]="purchaseType"
+                            >
+                            </app-multiselect-dropdown>
+                        </div>
+                    </div>
+                    <div class="col-md-6 col-lg-6 col-sm-6 col-12 pr-lg-5 mb-3 mb-lg-3" *rbacShow="'AddPromoCodeComponent|channelDrpDwn'">
+                        <div class="">
+                            <app-multiselect-dropdown
+                                #ngSelectChannelType
+                                placeholder="Channel"
+                                (onItemSelectEmit)="onItemSelectEmit()"
+                                (onItemDeSelectEmit)="onDeSelect()"
+                                [dropdownSettings]="multiSelectSettings"
+                                [optionData]="channelType"
+                            >
+                            </app-multiselect-dropdown>
+                        </div>
+                    </div>
+                    <div
+                        class="col-md-6 col-lg-6 col-sm-6 col-12 pr-lg-5 mb-1 mb-lg-2"
+                        [ngClass]="promoCodeInfo?.endUserDeviceKey ? '' : 'remove-mandatory-field'"
+                        *rbacShow="'AddPromoCodeComponent|deviceDrpDwn'"
+                    >
+                        <div class="" *ngIf="promoCodeInfo?.endUserDeviceKey">
+                            <app-multiselect-dropdown
+                                #ngSelectEndUserDevice
+                                formControlName="deviceType"
+                                placeholder="Device"
+                                (onItemSelectEmit)="onItemSelectEmit()"
+                                (onItemDeSelectEmit)="onDeSelect()"
+                                [dropdownSettings]="multiSelectSettings"
+                                [optionData]="enduserDeviceType"
+                            >
+                            </app-multiselect-dropdown>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row mx-0 px-1 px-lg-3 pl-md-3 mt-2">
+                    <div class="col-md-12">
+                        <hr />
+                    </div>
+                </div>
+                <div class="row mx-0 px-1 px-lg-3 pl-md-3 mt-2">
+                    <h4 class="category-title mb-3 mb-lg-3">{{ 'promoRatePartnr' | translate }}</h4>
+                    <div class="col-md-6 col-lg-6 col-sm-6 col-12 pr-lg-5 mb-3 mb-lg-1" *rbacShow="'AddPromoCodeComponent|DistributionCategoryDrpDwn'">
+                        <div class="remove-clear-all">
+                            <app-multiselect-dropdown
+                                #ngSelectDistributionType
+                                placeholder="Distribution Category"
+                                (onItemSelectEmit)="onItemSelectEmit(); setRateParameterData(); onDistributionCategorySelect()"
+                                (onItemDeSelectEmit)="onDeSelect(); setRateParameterData(); onDistributionCategorySelect()"
+                                [dropdownSettings]="distributionCategorySettings"
+                                [optionData]="distributionCategoryType"
+                                (onSelectAllEmit)="onDistributionCategorySelect(); setRateParameterData()"
+                                (onDeSelectAllEmit)="onDistributionCategorySelect(); setRateParameterData()"
+                            >
+                            </app-multiselect-dropdown>
+                        </div>
+                    </div>
+                    <div class="col-md-6 col-lg-6 col-sm-6 col-12 pr-lg-5 mb-1 mb-lg-1" *rbacShow="'AddPromoCodeComponent|rateCategoryDrpDwn'">
+                        <div class="" *ngIf="!showRateCategory">
+                            <app-multiselect-dropdown
+                                #ngSelectRateCategory
+                                placeholder="Rate Category"
+                                formControlName="rateCategory"
+                                (onItemSelectEmit)="onItemSelectEmit()"
+                                (onItemDeSelectEmit)="onDeSelect()"
+                                [dropdownSettings]="rateCategorySettings"
+                                [optionData]="rateCategoryType"
+                            >
+                            </app-multiselect-dropdown>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row mx-0 px-1 px-lg-3 pl-md-3 mt-2">
+                    <div class="col-md-12">
+                        <hr />
+                    </div>
+                </div>
+                <div class="row mx-0 px-1 px-lg-3 pl-md-3 mt-2">
+                    <h4 class="category-title mb-3 mb-lg-4">{{ 'myPromoApplicationParametres' | translate }}</h4>
+                    <div *ngIf="!subscriptionParkingTypeSelected">
+                        <div class="row mx-0 px-0" *rbacShow="'AddPromoCodeComponent|parkingTimeLimitDrpDwn'">
+                            <h5 class="font-14 mb-3 mob-xs-d-none">Minimum Parking Time Limit</h5>
+                            <div class="col-md-6 col-lg-4 col-sm-6 col-12 pr-lg-5 mb-3 mb-lg-2 remove-mandatory-field remove-clear-all">
+                                <app-multiselect-dropdown
+                                    formControlName="minimumParkingTimeHours"
+                                    placeholder="Hours"
+                                    [dropdownSettings]="hourTypeSettings"
+                                    [optionData]="hoursType"
+                                >
+                                </app-multiselect-dropdown>
+                            </div>
+                            <div class="col-md-6 col-lg-4 col-sm-6 col-12 pr-lg-5 mb-3 mb-lg-2 remove-mandatory-field remove-clear-all">
+                                <app-multiselect-dropdown
+                                    formControlName="minimumParkingTimeMinutes"
+                                    placeholder="Minutes"
+                                    [dropdownSettings]="minuteTypeSettings"
+                                    [optionData]="minuteType"
+                                >
+                                </app-multiselect-dropdown>
+                            </div>
+                        </div>
+                        <div class="row mx-0 px-0" *rbacShow="'AddPromoCodeComponent|parkingTimeLimitDrpDwn'">
+                            <h5 class="font-14 mb-3 mob-xs-d-none">Maximum Parking Time Limit</h5>
+                            <div class="col-md-6 col-lg-4 col-sm-6 col-12 pr-lg-5 mb-3 mb-lg-2 remove-mandatory-field remove-clear-all">
+                                <app-multiselect-dropdown #ngSelectHoursType placeholder="Hours" [dropdownSettings]="hourTypeSettings" [optionData]="hoursType">
+                                </app-multiselect-dropdown>
+                            </div>
+                            <div class="col-md-6 col-lg-4 col-sm-6 col-12 pr-lg-5 mb-3 mb-lg-2 remove-mandatory-field remove-clear-all">
+                                <app-multiselect-dropdown #ngSelectMinutesType placeholder="Minutes" [dropdownSettings]="minuteTypeSettings" [optionData]="minuteType">
+                                </app-multiselect-dropdown>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row mx-0 px-0">
+                        <h5 class="font-14 my-3 mob-xs-d-none">Applicable Sale Dates</h5>
+                        <div class="col-md-6 col-lg-4 col-sm-6 col-12 pr-lg-5 mb-3 mb-lg-2" *rbacShow="'AddPromoCodeComponent|saleStartDateCal'">
+                            <div class="form-floating">
+                                <div class="position-absolute date-icon"><em class="icon-calndaer-i font-20"></em></div>
+                                <a class="cursor-pointer position-absolute clear-optional-date" (click)="clearDate('saleStartDate')">Clear Date</a>
+                                <input
+                                    type="text"
+                                    formControlName="saleStartDate"
+                                    [(ngModel)]="selectedSaleStartDate"
+                                    (ngModelChange)="onSaleStartDateSelect()"
+                                    [minDate]="minDate"
+                                    [bsConfig]="{ showWeekNumbers: false, selectFromOtherMonth: true }"
+                                    class="form-control"
+                                    placeholder="Applicable Sale Start Date"
+                                    bsDatepicker
+                                    disableKeyboardInput
+                                />
+                                <label for="bsDatepicker">Applicable Sale Start Date</label>
+                            </div>
+                        </div>
+                        <div class="col-md-6 col-lg-4 col-sm-6 col-12 pr-lg-5 mb-3 mb-lg-2" *rbacShow="'AddPromoCodeComponent|saleEndDateCal'">
+                            <div class="form-floating">
+                                <div class="position-absolute date-icon"><em class="icon-calndaer-i font-20"></em></div>
+                                <a class="cursor-pointer position-absolute clear-optional-date" (click)="clearDate('saleEndDate')">Clear Date</a>
+                                <input
+                                    type="text"
+                                    formControlName="saleEndDate"
+                                    class="form-control"
+                                    [(ngModel)]="selectedSaleEndDate"
+                                    [bsConfig]="{ showWeekNumbers: false, selectFromOtherMonth: true }"
+                                    [minDate]="minDate"
+                                    placeholder="Applicable Sale End Date"
+                                    bsDatepicker
+                                    disableKeyboardInput
+                                />
+                                <label for="bsDatepicker">Applicable Sale End Date</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row mx-0 px-0">
+                        <h5 class="font-14 my-3 mob-xs-d-none">Applicable Parking Dates<span class="mandatory-field">*</span></h5>
+                        <div class="col-md-6 col-lg-4 col-sm-6 col-12 pr-lg-5 mb-3 mb-lg-2" *rbacShow="'AddPromoCodeComponent|parkingStartDateCal'">
+                            <div class="form-floating">
+                                <div class="position-absolute date-icon"><em class="icon-calndaer-i font-20"></em></div>
+                                <input
+                                    type="text"
+                                    formControlName="parkingStartDate"
+                                    [(ngModel)]="selectedParkingStartDate"
+                                    (ngModelChange)="onParkingStartDateSelect()"
+                                    [minDate]="minSaleStartDate"
+                                    [bsConfig]="{ showWeekNumbers: false, selectFromOtherMonth: true }"
+                                    class="form-control"
+                                    placeholder="Applicable Parking Start Date"
+                                    bsDatepicker
+                                    disableKeyboardInput
+                                />
+                                <label for="bsDatepicker">Applicable Parking Start Date<span class="mandatory-field">*</span></label>
+                            </div>
+                        </div>
+                        <div class="col-md-6 col-lg-4 col-sm-6 col-12 pr-lg-5 mb-1 mb-lg-2" *rbacShow="'AddPromoCodeComponent|parkingEndDateCal'">
+                            <div class="form-floating">
+                                <div class="position-absolute date-icon"><em class="icon-calndaer-i font-20"></em></div>
+                                <input
+                                    type="text"
+                                    formControlName="parkingEndDate"
+                                    [(ngModel)]="selectedParkingEndDate"
+                                    [minDate]="minSaleStartDate"
+                                    [bsConfig]="{ showWeekNumbers: false, selectFromOtherMonth: true }"
+                                    class="form-control"
+                                    placeholder="Applicable Parking End Date"
+                                    bsDatepicker
+                                    disableKeyboardInput
+                                />
+                                <label for="bsDatepicker">Applicable Parking End Date<span class="mandatory-field">*</span></label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row pl-3 mb-2" *ngIf="!subscriptionParkingTypeSelected">
+                        <h5 class="font-14 my-3 mob-xs-d-none">Promo Code Limit<span class="mandatory-field">*</span></h5>
+
+                        <div class="col-md-12 mb-2 pr-5">
+                            <div class="container-small-radio mb-2 d-md-flex d-block d-lg-flex justify-content-start align-items-center">
+                                <div class="radio mr-1 mb-2 mb-md-0 mb-lg-0 mr-md-4 pr-md-3 pr-lg-3 mr-lg-4 pl-0 pl-md-0 pl-lg-0">
+                                    <input formControlName="usageType" name="usageType" id="nolimit" (click)="onUsageTypeChange('No Limit')" type="radio" value="No Limit" />
+                                    <label for="nolimit" class="radio-label mb-0">No Limit</label>
+                                </div>
+                                <div class="radio mr-1 mb-2 mb-md-0 mb-lg-0 mr-md-4 pr-md-3 pr-lg-3 mr-lg-4 pl-0 pl-md-0 pl-lg-0">
+                                    <input
+                                        formControlName="usageType"
+                                        name="usageType"
+                                        id="onetimelimit"
+                                        (click)="onUsageTypeChange('One Time Limit')"
+                                        type="radio"
+                                        value="One Time Limit"
+                                    />
+                                    <label for="onetimelimit" class="radio-label mb-0">One Time Limit</label>
+                                </div>
+                                <div class="radio mr-1 mb-2 mb-md-0 mb-lg-0 mr-md-4 pr-md-3 pr-lg-3 mr-lg-4 pl-0 pl-md-0 pl-lg-0">
+                                    <input
+                                        formControlName="usageType"
+                                        name="usageType"
+                                        id="dailylimit"
+                                        (click)="onUsageTypeChange('Daily Limit')"
+                                        type="radio"
+                                        value="Daily Limit"
+                                    />
+                                    <label for="dailylimit" class="radio-label mb-0">Daily Limit</label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row px-3">
+                            <div class="col-md-12">
+                                <div
+                                    class="row ml-0 mr-0 mr-lg-2 mr-md-2 access-code-usage p-2 p-md-3 p-lg-3"
+                                    *ngIf="
+                                        addPromoCodeForm &&
+                                        (addPromoCodeForm.controls.usageType.value == ONE_TIME_LIMIT || addPromoCodeForm.controls.usageType.value == DAILY_LIMIT)
+                                    "
+                                >
+                                    <div
+                                        class="col-lg-4 col-sm-6 col-md-6 col-12 pl-0"
+                                        *ngIf="
+                                            addPromoCodeForm &&
+                                            (addPromoCodeForm.controls.usageType.value == ONE_TIME_LIMIT || addPromoCodeForm.controls.usageType.value == DAILY_LIMIT)
+                                        "
+                                    >
+                                        <app-input
+                                            class="mb-0"
+                                            formControlName="totalCount"
+                                            inputType="text"
+                                            [mandatory]="
+                                                addPromoCodeForm &&
+                                                addPromoCodeForm.controls.promoCode.value &&
+                                                (addPromoCodeForm.controls.usageType.value == ONE_TIME_LIMIT || addPromoCodeForm.controls.usageType.value == DAILY_LIMIT)
+                                            "
+                                            fxFlex="100"
+                                            placeholder="Total Count"
+                                            label="Total Count"
+                                            change="updateRemainingUsageCount()"
+                                            [maxlength]="5"
+                                            [isNumber]="true"
+                                        >
+                                        </app-input>
+                                    </div>
+                                    <div
+                                        class="col-lg-4 col-sm-6 col-md-6 col-12 pl-0"
+                                        *ngIf="
+                                            addPromoCodeForm &&
+                                            (addPromoCodeForm.controls.usageType.value == NO_LIMIT || addPromoCodeForm.controls.usageType.value == ONE_TIME_LIMIT) &&
+                                            !hideOnChange
+                                        "
+                                    >
+                                        <app-input
+                                            class="mb-0"
+                                            formControlName="usedCount"
+                                            inputType="text"
+                                            fxFlex="100"
+                                            isDisabled="true"
+                                            placeholder="Used Count"
+                                            label="Used Count"
+                                        >
+                                        </app-input>
+                                    </div>
+                                    <div
+                                        class="col-lg-5 col-sm-6 col-md-6 col-12"
+                                        *ngIf="addPromoCodeForm && addPromoCodeForm.controls.usageType.value == ONE_TIME_LIMIT && !hideOnChange"
+                                    >
+                                        <app-input
+                                            class="mb-0"
+                                            formControlName="remainingCount"
+                                            inputType="text"
+                                            isDisabled="true"
+                                            fxFlex="100"
+                                            placeholder="Remaining Count"
+                                            label="Remaining Count"
+                                        >
+                                        </app-input>
+                                    </div>
+                                    <div
+                                        class="col-lg-4 col-sm-6 col-md-6 col-12 pl-0 pt-2"
+                                        *ngIf="addPromoCodeForm && addPromoCodeForm.controls.usageType.value == DAILY_LIMIT && !hideOnChange"
+                                    >
+                                        <a class="btn" (click)="showUsageTrend()"><span class="view-usage-trend font-weight-bold text-primary">View Usage Trend ></span></a>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row mx-0 px-0 px-lg-3 pl-md-3 mt-2">
+                    <div class="col-md-12">
+                        <hr />
+                    </div>
+                </div>
+                <div class="row mx-0 px-0 px-lg-3 pl-md-3 mt-2 mb-5">
+                    <h4 class="category-title mb-3 mb-lg-3">{{ 'promoGeoPartnr' | translate }}</h4>
+                    <div class="container-small-radio ml-0 ml-md-0 ml-lg-0 mb-2 d-block d-lg-flex d-md-flex justify-content-start align-items-center">
+                        <div class="radio py-1 px-0 radio-box-shadow pl-1 shadow-none bg-transparent mr-2" *rbacShow="'AddPromoCodeComponent|isNationalChckBx'">
+                            <input
+                                id="promoNationalRadio"
+                                formControlName="geoGraphyTypeRadio"
+                                name="geoGraphyTypeRadio"
+                                type="radio"
+                                (change)="checkGeographicRadio()"
+                                value="NATIONAL"
+                                [(ngModel)]="geoGraphyTypeRadio"
+                            />
+                            <label for="promoNationalRadio" class="radio-label mb-0">{{ 'promoNational' | translate }}</label>
+                        </div>
+                        <div
+                            class="
+                                radio
+                                mr-3
+                                mt-3
+                                ml-lg-3
+                                mt-sm-0 mt-md-0 mt-lg-0
+                                py-1
+                                px-lg-2
+                                radio-box-shadow
+                                shadow-none
+                                bg-transparent
+                                mr-md-3 mr-lg-0
+                                pl-0 pl-sm-3 pl-md-0 pl-lg-0
+                            "
+                            *rbacShow="'AddPromoCodeComponent|isNationalChckBx'"
+                        >
+                            <input
+                                id="promoLocationSpecificRadio"
+                                type="radio"
+                                formControlName="geoGraphyTypeRadio"
+                                name="geoGraphyTypeRadio"
+                                (change)="checkGeographicRadio()"
+                                value="LOCATION_SPECIFIC"
+                                [(ngModel)]="geoGraphyTypeRadio"
+                            />
+                            <label for="promoLocationSpecificRadio" class="radio-label mb-0">{{ 'promolocationSpecfic' | translate }}</label>
+                        </div>
+                        <div
+                            class="
+                                radio
+                                py-1
+                                mt-3
+                                ml-lg-3
+                                mt-sm-0 mt-md-0 mt-lg-0
+                                px-lg-2
+                                radio-box-shadow
+                                shadow-none
+                                bg-transparent
+                                mr-3 mr-md-3 mr-lg-0
+                                pl-0 pl-sm-3 pl-md-0 pl-lg-0
+                            "
+                            *rbacShow="'AddPromoCodeComponent|isNationalChckBx'"
+                        >
+                            <input
+                                id="geographicRadio"
+                                type="radio"
+                                formControlName="geoGraphyTypeRadio"
+                                name="geoGraphyTypeRadio"
+                                (change)="checkGeographicRadio()"
+                                value="GEOGRAPHIC"
+                                [(ngModel)]="geoGraphyTypeRadio"
+                            />
+                            <label for="geographicRadio" class="radio-label mb-0">{{ 'promogeographic' | translate }}</label>
+                        </div>
+
+                        <div *ngIf="showHideRateParameter">
+                            <div
+                                class="
+                                    radio
+                                    py-1
+                                    mt-3
+                                    ml-lg-3
+                                    mt-sm-0 mt-md-0 mt-lg-0
+                                    px-lg-2
+                                    radio-box-shadow
+                                    shadow-none
+                                    bg-transparent
+                                    mr-3 mr-md-3 mr-lg-0
+                                    pl-0 pl-sm-3 pl-md-0 pl-lg-0
+                                "
+                                *rbacShow="'AddPromoCodeComponent|isNationalChckBx'"
+                            >
+                                <input
+                                    id="rateRadio"
+                                    type="radio"
+                                    formControlName="geoGraphyTypeRadio"
+                                    name="geoGraphyTypeRadio"
+                                    (change)="checkRateRadio()"
+                                    value="RATE"
+                                    [(ngModel)]="geoGraphyTypeRadio"
+                                />
+                                <label for="rateRadio" class="radio-label mb-0">{{ 'promorate' | translate }}</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row pl-3 pr-0 mb-4" *ngIf="geoGraphyTypeRadio == 'NATIONAL'"></div>
+                    <div class="row pl-3 pr-0 mb-4" *ngIf="geoGraphyTypeRadio == 'LOCATION_SPECIFIC'">
+                        <div class="col-md-12 pl-3 pr-0 pl-md-2 pl-lg-3 pr-md-0 pr-lg-0" *rbacShow="'AddPromoCodeComponent|locationSpecificField'">
+                            <div class="col-md-6 col-sm-6 col-12 px-lg-0 addLotNumber">
+                                <app-multiselect-dropdown
+                                    #ngSelectLocationIdType
+                                    formControlName="locationIdType"
+                                    placeholder="Add LOT Number"
+                                    (onItemSelectEmit)="onItemSelectEmit()"
+                                    (onItemDeSelectEmit)="onDeSelect()"
+                                    [dropdownSettings]="locationIdTypeSettings"
+                                    [optionData]="locationIdType"
+                                    (onFilterChange)="filterData($event)"
+                                >
+                                </app-multiselect-dropdown>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row pl-3 pr-0 mb-4" *ngIf="geoGraphyTypeRadio == 'RATE'">
+                        <div class="col-md-12 pl-3 pr-0 pl-md-2 pl-lg-3 pr-md-0 pr-lg-0" *rbacShow="'AddPromoCodeComponent|locationSpecificField'">
+                            <div class="col-md-6 col-sm-6 col-12 px-lg-0 addLotNumber">
+                                <app-multiselect-dropdown
+                                    formControlName="rateIdType"
+                                    placeholder="Add LOT Number"
+                                    (onItemSelectEmit)="onItemSelectEmit(); setRateParameterData()"
+                                    (onItemDeSelectEmit)="onDeSelect(); setRateParameterData()"
+                                    [dropdownSettings]="locationIdTypeSettings"
+                                    [optionData]="locationIdType"
+                                    (onFilterChange)="filterData($event)"
+                                >
+                                </app-multiselect-dropdown>
+                            </div>
+                        </div>
+                        <div class="custom-datatable" *ngIf="showProductTable" id="productTable">
+                            <ngx-datatable
+                                #customDatatable
+                                class="material server-scrolling-import"
+                                [sorts]="sortEnable ? [{ prop: 'status', dir: 'asc' }] : []"
+                                [rows]="productRows"
+                                [columns]="reservationColumns"
+                                [loadingIndicator]="isLoading"
+                                [columnMode]="'force'"
+                                [headerHeight]="headerHeight"
+                                [rowHeight]="rowHeight"
+                                [scrollbarV]="true"
+                                [scrollbarH]="true"
+                            >
+                            </ngx-datatable>
+                        </div>
+                    </div>
+                    <div class="row pl-3 pr-0 mb-4" *ngIf="geoGraphyTypeRadio == 'GEOGRAPHIC'">
+                        <div class="col-md-12 pl-3 pr-0 pl-md-2 pl-lg-3 pr-md-0 pr-lg-0">
+                            <div class="row ml-0 mt-3 py-3 mr-0 rate-calculation p-0 p-lg-4 p-md-4 fees-shows-section">
+                                <div class="col-md-6 col-sm-6 col-12 pl-lg-0 pl-md-0 pr-lg-5 mb-3 mb-md-0 mb-lg-0 remove-clear-all" *rbacShow="'AddPromoCodeComponent|stateDrpDwn'">
+                                    <app-multiselect-dropdown
+                                        #ngSelectStateType
+                                        placeholder="STATE"
+                                        formControlName="state"
+                                        (onItemSelectEmit)="onItemSelectEmit(); filterCityBasedOnState()"
+                                        (onItemDeSelectEmit)="onDeSelect(); filterCityBasedOnState()"
+                                        [dropdownSettings]="stateSettings"
+                                        [optionData]="stateList"
+                                    >
+                                    </app-multiselect-dropdown>
+                                </div>
+                                <div class="col-md-6 col-sm-6 col-12 pr-lg-5" *rbacShow="'AddPromoCodeComponent|cityDrpDwn'">
+                                    <app-multiselect-dropdown
+                                        #ngSelectCityType
+                                        placeholder="CITY"
+                                        formControlName="city"
+                                        (onItemSelectEmit)="onItemSelectEmit()"
+                                        (onItemDeSelectEmit)="onDeSelect()"
+                                        [dropdownSettings]="citySettings"
+                                        [optionData]="cityList"
+                                    >
+                                    </app-multiselect-dropdown>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </form>
+        </div>
+        <div
+            class="
+                container container-sm
+                card-fixed-footer
+                footer-fixed-with-sidebar
+                py-4
+                px-4
+                position-fixed
+                left-0
+                right-0
+                d-flex
+                justify-content-center justify-content-sm-end justify-content-lg-end justify-content-md-end
+            "
+        >
+            <hr />
+            <div class="mr-3">
+                <app-button [label]="'Cancel'" (click)="cancelAddPromoCode()" [primary]="false"></app-button>
+            </div>
+            <div>
+                <app-button
+                    [label]="'Add Promo Code'"
+                    *rbacShow="'AddPromoCodeComponent|savePromoCodeBtn'"
+                    (onClick)="addPromoCode()"
+                    [disabled]="addPromoCodeForm.invalid || checkDropdown"
+                    [primary]="'true'"
+                ></app-button>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="row mob-xs-d-none mob-sm-d-none">
+    <div class="col-md-12">
+        <app-loader [showBackdrop]="showLoader"></app-loader>
+    </div>
+</div>
+
+<ng-template #usageTemplate>
+    <app-usage-trend-chart
+        [bsmodalRef]="bsUsageModalRef"
+        [modalBodyTemplate]="usageTrendBodyTemplate"
+        [header_title]="'Usage Trend'"
+        no_button_footer="true"
+        [labels]="barChartLabels"
+        [data1]="barChartData1"
+        [data2]="barChartData2"
+        [max]="barChartMax"
+    >
+    </app-usage-trend-chart>
+</ng-template>
+
+<ng-template #usageTrendBodyTemplate>
+    <div class="row mb-5 modal-graph">
+        <div class="col-md-5">
+            <div class="text-label pb-2">Promo Code Limit</div>
+            <div class="label-value">{{ addPromoCodeForm.controls.usageType.value }}</div>
+        </div>
+        <div class="col-md-5">
+            <div class="text-label pb-2">Total Daily Count</div>
+            <div class="label-value">{{ addPromoCodeForm.controls.totalCount.value }}</div>
+        </div>
+    </div>
+</ng-template>
+
+<ng-template #checkBoxRow let-row="row" let-index="i">
+    <div class="d-flex align-items-center justify-content-start">
+        <div class="check-box-bg">
+            <label class="check-box-container">
+                <input type="checkbox" [disabled]="disabled" (change)="selectProducts(row)" [(ngModel)]="row.checked" />
+                <span class="checkmark"></span>
+            </label>
+        </div>
+    </div>
+</ng-template>
+
+<ng-template #checkBoxAll let-column="column">
+    <div class="d-flex align-items-center justify-content-start">
+        <div class="check-box-bg">
+            <label class="check-box-container mt-0">
+                <input
+                    type="checkbox"
+                    [disabled]="productRows.length == 0"
+                    [checked]="productRows.length != 0 && allProductChecked"
+                    (change)="selectAllProducts(column.checked)"
+                    [(ngModel)]="column.checked"
+                />
+                <span class="checkmark"></span>
+            </label>
+        </div>
+    </div>
+</ng-template>
+

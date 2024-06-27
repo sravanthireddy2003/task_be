@@ -17,24 +17,14 @@ app.get('/api', function (req, res) {
   res.status(200).send('API working...');
 });
 
-const AuthController = require(__root + 'Auth/AuthController');
+const AuthController = require(__root + 'controller/AuthController');
 app.use('/api/auth', AuthController);
 
-// const IndividualController = require(__root + 'app/Individual/IndividualController');
-// app.use('/api/individual', IndividualController);
+const StaffUser = require(__root + 'controller/User');
+app.use('/api/users', StaffUser);
 
-// const EntityController = require(__root + 'app/Entity/EntityController');
-// app.use('/api/entity', EntityController);
-// // const UserController = require(__root + 'app/User/UserController');
-// // app.use('/api/user', UserController); 
+const tasksCRUD=require(__root + 'controller/Tasks');
+app.use('/api/tasks',tasksCRUD);
 
-// const AuditController = require(__root + 'app/Audit/AuditController');
-// app.use('/api/audit', AuditController);
-
-// const AdminController = require(__root + 'app/Admin/AdminController');
-// app.use('/api/admin', AdminController);
-
-// const CompanyController = require(__root + 'app/Company/CompanyController.js');
-// app.use('/api/company', CompanyController);
 
 module.exports = app;
