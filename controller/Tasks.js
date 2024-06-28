@@ -2,8 +2,6 @@ const db = require(__root + "db");
 const express = require("express");
 const router = express.Router();
 const verify=require('./VerifyToken')
-
-
 router.post("/create", (req, res) => {
     const { 
         assigned_to,
@@ -11,6 +9,7 @@ router.post("/create", (req, res) => {
         stage,
         taskDate, 
         title,
+        assets,
     } = req.body;
 
     const createdAt = new Date().toISOString();
@@ -34,12 +33,12 @@ router.post("/create", (req, res) => {
             }
 
             const insertTaskQuery = `
-                INSERT INTO tasks (title, stage, taskDate, priority, createdAt, updatedAt) 
-                VALUES (?, ?, ?, ?, ?, ?)`;
+                INSERT INTO tasks (title, stage, taskDate, priority, createdAt, updatedAt,assets) 
+                VALUES (?, ?, ?, ?, ?, ?,?)`;
 
             connection.query(
                 insertTaskQuery,
-                [title, stage, taskDate, priority, createdAt, updatedAt],
+                [title, stage, taskDate, priority, createdAt, updatedAt,assets.join(",")],
                 (err, result) => {
                     if (err) {
                         return connection.rollback(() => {

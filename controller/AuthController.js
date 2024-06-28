@@ -41,9 +41,6 @@ router.post("/login", (req, res) => {
   });
 });
 
-
-
-
 router.post("/register", (req, res) => {
   const { name, title, role, email, password, isAdmin } = req.body;
   let hashedPassword = bcrypt.hashSync(password, 8);
