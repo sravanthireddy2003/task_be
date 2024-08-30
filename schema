@@ -61,4 +61,31 @@ CREATE TABLE subtaskassign (
 );
 
 
+-- WH
+CREATE TABLE WorkingHours (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  task_id INT NOT NULL,
+  start_time TIME NOT NULL,
+  end_time TIME NOT NULL,
+  working_date DATE NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
 
+-- to get report
+SELECT 
+  t.title AS task_title, 
+  w.working_date, 
+  w.start_time, 
+  w.end_time, 
+  TIMESTAMPDIFF(HOUR, w.start_time, w.end_time) AS duration_hours
+FROM 
+  WorkingHours w
+JOIN 
+  tasks t ON w.task_id = t.id
+WHERE 
+  t.title = 'sdbakjbds'
+  AND w.working_date BETWEEN '2024-08-01' AND '2024-08-28'
+ORDER BY 
+  w.working_date;

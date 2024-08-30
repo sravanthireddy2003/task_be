@@ -5,7 +5,7 @@ let dbConfig = {
     port     : '3306',
     user     : 'root',
     password : '',    
-    database : 'task_db'
+    database : process.env.DB,
 };
 
 const pool = mysql.createPool(dbConfig);
