@@ -13,7 +13,7 @@ const pool = mysql.createPool(dbConfig);
 pool.on('connection', function (connection) {
     console.log('Connected to the database via threadId %d!', connection.threadId);
 });
-
+    
 pool.getConnection((err, connection) => {
     if (err) {
         if (err.code === 'PROTOCOL_CONNECTION_LOST') {

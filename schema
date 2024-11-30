@@ -73,6 +73,29 @@ CREATE TABLE WorkingHours (
   FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
+CREATE TABLE clients (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    ref VARCHAR(255),
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    phone VARCHAR(20) NOT NULL,
+    company VARCHAR(255),
+    address TEXT,
+    district VARCHAR(100),
+    state VARCHAR(100),
+    pincode VARCHAR(10),
+    taxId VARCHAR(50),
+    paymentTerms VARCHAR(50),
+    bankAccount VARCHAR(50),
+    creditLimit DECIMAL(10, 2),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+
+
+
+
 -- to get report
 SELECT 
   t.title AS task_title, 

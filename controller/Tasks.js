@@ -8,9 +8,12 @@ const cloudinary = require('cloudinary');
 const multer = require('multer');
 const { ref, uploadBytes, getDownloadURL } = require('firebase/storage');
 const CryptoJS = require('crypto-js');
+const cron = require('node-cron');
+const nodemailer = require('nodemailer');
+
+
 
 // const upload =require('./utils/fileFilter');
-
 
 
 // router.post('/createe', upload.array('assets', 10), async (req, res) => {
@@ -255,55 +258,10 @@ const CryptoJS = require('crypto-js');
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-const nodemailer = require('nodemailer');
-
-router.post('/create',async (req, res) => {
-// router.post('/create', upload.array('assets', 10), async (req, res) => {
+router.post('/createjson',async (req, res) => {
   try {
-    const { assigned_to, priority, stage, taskDate, title, time_alloted } = req.body;
-    // const files = req.files;
+    const { assigned_to, priority, stage, taskDate, title, time_alloted, recurrence_type, recurrence_interval, recurrence_end } = req.body;
 
-    // console.log('Uploaded Files:', files);
-
-    let results = [];
-
-    // if (files && files.length > 0) {
-    //   results = await Promise.all(
-    //     files.map(async (file) => {
-    //       try {
-    //         console.log('Before Cloudinary Upload');
-    //         const result = await cloudinary.uploader.upload(file.path);
-    //         console.log('File uploaded to Cloudinary:', result);
-    //         return { url: result.secure_url, public_id: result.public_id };
-    //       } catch (uploadError) {
-    //         console.error('Error uploading file to Cloudinary:', uploadError);
-    //       }
-    //     })
-    //   );
-    // } else {
-    //   console.log('No files uploaded.');
-    // }
 
     const createdAt = new Date().toISOString();
     const updatedAt = createdAt;
@@ -326,15 +284,17 @@ router.post('/create',async (req, res) => {
         }
 
         const insertTaskQuery = `
-          INSERT INTO tasks (title, stage, taskDate, priority, createdAt, updatedAt, time_alloted) 
-          VALUES (?, ?, ?, ?, ?,?, ?)`;
+          INSERT INTO tasks (title, stage, taskDate, priority, createdAt, recurrence_type, recurrence_interval, recurrence_end, updatedAt, time_alloted) 
+          VALUES (?, ?, ?, ?, ?,?, ?,?,?,?)`;
         // const insertTaskQuery = `
         //   INSERT INTO tasks (title, stage, taskDate, priority, createdAt, updatedAt, assets, time_alloted) 
         //   VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
 
         connection.query(
           insertTaskQuery,
-          [title, stage, taskDate, priority, createdAt, updatedAt, time_alloted],
+          [title, stage, taskDate, priority, createdAt, updatedAt, time_alloted,recurrence_type || null, 
+            recurrence_interval || null, 
+            recurrence_end || null,],
           // [title, stage, taskDate, priority, createdAt, updatedAt, JSON.stringify(results), time_alloted],
           (err, result) => {
             if (err) {
@@ -411,12 +371,6 @@ router.post('/create',async (req, res) => {
         Don't forget to complete the task on time!
       </p>
 
-      <div style="margin-top: 30px;">
-        <img 
-          src="https://st2.depositphotos.com/1026266/44401/i/450/depositphotos_444018552-stock-photo-hand-drawing-education-concept.jpg" 
-          alt="Company Logo" 
-          style="width: 100px; height: auto; display: block; margin: 0 auto;" />
-      </div>
     </div>
   `,
 };
@@ -451,9 +405,6 @@ router.post('/create',async (req, res) => {
     return res.status(500).send('Error in file upload process');
   }
 });
-
-
-
 
 
 
@@ -531,15 +482,27 @@ router.get("/gettaskss", (req, res) => {
   `;
 
   // If the user is not an admin, restrict the query to tasks where the user is assigned
-  if (parseInt(isAdmin, 10) !== 1) {
-      query += ` WHERE t.id IN (
-          SELECT task_id FROM TaskAssignments WHERE user_id = ?
-      )`;
-  }
+  // if (parseInt(isAdmin, 10) !== 1) {
+  //     query += ` WHERE t.id IN (
+  //         SELECT task_id FROM TaskAssignments WHERE user_id = ?
+  //     )`;
+  // }
 
-  query += ` ORDER BY t.id;`;
+  // query += ` ORDER BY t.id;`;
 
-  const queryParams = parseInt(isAdmin, 10) === 1 ? [] : [userId];
+  // const queryParams = parseInt(isAdmin, 10) === 1 ? [] : [userId];
+
+
+  if (![1, 2].includes(parseInt(isAdmin, 10))) {
+    query += ` WHERE t.id IN (
+        SELECT task_id FROM TaskAssignments WHERE user_id = ?
+    )`;
+}
+
+query += ` ORDER BY t.id;`;
+
+const queryParams = [1, 2].includes(parseInt(isAdmin, 10)) ? [] : [userId];
+
 
   db.query(query, queryParams, (err, results) => {
       if (err) {
@@ -799,16 +762,6 @@ router.get('/total-working-hours/:task_id', async (req, res) => {
 });
 
 
-// SELECT 
-//     task_id,
-//     SEC_TO_TIME(SUM(TIME_TO_SEC(TIMEDIFF(end_time, start_time)))) AS total_time_spent
-// FROM 
-//     WorkingHours
-// WHERE 
-//     task_id = ?
-// GROUP BY 
-//     task_id;
-
 
 router.post('/working-hours', async (req, res) => {
   try {
@@ -1012,6 +965,185 @@ router.post('/taskhours', async (req, res) => {
 });
 
 
+// router.put('/updatetask/:taskId', async (req, res) => {
+//   const { taskId } = req.params;  // Get taskId from the URL
+//   const { status } = req.body;    // Get new status from the request body
+  
+
+//   try {
+//     // Get a connection from the connection pool
+//     db.getConnection((err, connection) => {
+//       if (err) {
+//         console.error('Error getting database connection:', err);
+//         return res.status(500).send('Database connection error');
+//       }
+
+//       // Begin transaction
+//       connection.beginTransaction((err) => {
+//         if (err) {
+//           connection.release();
+//           console.error('Error starting transaction:', err);
+//           return res.status(500).send('Error starting transaction');
+//         }
+
+//         const updateStatusQuery = `UPDATE tasks SET status = ?, updatedAt = ? WHERE id = ?`;
+
+//         connection.query(
+//           updateStatusQuery,
+//           [status, new Date(), taskId],  // Update status and set updatedAt to the current date
+//           (err, result) => {
+//             if (err) {
+//               return connection.rollback(() => {
+//                 connection.release();
+//                 console.error('Error updating task status:', err);
+//                 return res.status(500).send('Error updating task status');
+//               });
+//             }
+
+//             // Commit transaction
+//             connection.commit((err) => {
+//               if (err) {
+//                 return connection.rollback(() => {
+//                   connection.release();
+//                   console.error('Error committing transaction:', err);
+//                   return res.status(500).send('Error committing transaction');
+//                 });
+//               }
+
+//               // Release the connection back to the pool
+//               connection.release();
+//               res.status(200).send('Task status updated successfully');
+//             });
+//           }
+//         );
+//       });
+//     });
+//   } catch (error) {
+//     console.error('Error updating task status:', error);
+//     res.status(500).send('Server error');
+//   }
+// });
+
+
+
+// router.put('/updatetask/:taskId', async (req, res) => {
+//   const { taskId } = req.params; 
+//   const { status } = req.body; 
+  
+//   if (!status) {
+//     return res.status(400).send('Status is required');
+//   }
+
+//   try {
+//     const updateStatusQuery = `UPDATE tasks SET status = ?, updatedAt = ? WHERE id = ?`;
+
+//     db.query(
+//       updateStatusQuery,
+//       [status, new Date(), taskId],
+//       (err, result) => {
+//         if (err) {
+//           console.error('Error updating task status:', err);
+//           return res.status(500).send('Error updating task status');
+//         }
+
+//         if (result.affectedRows === 0) {
+//           return res.status(404).send('Task not found');
+//         }
+
+//         // Successfully updated the task
+//         res.status(200).send('Task status updated successfully');
+//       }
+//     );
+//   } catch (error) {
+//     console.error('Error updating task status:', error);
+//     res.status(500).send('Server error');
+//   }
+// });
+
+
+router.put('/updatetask/:taskId', async (req, res) => {
+  const { taskId } = req.params;  
+  const { stage } = req.body;   
+console.log(stage);
+
+  try {
+    const updateStatusQuery = `UPDATE tasks SET stage = ?, updatedAt = ? WHERE id = ?`;
+
+    db.query(
+      updateStatusQuery,
+      [stage, new Date(), taskId],
+      (err, result) => {
+        if (err) {
+          console.error('Error updating task status:', err);
+          return res.status(500).send('Error updating task status');
+        }
+
+        if (result.affectedRows === 0) {
+          return res.status(404).send('Task not found');
+        }
+
+        const assignedUsersQuery = `
+          SELECT u.email 
+          FROM users u
+          JOIN TaskAssignments ta ON u._id = ta.user_id
+          WHERE ta.task_id = ?
+        `;
+
+        db.query(assignedUsersQuery, [taskId], async (err, userResults) => {
+          if (err) {
+            console.error('Error fetching assigned user emails:', err);
+            return res.status(500).send('Error fetching assigned user emails');
+          }
+
+          const emails = userResults.map(user => user.email);
+          if (emails.length === 0) {
+            return res.status(200).send('Task status updated successfully but no assigned users to notify.');
+          }
+          const transporter = nodemailer.createTransport({
+            service: 'gmail',  
+            auth: {
+              user: process.env.EMAIL_USER, 
+              pass: process.env.EMAIL_PASS, 
+            },
+          });
+
+          const mailOptions = {
+            from: process.env.EMAIL_USER,
+            to: emails,
+            subject: `Task #${taskId} Status Updated`,
+            html: `
+              <div style="font-family: Arial, sans-serif; color: #333;">
+                <h1 style="color: #1a73e8;">Task Status Updated!</h1>
+                <p style="font-size: 18px;">Dear Team,</p>
+                <p style="font-size: 16px;">
+                  The task with ID <strong style="color: #1a73e8;">${taskId}</strong> has been updated to: <strong>${stage}</strong>.
+                  Please check your dashboard for more details.
+                </p>
+                <p style="font-size: 16px; color: #1a73e8;">Stay on track with your task deadlines!</p>
+              </div>
+            `,
+          };
+
+          try {
+            await transporter.sendMail(mailOptions);
+            console.log('Email notifications sent successfully');
+          } catch (mailError) {
+            console.error('Error sending email notifications:', mailError);
+          }
+
+          // Return success response
+          res.status(200).send('Task status updated successfully and notifications sent.');
+        });
+      }
+    );
+  } catch (error) {
+    console.error('Error updating task status:', error);
+    res.status(500).send('Server error');
+  }
+});
+
+
+
 
 
 
@@ -1021,7 +1153,6 @@ router.post('/taskhours', async (req, res) => {
 router.get('/fetchtaskhours', async (req, res) => {
   const { user_id} = req.query;
   if (!user_id) {
-  // if (!user_id || !start_date || !end_date) {
     return res.status(400).json({ error: 'Missing required parameters' });
   }
   try {
@@ -1057,115 +1188,132 @@ router.get('/fetchtaskhours', async (req, res) => {
 
 
 
+router.post('/tasks/:id/complete', async (req, res) => {
+  const { id } = req.params;
+  const taskQuery = `SELECT * FROM tasks WHERE id = ?`;
+  const [tasks] = await db.execute(taskQuery, [id]);
+  
+  if (tasks.length === 0) return res.status(404).json({ message: 'Task not found' });
 
-
-
-
-
-
-
-router.post('/createjson', async (req, res) => {
-  try {
-    const { assigned_to, priority, stage, taskDate, title, time_alloted } = req.body;
-    // const files = req.files;
-
-    // console.log('Uploaded Files:', files);
-
-    let results = [];
-
-    // if (files && files.length > 0) {
-    //   results = await Promise.all(
-    //     files.map(async (file) => {
-    //       try {
-    //         console.log('Before Cloudinary Upload');
-    //         const result = await cloudinary.uploader.upload(file.path);
-    //         console.log('File uploaded to Cloudinary:', result);
-    //         return { url: result.secure_url, public_id: result.public_id };
-    //       } catch (uploadError) {
-    //         console.error('Error uploading file to Cloudinary:', uploadError);
-    //       }
-    //     })
-    //   );
-    // } else {
-    //   console.log('No files uploaded.');
-    // }
-
-    const createdAt = new Date().toISOString();
-    const updatedAt = createdAt;
-
-    if (!title || !stage || !Array.isArray(assigned_to)) {
-      return res.status(400).send('Invalid input');
+  const task = tasks[0];
+  
+  if (task.recurrence_type !== 'none') {
+    let nextDueDate;
+    switch (task.recurrence_type) {
+      case 'daily':
+        nextDueDate = dayjs(task.due_date).add(task.recurrence_interval, 'day');
+        break;
+      case 'weekly':
+        nextDueDate = dayjs(task.due_date).add(task.recurrence_interval, 'week');
+        break;
+      case 'monthly':
+        nextDueDate = dayjs(task.due_date).add(task.recurrence_interval, 'month');
+        break;
     }
+    
+    if (!task.recurrence_end || dayjs(nextDueDate).isBefore(dayjs(task.recurrence_end))) {
+      const insertQuery = `INSERT INTO tasks (title, description, due_date, recurrence_type, recurrence_interval, recurrence_end)
+                           VALUES (?, ?, ?, ?, ?, ?)`;
+      await db.execute(insertQuery, [task.title, task.description, nextDueDate.format('YYYY-MM-DD HH:mm:ss'), task.recurrence_type, task.recurrence_interval, task.recurrence_end]);
+    }
+  }
+  
+  res.json({ message: 'Task completed, recurrence handled if applicable' });
+});
 
-    db.getConnection((err, connection) => {
+
+
+
+
+async function scheduleRecurringTasks() {
+  try {
+    const now = new Date();
+
+    const fetchTasksQuery = `
+      SELECT * FROM tasks 
+      WHERE recurrence_type IS NOT NULL 
+      AND recurrence_end > ?`; 
+
+    db.query(fetchTasksQuery, [now], (err, tasks) => {
       if (err) {
-        console.error('Error getting database connection:', err);
-        return res.status(500).send('Database connection error');
+        console.error('Error fetching tasks for recurrence:', err);
+        return;
       }
 
-      connection.beginTransaction((err) => {
-        if (err) {
-          connection.release();
-          console.error('Error starting transaction:', err);
-          return res.status(500).send('Error starting transaction');
+      tasks.forEach(task => {
+        const { id, title, stage, taskDate, priority, time_alloted, recurrence_type, recurrence_interval, recurrence_end } = task;
+
+        // Calculate next task date based on recurrence
+        let nextTaskDate;
+        if (recurrence_type === 'daily') {
+          nextTaskDate = new Date(taskDate);
+          nextTaskDate.setDate(nextTaskDate.getDate() + recurrence_interval);
+        }
+         else if (recurrence_type === 'weekly') {
+          nextTaskDate = new Date(taskDate);
+          nextTaskDate.setDate(nextTaskDate.getDate() + 7 * recurrence_interval);
+        } 
+        else if (recurrence_type === 'monthly') {
+          nextTaskDate = new Date(taskDate);
+          nextTaskDate.setMonth(nextTaskDate.getMonth() + recurrence_interval);
+        }
+
+        if (nextTaskDate > new Date(recurrence_end)) {
+          return;
         }
 
         const insertTaskQuery = `
-          INSERT INTO tasks (title, stage, taskDate, priority, createdAt, updatedAt, time_alloted) 
-          VALUES (?, ?, ?, ?, ?,?, ?)`;
+          INSERT INTO tasks (title, stage, taskDate, priority, createdAt, recurrence_type, recurrence_interval, recurrence_end, updatedAt, time_alloted)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
-        connection.query(
-          insertTaskQuery,
-          [title, stage, taskDate, priority, createdAt, updatedAt, time_alloted],
-          (err, result) => {
+        db.query(insertTaskQuery, [
+          title, stage, nextTaskDate, priority, new Date(), recurrence_type, recurrence_interval, recurrence_end, new Date(), time_alloted
+        ], (err, result) => {
+          if (err) {
+            console.error('Error inserting new recurring task:', err);
+            return;
+          }
+
+          const taskId = result.insertId;
+
+          // Fetch and copy the task assignments to the new task
+          const fetchAssignmentsQuery = `SELECT user_id FROM TaskAssignments WHERE task_id = ?`;
+          db.query(fetchAssignmentsQuery, [id], (err, assignments) => {
+            console.log(assignments);
             if (err) {
-              return connection.rollback(() => {
-                connection.release();
-                console.error('Error inserting task:', err);
-                return res.status(500).send('Error inserting task');
-              });
+              console.error('Error fetching task assignments:', err);
+              return;
             }
 
-            const taskId = result.insertId;
-            const taskAssignments = assigned_to.map(userId => [taskId, userId]);
+            const taskAssignments = assignments.map(assignment => [taskId, assignment.user_id]);
 
-            const insertTaskAssignmentsQuery = `
-              INSERT INTO TaskAssignments (task_id, user_id) VALUES ?`;
+            const insertTaskAssignmentsQuery = `INSERT INTO TaskAssignments (task_id, user_id) VALUES ?`;
 
-            connection.query(
-              insertTaskAssignmentsQuery,
-              [taskAssignments],
-              (err, result) => {
-                if (err) {
-                  return connection.rollback(() => {
-                    connection.release();
-                    console.error('Error inserting task assignments:', err);
-                    return res.status(500).send('Error inserting task assignments');
-                  });
-                }
-
-                connection.commit((err) => {
-                  if (err) {
-                    return connection.rollback(() => {
-                      connection.release();
-                      console.error('Error committing transaction:', err);
-                      return res.status(500).send('Error committing transaction');
-                    });
-                  }
-
-                  connection.release();
-                  res.status(201).send('Task created successfully');
-                });
+            db.query(insertTaskAssignmentsQuery, [taskAssignments], (err) => {
+              if (err) {
+                console.error('Error inserting task assignments for recurring task:', err);
               }
-            );
-          }
-        );
+            });
+          });
+        });
       });
     });
   } catch (error) {
-    console.error('Error in file upload process:', error);
-    return res.status(500).send('Error in file upload process');
+    console.error('Error scheduling recurring tasks:', error);
   }
+}
+
+
+// cron.schedule('0 9 * * *', () => {
+//   console.log('Running task scheduler...');
+//   scheduleRecurringTasks();
+// });
+
+cron.schedule('* * * * *', () => {
+  console.log('Running task scheduler at per min...');
+  scheduleRecurringTasks();
+}, {
+  timezone: "Asia/Kolkata"
 });
 
 

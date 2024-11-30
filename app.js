@@ -31,5 +31,8 @@ app.use('/api/users', StaffUser);
 const tasksCRUD=require(__root + 'controller/Tasks');
 app.use('/api/tasks',tasksCRUD);
 
+const clientsCRUD=require(__root + 'controller/Clients');
+app.use('/api/clients',clientsCRUD);
+
 
 module.exports = app;
