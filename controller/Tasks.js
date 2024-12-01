@@ -14,8 +14,6 @@ const nodemailer = require('nodemailer');
 
 
 // const upload =require('./utils/fileFilter');
-
-
 // router.post('/createe', upload.array('assets', 10), async (req, res) => {
 //   try {
 //     const { assigned_to, priority, stage, taskDate, title, time_alloted } = req.body;
@@ -136,137 +134,15 @@ const nodemailer = require('nodemailer');
 // });
 
 
-
-// router.post('/createe', upload.array('assets', 10), async (req, res) => {
-//   try {
-//     const { assigned_to, priority, stage, taskDate, title, time_alloted } = req.body;
-//     const files = req.files;
-//     console.log('Input:', req.body);
-
-//     let results = [];
-
-//     // Parse assigned_to as an array if it's a string
-//     const assignedToArray = Array.isArray(assigned_to) ? assigned_to : JSON.parse(assigned_to);
-
-//     // Ensure that only images are processed
-//     if (files && files.length > 0) {
-//       results = await Promise.all(
-//         files.map(async (file) => {
-//           try {
-//             console.log('Before Firebase Upload');
-
-//             const storageRef = ref(storage, `assets/${new Date().getTime()}-${file.originalname}`);
-//             await uploadBytes(storageRef, file.buffer);
-//             const downloadURL = await getDownloadURL(storageRef);
-
-//             console.log('File uploaded to Firebase:', downloadURL);
-//             return { url: downloadURL, fileName: file.originalname };
-//           } catch (uploadError) {
-//             console.error('Error uploading file to Firebase:', uploadError);
-//           }
-//         })
-//       );
-//     } else {
-//       console.log('No files uploaded.');
-//     }
-
-//     const createdAt = new Date().toISOString();
-//     const updatedAt = createdAt;
-
-//     // Input validation
-//     if (!title || !stage || !Array.isArray(assignedToArray)) {
-//       return res.status(400).send('Invalid input');
-//     }
-
-//     db.getConnection((err, connection) => {
-//       if (err) {
-//         console.error('Error getting database connection:', err);
-//         return res.status(500).send('Database connection error');
-//       }
-
-//       console.log('Database connection established');
-
-//       connection.beginTransaction((err) => {
-//         if (err) {
-//           connection.release();
-//           console.error('Error starting transaction:', err);
-//           return res.status(500).send('Error starting transaction');
-//         }
-
-//         console.log('Transaction started');
-
-//         const insertTaskQuery = `
-//           INSERT INTO tasks (title, stage, taskDate, priority, createdAt, updatedAt, assets, time_alloted) 
-//           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
-
-//         console.log("Before executing insertTaskQuery");
-
-//         connection.query(
-//           insertTaskQuery,
-//           [title, stage, taskDate, priority, createdAt, updatedAt, JSON.stringify(results), time_alloted],
-//           (err, result) => {
-//             if (err) {
-//               return connection.rollback(() => {
-//                 connection.release();
-//                 console.error('Error inserting task:', err);
-//                 return res.status(500).send('Error inserting task');
-//               });
-//             }
-
-//             const taskId = result.insertId;
-//             const taskAssignments = assignedToArray.map(userId => [taskId, userId]);
-
-//             const insertTaskAssignmentsQuery = `
-//               INSERT INTO TaskAssignments (task_id, user_id) VALUES ?`;
-
-//             connection.query(
-//               insertTaskAssignmentsQuery,
-//               [taskAssignments],
-//               (err, result) => {
-//                 if (err) {
-//                   return connection.rollback(() => {
-//                     connection.release();
-//                     console.error('Error inserting task assignments:', err);
-//                     return res.status(500).send('Error inserting task assignments');
-//                   });
-//                 }
-
-//                 connection.commit((err) => {
-//                   if (err) {
-//                     return connection.rollback(() => {
-//                       connection.release();
-//                       console.error('Error committing transaction:', err);
-//                       return res.status(500).send('Error committing transaction');
-//                     });
-//                   }
-
-//                   connection.release();
-//                   res.status(201).send('Task created successfully');
-//                 });
-//               }
-//             );
-//           }
-//         );
-//       });
-//     });
-
-//   } catch (error) {
-//     console.error('Error in /createe route:', error);
-//     res.status(500).send('Internal server error');
-//   }
-// });
-
-
-
-router.post('/createjson',async (req, res) => {
+router.post('/createjson', async (req, res) => {
   try {
-    const { assigned_to, priority, stage, taskDate, title, time_alloted, recurrence_type, recurrence_interval, recurrence_end } = req.body;
-
+    const { assigned_to, priority, stage, taskDate, title, time_alloted, client_id } = req.body;
 
     const createdAt = new Date().toISOString();
     const updatedAt = createdAt;
 
-    if (!title || !stage || !Array.isArray(assigned_to)) {
+    // Validate input
+    if (!title || !stage || !Array.isArray(assigned_to) || !client_id) {
       return res.status(400).send('Invalid input');
     }
 
@@ -283,19 +159,14 @@ router.post('/createjson',async (req, res) => {
           return res.status(500).send('Error starting transaction');
         }
 
+        // Insert task with client_id
         const insertTaskQuery = `
-          INSERT INTO tasks (title, stage, taskDate, priority, createdAt, recurrence_type, recurrence_interval, recurrence_end, updatedAt, time_alloted) 
-          VALUES (?, ?, ?, ?, ?,?, ?,?,?,?)`;
-        // const insertTaskQuery = `
-        //   INSERT INTO tasks (title, stage, taskDate, priority, createdAt, updatedAt, assets, time_alloted) 
-        //   VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+          INSERT INTO tasks (title, stage, taskDate, priority, createdAt, updatedAt, time_alloted, client_id) 
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
 
         connection.query(
           insertTaskQuery,
-          [title, stage, taskDate, priority, createdAt, updatedAt, time_alloted,recurrence_type || null, 
-            recurrence_interval || null, 
-            recurrence_end || null,],
-          // [title, stage, taskDate, priority, createdAt, updatedAt, JSON.stringify(results), time_alloted],
+          [title, stage, taskDate, priority, createdAt, updatedAt, time_alloted, client_id],
           (err, result) => {
             if (err) {
               return connection.rollback(() => {
@@ -308,6 +179,7 @@ router.post('/createjson',async (req, res) => {
             const taskId = result.insertId;
             const taskAssignments = assigned_to.map(userId => [taskId, userId]);
 
+            // Insert task assignments
             const insertTaskAssignmentsQuery = `
               INSERT INTO TaskAssignments (task_id, user_id) VALUES ?`;
 
@@ -323,9 +195,9 @@ router.post('/createjson',async (req, res) => {
                   });
                 }
 
-                // **Fetch emails of assigned users**
+                // Fetch emails of assigned users
                 const userEmailsQuery = `
-                  SELECT email FROM users WHERE _id IN (?)`;
+                  SELECT email, name FROM users WHERE _id IN (?)`;
 
                 connection.query(userEmailsQuery, [assigned_to], async (err, userResults) => {
                   if (err) {
@@ -337,10 +209,11 @@ router.post('/createjson',async (req, res) => {
                   }
 
                   const emails = userResults.map(user => user.email);
+                  const userNames = userResults.map(user => user.name);
 
-                  // **Send email notifications**
+                  // Send email notifications
                   const transporter = nodemailer.createTransport({
-                    service: 'gmail', // You can use any email service
+                    service: 'gmail',
                     auth: {
                       user: process.env.EMAIL_USER, // Your email
                       pass: process.env.EMAIL_PASS, // Your email password
@@ -350,30 +223,30 @@ router.post('/createjson',async (req, res) => {
                   const mailOptions = {
                     from: process.env.EMAIL_USER,
                     to: emails,
-                    subject: 'New Task Assigned',
+                    subject: `New Task Assigned: ${title}`,
                     html: `
-   <div style="font-family: Arial, sans-serif; color: #333;">
-      <h1 style="color: #1a73e8;">New Task Assigned!</h1>
-      <p style="font-size: 18px;">Dear Team,</p>
-      <p style="font-size: 16px;">
-        You have been assigned a new task: <strong style="color: #1a73e8;">${title}</strong>.
-        Please check your dashboard for more details.
-      </p>
+                      <div style="font-family: Arial, sans-serif; color: #333;">
+                        <h1 style="color: #1a73e8;">New Task Assigned!</h1>
+                        <p style="font-size: 18px;">Dear ${userNames.join(', ')},</p>
+                        <p style="font-size: 16px;">
+                          You have been assigned a new task: <strong style="color: #1a73e8;">${title}</strong>.
+                          Please check your dashboard for more details.
+                        </p>
 
-      <div style="text-align: center; margin: 20px 0;">
-        <img 
-          src="https://img.freepik.com/free-vector/hand-drawn-business-planning-with-task-list_23-2149164275.jpg"
-           alt="Task Assigned" 
-          style="width: 100%; max-width: 400px; height: auto;" />
-      </div>
+                        <div style="text-align: center; margin: 20px 0;">
+                          <img 
+                            src="https://img.freepik.com/free-vector/hand-drawn-business-planning-with-task-list_23-2149164275.jpg"
+                            alt="Task Assigned" 
+                            style="width: 100%; max-width: 400px; height: auto;" />
+                        </div>
 
-      <p style="font-size: 16px; color: #1a73e8;">
-        Don't forget to complete the task on time!
-      </p>
+                        <p style="font-size: 16px; color: #1a73e8;">
+                          Don't forget to complete the task on time!
+                        </p>
+                      </div>
+                    `,
+                  };
 
-    </div>
-  `,
-};
                   try {
                     await transporter.sendMail(mailOptions);
                     console.log('Emails sent successfully');
@@ -401,10 +274,159 @@ router.post('/createjson',async (req, res) => {
       });
     });
   } catch (error) {
-    console.error('Error in file upload process:', error);
-    return res.status(500).send('Error in file upload process');
+    console.error('Error in task creation process:', error);
+    return res.status(500).send('Error in task creation process');
   }
 });
+
+
+
+
+// NO client
+// router.post('/createjson', async (req, res) => {
+//   try {
+//     const { assigned_to, priority, stage, taskDate, title, time_alloted } = req.body;
+
+//     const createdAt = new Date().toISOString();
+//     const updatedAt = createdAt;
+
+//     if (!title || !stage || !Array.isArray(assigned_to)) {
+//       return res.status(400).send('Invalid input');
+//     }
+
+//     db.getConnection((err, connection) => {
+//       if (err) {
+//         console.error('Error getting database connection:', err);
+//         return res.status(500).send('Database connection error');
+//       }
+
+//       connection.beginTransaction((err) => {
+//         if (err) {
+//           connection.release();
+//           console.error('Error starting transaction:', err);
+//           return res.status(500).send('Error starting transaction');
+//         }
+
+//         const insertTaskQuery = `
+//           INSERT INTO tasks (title, stage, taskDate, priority, createdAt, updatedAt, time_alloted) 
+//           VALUES (?, ?, ?, ?, ?, ?, ?)`;
+
+//         connection.query(
+//           insertTaskQuery,
+//           [title, stage, taskDate, priority, createdAt, updatedAt, time_alloted],
+//           (err, result) => {
+//             if (err) {
+//               return connection.rollback(() => {
+//                 connection.release();
+//                 console.error('Error inserting task:', err);
+//                 return res.status(500).send('Error inserting task');
+//               });
+//             }
+
+//             const taskId = result.insertId;
+//             const taskAssignments = assigned_to.map(userId => [taskId, userId]);
+
+//             const insertTaskAssignmentsQuery = `
+//               INSERT INTO TaskAssignments (task_id, user_id) VALUES ?`;
+
+//             connection.query(
+//               insertTaskAssignmentsQuery,
+//               [taskAssignments],
+//               async (err, result) => {
+//                 if (err) {
+//                   return connection.rollback(() => {
+//                     connection.release();
+//                     console.error('Error inserting task assignments:', err);
+//                     return res.status(500).send('Error inserting task assignments');
+//                   });
+//                 }
+
+//                 // **Fetch emails of assigned users**
+//                 const userEmailsQuery = `
+//                   SELECT email, name FROM users WHERE _id IN (?)`;
+
+//                 connection.query(userEmailsQuery, [assigned_to], async (err, userResults) => {
+//                   if (err) {
+//                     return connection.rollback(() => {
+//                       connection.release();
+//                       console.error('Error fetching user emails:', err);
+//                       return res.status(500).send('Error fetching user emails');
+//                     });
+//                   }
+
+//                   const emails = userResults.map(user => user.email);
+//                   const userNames = userResults.map(user => user.name);
+
+//                   // **Send email notifications**
+//                   const transporter = nodemailer.createTransport({
+//                     service: 'gmail',
+//                     auth: {
+//                       user: process.env.EMAIL_USER, // Your email
+//                       pass: process.env.EMAIL_PASS, // Your email passwor
+//                     },
+//                   });
+
+//                   const mailOptions = {
+//                     from: process.env.EMAIL_USER,
+//                     to: emails,
+//                     subject: `New Task Assigned: ${title}`,
+//                     html: `
+//                       <div style="font-family: Arial, sans-serif; color: #333;">
+//                         <h1 style="color: #1a73e8;">New Task Assigned!</h1>
+//                         <p style="font-size: 18px;">Dear ${userNames.join(', ')},</p>
+//                         <p style="font-size: 16px;">
+//                           You have been assigned a new task: <strong style="color: #1a73e8;">${title}</strong>.
+//                           Please check your dashboard for more details.
+//                         </p>
+
+//                         <div style="text-align: center; margin: 20px 0;">
+//                           <img 
+//                             src="https://img.freepik.com/free-vector/hand-drawn-business-planning-with-task-list_23-2149164275.jpg"
+//                             alt="Task Assigned" 
+//                             style="width: 100%; max-width: 400px; height: auto;" />
+//                         </div>
+
+//                         <p style="font-size: 16px; color: #1a73e8;">
+//                           Don't forget to complete the task on time!
+//                         </p>
+//                       </div>
+//                     `,
+//                   };
+
+//                   try {
+//                     await transporter.sendMail(mailOptions);
+//                     console.log('Emails sent successfully');
+//                   } catch (mailError) {
+//                     console.error('Error sending emails:', mailError);
+//                   }
+
+//                   connection.commit((err) => {
+//                     if (err) {
+//                       return connection.rollback(() => {
+//                         connection.release();
+//                         console.error('Error committing transaction:', err);
+//                         return res.status(500).send('Error committing transaction');
+//                       });
+//                     }
+
+//                     connection.release();
+//                     res.status(201).send('Task created and email notifications sent successfully');
+//                   });
+//                 });
+//               }
+//             );
+//           }
+//         );
+//       });
+//     });
+//   } catch (error) {
+//     console.error('Error in task creation process:', error);
+//     return res.status(500).send('Error in task creation process');
+//   }
+// });
+
+
+
 
 
 
@@ -762,7 +784,6 @@ router.get('/total-working-hours/:task_id', async (req, res) => {
 });
 
 
-
 router.post('/working-hours', async (req, res) => {
   try {
     const { task_id, date, start_time, end_time } = req.body;
@@ -963,108 +984,14 @@ router.post('/taskhours', async (req, res) => {
     res.status(500).json({ error: 'Failed to process request' });
   }
 });
-
-
-// router.put('/updatetask/:taskId', async (req, res) => {
-//   const { taskId } = req.params;  // Get taskId from the URL
-//   const { status } = req.body;    // Get new status from the request body
   
 
-//   try {
-//     // Get a connection from the connection pool
-//     db.getConnection((err, connection) => {
-//       if (err) {
-//         console.error('Error getting database connection:', err);
-//         return res.status(500).send('Database connection error');
-//       }
-
-//       // Begin transaction
-//       connection.beginTransaction((err) => {
-//         if (err) {
-//           connection.release();
-//           console.error('Error starting transaction:', err);
-//           return res.status(500).send('Error starting transaction');
-//         }
-
-//         const updateStatusQuery = `UPDATE tasks SET status = ?, updatedAt = ? WHERE id = ?`;
-
-//         connection.query(
-//           updateStatusQuery,
-//           [status, new Date(), taskId],  // Update status and set updatedAt to the current date
-//           (err, result) => {
-//             if (err) {
-//               return connection.rollback(() => {
-//                 connection.release();
-//                 console.error('Error updating task status:', err);
-//                 return res.status(500).send('Error updating task status');
-//               });
-//             }
-
-//             // Commit transaction
-//             connection.commit((err) => {
-//               if (err) {
-//                 return connection.rollback(() => {
-//                   connection.release();
-//                   console.error('Error committing transaction:', err);
-//                   return res.status(500).send('Error committing transaction');
-//                 });
-//               }
-
-//               // Release the connection back to the pool
-//               connection.release();
-//               res.status(200).send('Task status updated successfully');
-//             });
-//           }
-//         );
-//       });
-//     });
-//   } catch (error) {
-//     console.error('Error updating task status:', error);
-//     res.status(500).send('Server error');
-//   }
-// });
-
-
-
-// router.put('/updatetask/:taskId', async (req, res) => {
-//   const { taskId } = req.params; 
-//   const { status } = req.body; 
-  
-//   if (!status) {
-//     return res.status(400).send('Status is required');
-//   }
-
-//   try {
-//     const updateStatusQuery = `UPDATE tasks SET status = ?, updatedAt = ? WHERE id = ?`;
-
-//     db.query(
-//       updateStatusQuery,
-//       [status, new Date(), taskId],
-//       (err, result) => {
-//         if (err) {
-//           console.error('Error updating task status:', err);
-//           return res.status(500).send('Error updating task status');
-//         }
-
-//         if (result.affectedRows === 0) {
-//           return res.status(404).send('Task not found');
-//         }
-
-//         // Successfully updated the task
-//         res.status(200).send('Task status updated successfully');
-//       }
-//     );
-//   } catch (error) {
-//     console.error('Error updating task status:', error);
-//     res.status(500).send('Server error');
-//   }
-// });
 
 
 router.put('/updatetask/:taskId', async (req, res) => {
   const { taskId } = req.params;  
   const { stage } = req.body;   
-console.log(stage);
+  console.log('Updating task stage:', stage);
 
   try {
     const updateStatusQuery = `UPDATE tasks SET stage = ?, updatedAt = ? WHERE id = ?`;
@@ -1075,15 +1002,22 @@ console.log(stage);
       (err, result) => {
         if (err) {
           console.error('Error updating task status:', err);
-          return res.status(500).send('Error updating task status');
+          return res.status(500).json({ 
+            success: false,
+            error: 'Error updating task status',
+            details: err.message 
+          });
         }
 
         if (result.affectedRows === 0) {
-          return res.status(404).send('Task not found');
+          return res.status(404).json({ 
+            success: false,
+            error: 'Task not found' 
+          });
         }
 
         const assignedUsersQuery = `
-          SELECT u.email 
+          SELECT u.email, u.name 
           FROM users u
           JOIN TaskAssignments ta ON u._id = ta.user_id
           WHERE ta.task_id = ?
@@ -1092,13 +1026,28 @@ console.log(stage);
         db.query(assignedUsersQuery, [taskId], async (err, userResults) => {
           if (err) {
             console.error('Error fetching assigned user emails:', err);
-            return res.status(500).send('Error fetching assigned user emails');
+            return res.status(500).json({ 
+              success: false,
+              error: 'Error fetching assigned user emails',
+              details: err.message 
+            });
           }
 
           const emails = userResults.map(user => user.email);
+          const userNames = userResults.map(user => user.name);
+
+          // If no users assigned, just return task update success
           if (emails.length === 0) {
-            return res.status(200).send('Task status updated successfully but no assigned users to notify.');
+            return res.status(200).json({ 
+              success: true,
+              message: 'Task status updated successfully',
+              data: { 
+                taskId, 
+                newStage: stage 
+              }
+            });
           }
+
           const transporter = nodemailer.createTransport({
             service: 'gmail',  
             auth: {
@@ -1114,7 +1063,7 @@ console.log(stage);
             html: `
               <div style="font-family: Arial, sans-serif; color: #333;">
                 <h1 style="color: #1a73e8;">Task Status Updated!</h1>
-                <p style="font-size: 18px;">Dear Team,</p>
+                <p style="font-size: 18px;">Dear ${userNames.join(', ')},</p>
                 <p style="font-size: 16px;">
                   The task with ID <strong style="color: #1a73e8;">${taskId}</strong> has been updated to: <strong>${stage}</strong>.
                   Please check your dashboard for more details.
@@ -1127,23 +1076,43 @@ console.log(stage);
           try {
             await transporter.sendMail(mailOptions);
             console.log('Email notifications sent successfully');
+            
+            // Send success response with task and email notification details
+            res.status(200).json({ 
+              success: true,
+              message: 'Task status updated successfully and notifications sent',
+              data: { 
+                taskId, 
+                newStage: stage,
+                notifiedUsers: userNames
+              }
+            });
           } catch (mailError) {
             console.error('Error sending email notifications:', mailError);
+            
+            // Even if email fails, return task update success
+            res.status(200).json({ 
+              success: true,
+              message: 'Task status updated, but email notifications failed',
+              data: { 
+                taskId, 
+                newStage: stage 
+              },
+              error: mailError.message
+            });
           }
-
-          // Return success response
-          res.status(200).send('Task status updated successfully and notifications sent.');
         });
       }
     );
   } catch (error) {
-    console.error('Error updating task status:', error);
-    res.status(500).send('Server error');
+    console.error('Unexpected error updating task status:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Unexpected server error',
+      details: error.message 
+    });
   }
 });
-
-
-
 
 
 
@@ -1304,17 +1273,12 @@ async function scheduleRecurringTasks() {
 }
 
 
-// cron.schedule('0 9 * * *', () => {
-//   console.log('Running task scheduler...');
+// cron.schedule('* * * * *', () => {
+//   console.log('Running task scheduler at per min...');
 //   scheduleRecurringTasks();
+// }, {
+//   timezone: "Asia/Kolkata"
 // });
-
-cron.schedule('* * * * *', () => {
-  console.log('Running task scheduler at per min...');
-  scheduleRecurringTasks();
-}, {
-  timezone: "Asia/Kolkata"
-});
 
 
 module.exports = router;
