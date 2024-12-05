@@ -35,4 +35,9 @@ const clientsCRUD=require(__root + 'controller/Clients');
 app.use('/api/clients',clientsCRUD);
 
 
+const uploadCRUD=require(__root + 'controller/Uploads');
+app.use('/api/uploads',uploadCRUD);
+
+
+
 module.exports = app;

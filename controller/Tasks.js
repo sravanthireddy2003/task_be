@@ -134,9 +134,572 @@ const nodemailer = require('nodemailer');
 // });
 
 
+// router.post('/createjson', async (req, res) => {
+//   try {
+//     const { assigned_to, priority, stage, taskDate, title, time_alloted, client_id } = req.body;
+
+//     const createdAt = new Date().toISOString();
+//     const updatedAt = createdAt;
+
+//     // Validate input
+//     if (!title || !stage || !Array.isArray(assigned_to) || !client_id) {
+//       return res.status(400).send('Invalid input');
+//     }
+
+//     db.getConnection((err, connection) => {
+//       if (err) {
+//         console.error('Error getting database connection:', err);
+//         return res.status(500).send('Database connection error');
+//       }
+
+//       connection.beginTransaction((err) => {
+//         if (err) {
+//           connection.release();
+//           console.error('Error starting transaction:', err);
+//           return res.status(500).send('Error starting transaction');
+//         }
+
+//         // Insert task with client_id
+//         const insertTaskQuery = `
+//           INSERT INTO tasks (title, stage, taskDate, priority, createdAt, updatedAt, time_alloted, client_id) 
+//           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+
+//         connection.query(
+//           insertTaskQuery,
+//           [title, stage, taskDate, priority, createdAt, updatedAt, time_alloted, client_id],
+//           (err, result) => {
+//             if (err) {
+//               return connection.rollback(() => {
+//                 connection.release();
+//                 console.error('Error inserting task:', err);
+//                 return res.status(500).send('Error inserting task');
+//               });
+//             }
+
+//             const taskId = result.insertId;
+//             const taskAssignments = assigned_to.map(userId => [taskId, userId]);
+
+//             // Insert task assignments
+//             const insertTaskAssignmentsQuery = `
+//               INSERT INTO TaskAssignments (task_id, user_id) VALUES ?`;
+
+//             connection.query(
+//               insertTaskAssignmentsQuery,
+//               [taskAssignments],
+//               async (err, result) => {
+//                 if (err) {
+//                   return connection.rollback(() => {
+//                     connection.release();
+//                     console.error('Error inserting task assignments:', err);
+//                     return res.status(500).send('Error inserting task assignments');
+//                   });
+//                 }
+
+//                 // Fetch emails of assigned users
+//                 const userEmailsQuery = `
+//                   SELECT email, name FROM users WHERE _id IN (?)`;
+
+//                 connection.query(userEmailsQuery, [assigned_to], async (err, userResults) => {
+//                   if (err) {
+//                     return connection.rollback(() => {
+//                       connection.release();
+//                       console.error('Error fetching user emails:', err);
+//                       return res.status(500).send('Error fetching user emails');
+//                     });
+//                   }
+
+//                   const emails = userResults.map(user => user.email);
+//                   const userNames = userResults.map(user => user.name);
+
+//                   // Send email notifications
+//                   const transporter = nodemailer.createTransport({
+//                     service: 'gmail',
+//                     auth: {
+//                       user: process.env.EMAIL_USER, // Your email
+//                       pass: process.env.EMAIL_PASS, // Your email password
+//                     },
+//                   });
+
+//                   const mailOptions = {
+//                     from: process.env.EMAIL_USER,
+//                     to: emails,
+//                     subject: `New Task Assigned: ${title}`,
+//                     html: `
+//                       <div style="font-family: Arial, sans-serif; color: #333;">
+//                         <h1 style="color: #1a73e8;">New Task Assigned!</h1>
+//                         <p style="font-size: 18px;">Dear ${userNames.join(', ')},</p>
+//                         <p style="font-size: 16px;">
+//                           You have been assigned a new task: <strong style="color: #1a73e8;">${title}</strong>.
+//                           Please check your dashboard for more details.
+//                         </p>
+
+//                         <div style="text-align: center; margin: 20px 0;">
+//                           <img 
+//                             src="https://img.freepik.com/free-vector/hand-drawn-business-planning-with-task-list_23-2149164275.jpg"
+//                             alt="Task Assigned" 
+//                             style="width: 100%; max-width: 400px; height: auto;" />
+//                         </div>
+
+//                         <p style="font-size: 16px; color: #1a73e8;">
+//                           Don't forget to complete the task on time!
+//                         </p>
+//                       </div>
+//                     `,
+//                   };
+
+//                   try {
+//                     await transporter.sendMail(mailOptions);
+//                     console.log('Emails sent successfully');
+//                   } catch (mailError) {
+//                     console.error('Error sending emails:', mailError);
+//                   }
+
+//                   connection.commit((err) => {
+//                     if (err) {
+//                       return connection.rollback(() => {
+//                         connection.release();
+//                         console.error('Error committing transaction:', err);
+//                         return res.status(500).send('Error committing transaction');
+//                       });
+//                     }
+
+//                     connection.release();
+//                     res.status(201).send('Task created and email notifications sent successfully');
+//                   });
+//                 });
+//               }
+//             );
+//           }
+//         );
+//       });
+//     });
+//   } catch (error) {
+//     console.error('Error in task creation process:', error);
+//     return res.status(500).send('Error in task creation process');
+//   }
+// });
+
+
+
+// Priority adjustment gold
+// router.post('/createjson', async (req, res) => {
+//   try {
+//     const { assigned_to, priority, stage, taskDate, title, time_alloted, client_id } = req.body;
+
+//     const createdAt = new Date().toISOString();
+//     const updatedAt = createdAt;
+
+//     // Validate input
+//     if (!title || !stage || !Array.isArray(assigned_to) || !client_id) {
+//       return res.status(400).send('Invalid input');
+//     }
+
+//     db.getConnection((err, connection) => {
+//       if (err) {
+//         console.error('Error getting database connection:', err);
+//         return res.status(500).send('Database connection error');
+//       }
+
+//       connection.beginTransaction((err) => {
+//         if (err) {
+//           connection.release();
+//           console.error('Error starting transaction:', err);
+//           return res.status(500).send('Error starting transaction');
+//         }
+
+//         // First, check if a HIGH priority task already exists for this client
+//         const checkHighPriorityQuery = `
+//           SELECT COUNT(*) as highPriorityCount 
+//           FROM tasks 
+//           WHERE client_id = ? AND priority = 'HIGH'
+//         `;
+
+//         connection.query(checkHighPriorityQuery, [client_id], (checkErr, checkResults) => {
+//           if (checkErr) {
+//             return connection.rollback(() => {
+//               connection.release();
+//               console.error('Error checking high priority tasks:', checkErr);
+//               return res.status(500).send('Error checking existing tasks');
+//             });
+//           }
+
+//           const highPriorityCount = checkResults[0].highPriorityCount;
+//           let finalPriority = priority;
+
+//           // If a new HIGH priority task is being added and a HIGH priority task already exists
+//           if (priority === 'HIGH' && highPriorityCount > 0) {
+//             // Change existing HIGH priority task to MEDIUM
+//             const updateExistingTaskQuery = `
+//               UPDATE tasks 
+//               SET priority = 'MEDIUM', updatedAt = ?
+//               WHERE client_id = ? AND priority = 'HIGH'
+//             `;
+
+//             connection.query(
+//               updateExistingTaskQuery, 
+//               [updatedAt, client_id], 
+//               (updateErr, updateResult) => {
+//                 if (updateErr) {
+//                   return connection.rollback(() => {
+//                     connection.release();
+//                     console.error('Error updating existing high priority task:', updateErr);
+//                     return res.status(500).send('Error managing task priorities');
+//                   });
+//                 }
+
+//                 // Proceed with task insertion with the modified priority logic
+//                 continueTaskCreation(connection, req.body, createdAt, updatedAt, 'HIGH', res);
+//               }
+//             );
+//           } else {
+//             // No existing high priority task or new task is not high priority
+//             continueTaskCreation(connection, req.body, createdAt, updatedAt, priority, res);
+//           }
+//         });
+//       });
+//     });
+//   } catch (error) {
+//     console.error('Error in task creation process:', error);
+//     return res.status(500).send('Error in task creation process');
+//   }
+// });
+
+// // Extracted function to continue task creation process
+// function continueTaskCreation(connection, body, createdAt, updatedAt, finalPriority, res) {
+//   const { assigned_to, stage, taskDate, title, time_alloted, client_id } = body;
+
+//   // Insert task with client_id and potentially modified priority
+//   const insertTaskQuery = `
+//     INSERT INTO tasks (title, stage, taskDate, priority, createdAt, updatedAt, time_alloted, client_id) 
+//     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+
+//   connection.query(
+//     insertTaskQuery,
+//     [title, stage, taskDate, finalPriority, createdAt, updatedAt, time_alloted, client_id],
+//     (err, result) => {
+//       if (err) {
+//         return connection.rollback(() => {
+//           connection.release();
+//           console.error('Error inserting task:', err);
+//           return res.status(500).send('Error inserting task');
+//         });
+//       }
+
+//       const taskId = result.insertId;
+//       const taskAssignments = assigned_to.map(userId => [taskId, userId]);
+
+//       // Insert task assignments
+//       const insertTaskAssignmentsQuery = `
+//         INSERT INTO TaskAssignments (task_id, user_id) VALUES ?`;
+
+//       connection.query(
+//         insertTaskAssignmentsQuery,
+//         [taskAssignments],
+//         async (err, result) => {
+//           if (err) {
+//             return connection.rollback(() => {
+//               connection.release();
+//               console.error('Error inserting task assignments:', err);
+//               return res.status(500).send('Error inserting task assignments');
+//             });
+//           }
+
+//           // Fetch emails of assigned users
+//           const userEmailsQuery = `
+//             SELECT email, name FROM users WHERE _id IN (?)`;
+
+//           connection.query(userEmailsQuery, [assigned_to], async (err, userResults) => {
+//             if (err) {
+//               return connection.rollback(() => {
+//                 connection.release();
+//                 console.error('Error fetching user emails:', err);
+//                 return res.status(500).send('Error fetching user emails');
+//               });
+//             }
+
+//             const emails = userResults.map(user => user.email);
+//             const userNames = userResults.map(user => user.name);
+
+//             // Send email notifications (same as original code)
+//             const transporter = nodemailer.createTransport({
+//               service: 'gmail',
+//               auth: {
+//                 user: process.env.EMAIL_USER,
+//                 pass: process.env.EMAIL_PASS,
+//               },
+//             });
+
+//             const mailOptions = {
+//               from: process.env.EMAIL_USER,
+//               to: emails,
+//               subject: `New Task Assigned: ${title}`,
+//               html: `
+//                 <div style="font-family: Arial, sans-serif; color: #333;">
+//                   <h1 style="color: #1a73e8;">New Task Assigned!</h1>
+//                   <p style="font-size: 18px;">Dear ${userNames.join(', ')},</p>
+//                   <p style="font-size: 16px;">
+//                     You have been assigned a new task: <strong style="color: #1a73e8;">${title}</strong>.
+//                     ${finalPriority !== body.priority ? `(Priority adjusted to ${finalPriority})` : ''}
+//                     Please check your dashboard for more details.
+//                   </p>
+
+//                   <div style="text-align: center; margin: 20px 0;">
+//                     <img 
+//                       src="https://img.freepik.com/free-vector/hand-drawn-business-planning-with-task-list_23-2149164275.jpg"
+//                       alt="Task Assigned" 
+//                       style="width: 100%; max-width: 400px; height: auto;" />
+//                   </div>
+
+//                   <p style="font-size: 16px; color: #1a73e8;">
+//                     Don't forget to complete the task on time!
+//                   </p>
+//                 </div>
+//               `,
+//             };
+
+//             try {
+//               await transporter.sendMail(mailOptions);
+//               console.log('Emails sent successfully');
+//             } catch (mailError) {
+//               console.error('Error sending emails:', mailError);
+//             }
+
+//             connection.commit((err) => {
+//               if (err) {
+//                 return connection.rollback(() => {
+//                   connection.release();
+//                   console.error('Error committing transaction:', err);
+//                   return res.status(500).send('Error committing transaction');
+//                 });
+//               }
+
+//               connection.release();
+//               res.status(201).send('Task created and email notifications sent successfully');
+//             });
+//           });
+//         }
+//       );
+//     }
+//   );
+// } 
+
+// priority updated with mail
+// router.post('/createjson', async (req, res) => {
+//   try {
+//     const { assigned_to, priority, stage, taskDate, title, description, time_alloted, client_id } = req.body;
+
+//     const createdAt = new Date().toISOString();
+//     const updatedAt = createdAt;
+
+//     // Validate input
+//     if (!title || !stage || !Array.isArray(assigned_to) || !client_id) {
+//       return res.status(400).send('Invalid input');
+//     }
+
+//     db.getConnection((err, connection) => {
+//       if (err) {
+//         console.error('Error getting database connection:', err);
+//         return res.status(500).send('Database connection error');
+//       }
+
+//       connection.beginTransaction((err) => {
+//         if (err) {
+//           connection.release();
+//           console.error('Error starting transaction:', err);
+//           return res.status(500).send('Error starting transaction');
+//         }
+
+//         // First, check if a HIGH priority task already exists for this client
+//         const checkHighPriorityQuery = `
+//           SELECT COUNT(*) as highPriorityCount 
+//           FROM tasks 
+//           WHERE client_id = ? AND priority = 'HIGH'
+//         `;
+
+//         connection.query(checkHighPriorityQuery, [client_id], (checkErr, checkResults) => {
+//           if (checkErr) {
+//             return connection.rollback(() => {
+//               connection.release();
+//               console.error('Error checking high priority tasks:', checkErr);
+//               return res.status(500).send('Error checking existing tasks');
+//             });
+//           }
+
+//           const highPriorityCount = checkResults[0].highPriorityCount;
+//           let finalPriority = priority;
+
+//           // If a new HIGH priority task is being added and a HIGH priority task already exists
+//           if (priority === 'HIGH' && highPriorityCount > 0) {
+//             // Change existing HIGH priority task to MEDIUM
+//             const updateExistingTaskQuery = `
+//               UPDATE tasks 
+//               SET priority = 'MEDIUM', updatedAt = ?
+//               WHERE client_id = ? AND priority = 'HIGH'
+//             `;
+
+//             connection.query(
+//               updateExistingTaskQuery, 
+//               [updatedAt, client_id], 
+//               (updateErr, updateResult) => {
+//                 if (updateErr) {
+//                   return connection.rollback(() => {
+//                     connection.release();
+//                     console.error('Error updating existing high priority task:', updateErr);
+//                     return res.status(500).send('Error managing task priorities');
+//                   });
+//                 }
+
+//                 // Proceed with task insertion with the modified priority logic
+//                 continueTaskCreation(connection, req.body, createdAt, updatedAt, 'HIGH', res);
+//               }
+//             );
+//           } else {
+//             // No existing high priority task or new task is not high priority
+//             continueTaskCreation(connection, req.body, createdAt, updatedAt, priority, res);
+//           }
+//         });
+//       });
+//     });
+//   } catch (error) {
+//     console.error('Error in task creation process:', error);
+//     return res.status(500).send('Error in task creation process');
+//   }
+// });
+
+// // Extracted function to continue task creation process
+// function continueTaskCreation(connection, body, createdAt, updatedAt, finalPriority, res) {
+//   const { assigned_to, stage, taskDate, title, description, time_alloted, client_id } = body;
+
+//   // Insert task with client_id and potentially modified priority, added description
+//   const insertTaskQuery = `
+//     INSERT INTO tasks (title, description, stage, taskDate, priority, createdAt, updatedAt, time_alloted, client_id) 
+//     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+//   connection.query(
+//     insertTaskQuery,
+//     [title, description, stage, taskDate, finalPriority, createdAt, updatedAt, time_alloted, client_id],
+//     (err, result) => {
+//       if (err) {
+//         return connection.rollback(() => {
+//           connection.release();
+//           console.error('Error inserting task:', err);
+//           return res.status(500).send('Error inserting task');
+//         });
+//       }
+
+//       const taskId = result.insertId;
+//       const taskAssignments = assigned_to.map(userId => [taskId, userId]);
+
+//       // Insert task assignments
+//       const insertTaskAssignmentsQuery = `
+//         INSERT INTO TaskAssignments (task_id, user_id) VALUES ?`;
+
+//       connection.query(
+//         insertTaskAssignmentsQuery,
+//         [taskAssignments],
+//         async (err, result) => {
+//           if (err) {
+//             return connection.rollback(() => {
+//               connection.release();
+//               console.error('Error inserting task assignments:', err);
+//               return res.status(500).send('Error inserting task assignments');
+//             });
+//           }
+
+//           // Fetch emails of assigned users
+//           const userEmailsQuery = `
+//             SELECT email, name FROM users WHERE _id IN (?)`;
+
+//           connection.query(userEmailsQuery, [assigned_to], async (err, userResults) => {
+//             if (err) {
+//               return connection.rollback(() => {
+//                 connection.release();
+//                 console.error('Error fetching user emails:', err);
+//                 return res.status(500).send('Error fetching user emails');
+//               });
+//             }
+
+//             const emails = userResults.map(user => user.email);
+//             const userNames = userResults.map(user => user.name);
+
+//             // Send email notifications
+//             const transporter = nodemailer.createTransport({
+//               service: 'gmail',
+//               auth: {
+//                 user: process.env.EMAIL_USER,
+//                 pass: process.env.EMAIL_PASS,
+//               },
+//             });
+
+//             const mailOptions = {
+//               from: process.env.EMAIL_USER,
+//               to: emails,
+//               subject: `New Task Assigned: ${title}`,
+//               html: `
+//                 <div style="font-family: Arial, sans-serif; color: #333;">
+//                   <h1 style="color: #1a73e8;">New Task Assigned!</h1>
+//                   <p style="font-size: 18px;">Dear ${userNames.join(', ')},</p>
+//                   <p style="font-size: 16px;">
+//                     You have been assigned a new task: <strong style="color: #1a73e8;">${title}</strong>.
+//                     ${finalPriority !== body.priority ? `(Priority adjusted to ${finalPriority})` : ''}
+//                     Please check your dashboard for more details.
+//                   </p>
+
+//                   ${description ? `
+//                   <div style="background-color: #f0f0f0; padding: 15px; border-radius: 5px; margin: 10px 0;">
+//                     <h3 style="color: #1a73e8;">Task Description:</h3>
+//                     <p style="font-size: 16px;">${description}</p>
+//                   </div>
+//                   ` : ''}
+
+//                   <div style="text-align: center; margin: 20px 0;">
+//                     <img 
+//                       src="https://img.freepik.com/free-vector/hand-drawn-business-planning-with-task-list_23-2149164275.jpg"
+//                       alt="Task Assigned" 
+//                       style="width: 100%; max-width: 400px; height: auto;" />
+//                   </div>
+
+//                   <p style="font-size: 16px; color: #1a73e8;">
+//                     Don't forget to complete the task on time!
+//                   </p>
+//                 </div>
+//               `,
+//             };
+
+//             try {
+//               await transporter.sendMail(mailOptions);
+//               console.log('Emails sent successfully');
+//             } catch (mailError) {
+//               console.error('Error sending emails:', mailError);
+//             }
+
+//             connection.commit((err) => {
+//               if (err) {
+//                 return connection.rollback(() => {
+//                   connection.release();
+//                   console.error('Error committing transaction:', err);
+//                   return res.status(500).send('Error committing transaction');
+//                 });
+//               }
+
+//               connection.release();
+//               res.status(201).send('Task created and email notifications sent successfully');
+//             });
+//           });
+//         }
+//       );
+//     }
+//   );
+// }
+
+
+
+
+
+// updateing tasktime for old task
 router.post('/createjson', async (req, res) => {
   try {
-    const { assigned_to, priority, stage, taskDate, title, time_alloted, client_id } = req.body;
+    const { assigned_to, priority, stage, taskDate, title, description, time_alloted, client_id } = req.body;
 
     const createdAt = new Date().toISOString();
     const updatedAt = createdAt;
@@ -159,118 +722,80 @@ router.post('/createjson', async (req, res) => {
           return res.status(500).send('Error starting transaction');
         }
 
-        // Insert task with client_id
-        const insertTaskQuery = `
-          INSERT INTO tasks (title, stage, taskDate, priority, createdAt, updatedAt, time_alloted, client_id) 
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+        // First, check if a HIGH priority task already exists for this client
+        const checkHighPriorityQuery = `
+          SELECT COUNT(*) as highPriorityCount, priority as existingPriority, taskDate as existingTaskDate 
+          FROM tasks 
+          WHERE client_id = ? AND priority = 'HIGH'
+        `;
 
-        connection.query(
-          insertTaskQuery,
-          [title, stage, taskDate, priority, createdAt, updatedAt, time_alloted, client_id],
-          (err, result) => {
-            if (err) {
-              return connection.rollback(() => {
-                connection.release();
-                console.error('Error inserting task:', err);
-                return res.status(500).send('Error inserting task');
-              });
+        connection.query(checkHighPriorityQuery, [client_id], (checkErr, checkResults) => {
+          if (checkErr) {
+            return connection.rollback(() => {
+              connection.release();
+              console.error('Error checking high priority tasks:', checkErr);
+              return res.status(500).send('Error checking existing tasks');
+            });
+          }
+
+          const highPriorityCount = checkResults[0].highPriorityCount;
+          let finalPriority = priority;
+          let finalTaskDate = taskDate;
+
+          // Priority adjustment logic with task date calculation
+          if (priority === 'HIGH' && highPriorityCount > 0) {
+            // Calculate new task date based on priority change
+            const existingTaskDate = new Date(checkResults[0].existingTaskDate);
+            const currentDate = new Date();
+            const daysDifference = Math.ceil((existingTaskDate - currentDate) / (1000 * 60 * 60 * 24));
+
+            // Adjust task date based on priority change
+            // Logic: HIGH to MEDIUM adds more days, HIGH to LOW adds even more days
+            let dateAdjustmentDays = 0;
+            if (checkResults[0].existingPriority === 'LOW') {
+              dateAdjustmentDays = Math.ceil(daysDifference * 1.5); // Add 50% more days
+            } else if (checkResults[0].existingPriority === 'MEDIUM') {
+              dateAdjustmentDays = Math.ceil(daysDifference * 1.2); // Add 20% more days
             }
 
-            const taskId = result.insertId;
-            const taskAssignments = assigned_to.map(userId => [taskId, userId]);
+            finalTaskDate = new Date(existingTaskDate);
+            finalTaskDate.setDate(finalTaskDate.getDate() + dateAdjustmentDays);
 
-            // Insert task assignments
-            const insertTaskAssignmentsQuery = `
-              INSERT INTO TaskAssignments (task_id, user_id) VALUES ?`;
+            // Update existing HIGH priority task to MEDIUM
+            const updateExistingTaskQuery = `
+              UPDATE tasks 
+              SET priority = 'MEDIUM', updatedAt = ?, taskDate = ?
+              WHERE client_id = ? AND priority = 'HIGH'
+            `;
 
             connection.query(
-              insertTaskAssignmentsQuery,
-              [taskAssignments],
-              async (err, result) => {
-                if (err) {
+              updateExistingTaskQuery, 
+              [updatedAt, finalTaskDate.toISOString(), client_id], 
+              (updateErr, updateResult) => {
+                if (updateErr) {
                   return connection.rollback(() => {
                     connection.release();
-                    console.error('Error inserting task assignments:', err);
-                    return res.status(500).send('Error inserting task assignments');
+                    console.error('Error updating existing high priority task:', updateErr);
+                    return res.status(500).send('Error managing task priorities');
                   });
                 }
 
-                // Fetch emails of assigned users
-                const userEmailsQuery = `
-                  SELECT email, name FROM users WHERE _id IN (?)`;
-
-                connection.query(userEmailsQuery, [assigned_to], async (err, userResults) => {
-                  if (err) {
-                    return connection.rollback(() => {
-                      connection.release();
-                      console.error('Error fetching user emails:', err);
-                      return res.status(500).send('Error fetching user emails');
-                    });
-                  }
-
-                  const emails = userResults.map(user => user.email);
-                  const userNames = userResults.map(user => user.name);
-
-                  // Send email notifications
-                  const transporter = nodemailer.createTransport({
-                    service: 'gmail',
-                    auth: {
-                      user: process.env.EMAIL_USER, // Your email
-                      pass: process.env.EMAIL_PASS, // Your email password
-                    },
-                  });
-
-                  const mailOptions = {
-                    from: process.env.EMAIL_USER,
-                    to: emails,
-                    subject: `New Task Assigned: ${title}`,
-                    html: `
-                      <div style="font-family: Arial, sans-serif; color: #333;">
-                        <h1 style="color: #1a73e8;">New Task Assigned!</h1>
-                        <p style="font-size: 18px;">Dear ${userNames.join(', ')},</p>
-                        <p style="font-size: 16px;">
-                          You have been assigned a new task: <strong style="color: #1a73e8;">${title}</strong>.
-                          Please check your dashboard for more details.
-                        </p>
-
-                        <div style="text-align: center; margin: 20px 0;">
-                          <img 
-                            src="https://img.freepik.com/free-vector/hand-drawn-business-planning-with-task-list_23-2149164275.jpg"
-                            alt="Task Assigned" 
-                            style="width: 100%; max-width: 400px; height: auto;" />
-                        </div>
-
-                        <p style="font-size: 16px; color: #1a73e8;">
-                          Don't forget to complete the task on time!
-                        </p>
-                      </div>
-                    `,
-                  };
-
-                  try {
-                    await transporter.sendMail(mailOptions);
-                    console.log('Emails sent successfully');
-                  } catch (mailError) {
-                    console.error('Error sending emails:', mailError);
-                  }
-
-                  connection.commit((err) => {
-                    if (err) {
-                      return connection.rollback(() => {
-                        connection.release();
-                        console.error('Error committing transaction:', err);
-                        return res.status(500).send('Error committing transaction');
-                      });
-                    }
-
-                    connection.release();
-                    res.status(201).send('Task created and email notifications sent successfully');
-                  });
-                });
+                // Proceed with task insertion with the modified priority and task date
+                continueTaskCreation(
+                  connection, 
+                  { ...req.body, taskDate: finalTaskDate.toISOString() }, 
+                  createdAt, 
+                  updatedAt, 
+                  'HIGH', 
+                  res
+                );
               }
             );
+          } else {
+            // No existing high priority task or new task is not high priority
+            continueTaskCreation(connection, req.body, createdAt, updatedAt, priority, res);
           }
-        );
+        });
       });
     });
   } catch (error) {
@@ -278,6 +803,159 @@ router.post('/createjson', async (req, res) => {
     return res.status(500).send('Error in task creation process');
   }
 });
+
+// Extracted function to continue task creation process
+function continueTaskCreation(connection, body, createdAt, updatedAt, finalPriority, res) {
+  const { assigned_to, stage, taskDate, title, description, time_alloted, client_id } = body;
+
+  // Insert task with client_id and potentially modified priority, added description
+  const insertTaskQuery = `
+    INSERT INTO tasks (title, description, stage, taskDate, priority, createdAt, updatedAt, time_alloted, client_id) 
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+  connection.query(
+    insertTaskQuery,
+    [title, description, stage, taskDate, finalPriority, createdAt, updatedAt, time_alloted, client_id],
+    (err, result) => {
+      if (err) {
+        return connection.rollback(() => {
+          connection.release();
+          console.error('Error inserting task:', err);
+          return res.status(500).send('Error inserting task');
+        });
+      }
+
+      const taskId = result.insertId;
+      const taskAssignments = assigned_to.map(userId => [taskId, userId]);
+
+      // Insert task assignments
+      const insertTaskAssignmentsQuery = `
+        INSERT INTO TaskAssignments (task_id, user_id) VALUES ?`;
+
+      connection.query(
+        insertTaskAssignmentsQuery,
+        [taskAssignments],
+        async (err, result) => {
+          if (err) {
+            return connection.rollback(() => {
+              connection.release();
+              console.error('Error inserting task assignments:', err);
+              return res.status(500).send('Error inserting task assignments');
+            });
+          }
+
+          // Fetch emails of assigned users
+          const userEmailsQuery = `
+            SELECT email, name FROM users WHERE _id IN (?)`;
+
+          connection.query(userEmailsQuery, [assigned_to], async (err, userResults) => {
+            if (err) {
+              return connection.rollback(() => {
+                connection.release();
+                console.error('Error fetching user emails:', err);
+                return res.status(500).send('Error fetching user emails');
+              });
+            }
+
+            const emails = userResults.map(user => user.email);
+            const userNames = userResults.map(user => user.name);
+
+            // Send email notifications
+            const transporter = nodemailer.createTransport({
+              service: 'gmail',
+              auth: {
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS,
+              },
+            });
+
+            const mailOptions = {
+              from: process.env.EMAIL_USER,
+              to: emails,
+              subject: `New Task Assigned: ${title}`,
+              html: `
+                <div style="font-family: Arial, sans-serif; color: #333;">
+                  <h1 style="color: #1a73e8;">New Task Assigned!</h1>
+                  <p style="font-size: 18px;">Dear ${userNames.join(', ')},</p>
+                  <p style="font-size: 16px;">
+                    You have been assigned a new task: <strong style="color: #1a73e8;">${title}</strong>.
+                    ${finalPriority !== body.priority ? `(Priority adjusted to ${finalPriority})` : ''}
+                    Please check your dashboard for more details.
+                  </p>
+
+                  ${description ? `
+                  <div style="background-color: #f0f0f0; padding: 15px; border-radius: 5px; margin: 10px 0;">
+                    <h3 style="color: #1a73e8;">Task Description:</h3>
+                    <p style="font-size: 16px;">${description}</p>
+                  </div>
+                  ` : ''}
+
+                  <div style="text-align: center; margin: 20px 0;">
+                    <img 
+                      src="https://img.freepik.com/free-vector/hand-drawn-business-planning-with-task-list_23-2149164275.jpg"
+                      alt="Task Assigned" 
+                      style="width: 100%; max-width: 400px; height: auto;" />
+                  </div>
+
+                  <p style="font-size: 16px; color: #1a73e8;">
+                    Don't forget to complete the task on time!
+                  </p>
+                </div>
+              `,
+            };
+
+            try {
+              await transporter.sendMail(mailOptions);
+              console.log('Emails sent successfully');
+            } catch (mailError) {
+              console.error('Error sending emails:', mailError);
+            }
+
+            connection.commit((err) => {
+              if (err) {
+                return connection.rollback(() => {
+                  connection.release();
+                  console.error('Error committing transaction:', err);
+                  return res.status(500).send('Error committing transaction');
+                });
+              }
+
+              connection.release();
+              res.status(201).send('Task created and email notifications sent successfully');
+            });
+          });
+        }
+      );
+    }
+  );
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -481,12 +1159,95 @@ router.get('/taskdropdownfortaskHrs', async (req, res) => {
 
 
 // for specific User
+// router.get("/gettaskss", (req, res) => {
+//   const { userId, isAdmin } = req.query;
+//   let query = `
+//       SELECT 
+//           t.id AS task_id, 
+//           t.title, 
+//           t.stage, 
+//           t.taskDate, 
+//           t.priority, 
+//           t.createdAt, 
+//           t.updatedAt, 
+//           u._id AS user_id, 
+//           u.name AS user_name, 
+//           u.role AS user_role
+//       FROM 
+//           tasks t
+//       LEFT JOIN 
+//           TaskAssignments ta ON t.id = ta.task_id
+//       LEFT JOIN 
+//           users u ON ta.user_id = u._id
+//   `;
+
+//   // If the user is not an admin, restrict the query to tasks where the user is assigned
+//   // if (parseInt(isAdmin, 10) !== 1) {
+//   //     query += ` WHERE t.id IN (
+//   //         SELECT task_id FROM TaskAssignments WHERE user_id = ?
+//   //     )`;
+//   // }
+
+//   // query += ` ORDER BY t.id;`;
+
+//   // const queryParams = parseInt(isAdmin, 10) === 1 ? [] : [userId];
+
+
+//   if (![1, 2].includes(parseInt(isAdmin, 10))) {
+//     query += ` WHERE t.id IN (
+//         SELECT task_id FROM TaskAssignments WHERE user_id = ?
+//     )`;
+// }
+
+// query += ` ORDER BY t.id;`;
+
+// const queryParams = [1, 2].includes(parseInt(isAdmin, 10)) ? [] : [userId];
+
+
+//   db.query(query, queryParams, (err, results) => {
+//       if (err) {
+//           console.error('Error fetching tasks:', err);
+//           return res.status(500).send('Error fetching tasks');
+//       }
+
+//       const tasks = {};
+//       results.forEach(row => {
+//           if (!tasks[row.task_id]) {
+//               tasks[row.task_id] = {
+//                   task_id: row.task_id,
+//                   title: row.title,
+//                   stage: row.stage,
+//                   taskDate: row.taskDate,
+//                   priority: row.priority,
+//                   createdAt: row.createdAt,
+//                   updatedAt: row.updatedAt,
+//                   assigned_users: []
+//               };
+//           }
+
+//           if (row.user_id) {
+//               tasks[row.task_id].assigned_users.push({
+//                   user_id: row.user_id,
+//                   user_name: row.user_name,
+//                   user_role: row.user_role
+//               });
+//           }
+//       });
+
+//       res.status(200).json(Object.values(tasks));
+//   });
+// });
+
+
+// for all tasks Not-in-Use
+
 router.get("/gettaskss", (req, res) => {
   const { userId, isAdmin } = req.query;
   let query = `
       SELECT 
           t.id AS task_id, 
           t.title, 
+          t.description,
           t.stage, 
           t.taskDate, 
           t.priority, 
@@ -503,28 +1264,42 @@ router.get("/gettaskss", (req, res) => {
           users u ON ta.user_id = u._id
   `;
 
-  // If the user is not an admin, restrict the query to tasks where the user is assigned
-  // if (parseInt(isAdmin, 10) !== 1) {
-  //     query += ` WHERE t.id IN (
-  //         SELECT task_id FROM TaskAssignments WHERE user_id = ?
-  //     )`;
-  // }
-
-  // query += ` ORDER BY t.id;`;
-
-  // const queryParams = parseInt(isAdmin, 10) === 1 ? [] : [userId];
-
-
+  // User access control
   if (![1, 2].includes(parseInt(isAdmin, 10))) {
     query += ` WHERE t.id IN (
         SELECT task_id FROM TaskAssignments WHERE user_id = ?
     )`;
-}
+  }
+  query += ` 
+  ORDER BY 
+    CASE t.priority
+      WHEN 'HIGH' THEN 
+        CASE t.stage
+          WHEN 'TODO' THEN 1
+          WHEN 'IN_PROGRESS' THEN 2
+          WHEN 'COMPLETED' THEN 3
+          ELSE 4
+        END
+      WHEN 'MEDIUM' THEN 
+        CASE t.stage
+          WHEN 'TODO' THEN 5
+          WHEN 'IN_PROGRESS' THEN 6
+          WHEN 'COMPLETED' THEN 7
+          ELSE 8
+        END
+      WHEN 'LOW' THEN 
+        CASE t.stage
+          WHEN 'TODO' THEN 9
+          WHEN 'IN_PROGRESS' THEN 10
+          WHEN 'COMPLETED' THEN 11
+          ELSE 12
+        END
+      ELSE 13
+    END,
+    t.createdAt ASC;
+  `;
 
-query += ` ORDER BY t.id;`;
-
-const queryParams = [1, 2].includes(parseInt(isAdmin, 10)) ? [] : [userId];
-
+  const queryParams = [1, 2].includes(parseInt(isAdmin, 10)) ? [] : [userId];
 
   db.query(query, queryParams, (err, results) => {
       if (err) {
@@ -538,6 +1313,7 @@ const queryParams = [1, 2].includes(parseInt(isAdmin, 10)) ? [] : [userId];
               tasks[row.task_id] = {
                   task_id: row.task_id,
                   title: row.title,
+                  description:row.description,
                   stage: row.stage,
                   taskDate: row.taskDate,
                   priority: row.priority,
@@ -556,12 +1332,28 @@ const queryParams = [1, 2].includes(parseInt(isAdmin, 10)) ? [] : [userId];
           }
       });
 
-      res.status(200).json(Object.values(tasks));
+      // Optional: Additional client-side sorting as a fallback
+      const sortedTasks = Object.values(tasks).sort((a, b) => {
+        const priorityOrder = { 'HIGH': 1, 'MEDIUM': 2, 'LOW': 3 };
+        const stageOrder = { 'TODO': 1, 'IN_PROGRESS': 2, 'COMPLETED': 3 };
+        
+        if (priorityOrder[a.priority] !== priorityOrder[b.priority]) {
+          return priorityOrder[a.priority] - priorityOrder[b.priority];
+        }
+        
+        if (stageOrder[a.stage] !== stageOrder[b.stage]) {
+          return stageOrder[a.stage] - stageOrder[b.stage];
+        }
+        
+        return new Date(a.createdAt) - new Date(b.createdAt);
+      });
+
+      res.status(200).json(sortedTasks);
   });
 });
 
 
-// for all tasks Not-in-Use
+
 router.get("/gettasks", (req, res) => {
     const query = `
         SELECT 
@@ -582,7 +1374,7 @@ router.get("/gettasks", (req, res) => {
         LEFT JOIN 
             users u ON ta.user_id = u._id
         ORDER BY 
-            t.id;
+            t.createdAt;
     `;
 
     db.query(query, (err, results) => {
@@ -627,6 +1419,7 @@ router.get("/gettaskbyId/:task_id", (req, res) => {
       SELECT 
           t.id AS task_id, 
           t.title, 
+          t.description, 
           t.stage, 
           t.taskDate, 
           t.priority, 
@@ -662,6 +1455,7 @@ router.get("/gettaskbyId/:task_id", (req, res) => {
       const task = {
           task_id: results[0].task_id,
           title: results[0].title,
+          description: results[0].description,
           stage: results[0].stage,
           taskDate: results[0].taskDate,
           priority: results[0].priority,
@@ -1191,86 +1985,59 @@ router.post('/tasks/:id/complete', async (req, res) => {
 });
 
 
-
-
-
-async function scheduleRecurringTasks() {
+router.post('/taskdetail/Postactivity',async(req,res)=>{
   try {
-    const now = new Date();
+  const { task_id, user_id, type, activity } = req.body;
+  const sql = `
+  INSERT INTO task_activities (task_id, user_id, type, activity)
+  VALUES (?, ?, ?, ?)
+`;
+db.query(sql, [task_id, user_id, type, activity], (err, result) => {
+  if (err) {
+    console.error('Error inserting task activity:', err);
+    return res.status(500).json({ error: 'Failed to add task activity.' });
+  }
+  res.status(201).json({ message: 'Task activity added successfully.', id: result.insertId });
+});
+  } catch (error) {
+    console.error('Unexpected error:', error);
+    res.status(500).json({ error: 'An unexpected error occurred.' });
+  }
+})
 
-    const fetchTasksQuery = `
-      SELECT * FROM tasks 
-      WHERE recurrence_type IS NOT NULL 
-      AND recurrence_end > ?`; 
+router.get('/taskdetail/getactivity/:id', async (req, res) => {
+  try {
+    const { id } = req.params; // Extract the task_id from the URL params
 
-    db.query(fetchTasksQuery, [now], (err, tasks) => {
+    const sql = `
+      SELECT 
+        ta.type, 
+        ta.activity, 
+        ta.createdAt, 
+        u.name AS user_name
+      FROM task_activities ta
+      INNER JOIN users u ON ta.user_id = u._id
+      WHERE ta.task_id = ?
+      ORDER BY ta.createdAt DESC
+    `;
+
+    // Execute the SQL query
+    db.query(sql, [id], (err, result) => {
       if (err) {
-        console.error('Error fetching tasks for recurrence:', err);
-        return;
+        console.error('Error retrieving task activities:', err);
+        return res.status(500).json({ error: 'Failed to fetch task activities.' });
       }
 
-      tasks.forEach(task => {
-        const { id, title, stage, taskDate, priority, time_alloted, recurrence_type, recurrence_interval, recurrence_end } = task;
-
-        // Calculate next task date based on recurrence
-        let nextTaskDate;
-        if (recurrence_type === 'daily') {
-          nextTaskDate = new Date(taskDate);
-          nextTaskDate.setDate(nextTaskDate.getDate() + recurrence_interval);
-        }
-         else if (recurrence_type === 'weekly') {
-          nextTaskDate = new Date(taskDate);
-          nextTaskDate.setDate(nextTaskDate.getDate() + 7 * recurrence_interval);
-        } 
-        else if (recurrence_type === 'monthly') {
-          nextTaskDate = new Date(taskDate);
-          nextTaskDate.setMonth(nextTaskDate.getMonth() + recurrence_interval);
-        }
-
-        if (nextTaskDate > new Date(recurrence_end)) {
-          return;
-        }
-
-        const insertTaskQuery = `
-          INSERT INTO tasks (title, stage, taskDate, priority, createdAt, recurrence_type, recurrence_interval, recurrence_end, updatedAt, time_alloted)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-
-        db.query(insertTaskQuery, [
-          title, stage, nextTaskDate, priority, new Date(), recurrence_type, recurrence_interval, recurrence_end, new Date(), time_alloted
-        ], (err, result) => {
-          if (err) {
-            console.error('Error inserting new recurring task:', err);
-            return;
-          }
-
-          const taskId = result.insertId;
-
-          // Fetch and copy the task assignments to the new task
-          const fetchAssignmentsQuery = `SELECT user_id FROM TaskAssignments WHERE task_id = ?`;
-          db.query(fetchAssignmentsQuery, [id], (err, assignments) => {
-            console.log(assignments);
-            if (err) {
-              console.error('Error fetching task assignments:', err);
-              return;
-            }
-
-            const taskAssignments = assignments.map(assignment => [taskId, assignment.user_id]);
-
-            const insertTaskAssignmentsQuery = `INSERT INTO TaskAssignments (task_id, user_id) VALUES ?`;
-
-            db.query(insertTaskAssignmentsQuery, [taskAssignments], (err) => {
-              if (err) {
-                console.error('Error inserting task assignments for recurring task:', err);
-              }
-            });
-          });
-        });
-      });
+      // Send the retrieved activities as the response
+      res.status(200).json(result);
     });
+
   } catch (error) {
-    console.error('Error scheduling recurring tasks:', error);
+    console.error('Unexpected error:', error);
+    res.status(500).json({ error: 'An unexpected error occurred.' });
   }
-}
+});
+
 
 
 // cron.schedule('* * * * *', () => {
@@ -1282,6 +2049,7 @@ async function scheduleRecurringTasks() {
 
 
 module.exports = router;
+
 
 
 
