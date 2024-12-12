@@ -84,36 +84,44 @@ router.post('/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-
-router.get('/getuploads', async (req, res) => {
+router.get('/getuploads/:id', async (req, res) => {
+    const { id } = req.params; 
     try {
-        // Query the database to retrieve all file uploads
         const query = `
-            SELECT f.id, f.file_url, f.file_name, f.file_type, f.file_size, f.uploaded_at, f.isActive, 
-                   t.id AS task_id, t.title AS task_name, u._id AS user_id, u.name AS user_name
+            SELECT 
+                f.id, f.file_url, f.file_name, f.file_type, f.file_size, f.uploaded_at, f.isActive, 
+                t.id AS task_id, t.title AS task_name, 
+                u._id AS user_id, u.name AS user_name
             FROM files f
             LEFT JOIN tasks t ON f.task_id = t.id
             LEFT JOIN users u ON f.user_id = u._id
+            WHERE t.id = ?
             ORDER BY f.uploaded_at DESC
         `;
-        
-        db.query(query, (err, results) => {
+
+        // Pass the id as a parameter to prevent SQL injection
+        db.query(query, [id], (err, results) => {
             if (err) {
                 console.error("Database Error:", err);
-                return res.status(500).json({ error: 'Failed to fetch uploaded files from database' });
+                return res.status(500).json({ error: 'Failed to fetch the file upload from database' });
             }
 
-            // Return the fetched file uploads as JSON
+            if (results.length === 0) {
+                return res.status(404).json({ message: 'File not found' });
+            }
+
+            // Return the fetched file upload as JSON
             res.status(200).json({
-                message: 'File uploads fetched successfully',
-                data: results
+                message: 'File upload fetched successfully',
+                data: results[0]
             });
         });
     } catch (error) {
-        console.error("Error fetching file uploads:", error);
+        console.error("Error fetching file upload:", error);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
+
 
 
 module.exports = router;
