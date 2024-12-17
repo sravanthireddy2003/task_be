@@ -714,7 +714,6 @@ router.post('/createjson', async (req, res) => {
         console.error('Error getting database connection:', err);
         return res.status(500).send('Database connection error');
       }
-
       connection.beginTransaction((err) => {
         if (err) {
           connection.release();

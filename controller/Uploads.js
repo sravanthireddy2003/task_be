@@ -107,7 +107,7 @@ router.get('/getuploads/:id', async (req, res) => {
             }
 
             if (results.length === 0) {
-                return res.status(404).json({ message: 'File not found' });
+                return res.status(201).json({ message: 'Please upload a File' });
             }
 
             // Return the fetched file upload as JSON

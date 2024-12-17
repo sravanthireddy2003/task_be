@@ -112,3 +112,38 @@ WHERE
   AND w.working_date BETWEEN '2024-08-01' AND '2024-08-28'
 ORDER BY 
   w.working_date;
+
+
+
+
+
+
+
+CREATE EVENT IF NOT EXISTS delete_expired_tasks
+ON SCHEDULE EVERY 1 DAY
+DO
+DELETE FROM tasks WHERE valid_until < NOW();
+ 
+ 
+SET GLOBAL event_scheduler = ON;
+ 
+SET GLOBAL event_scheduler = OFF;  -- to turn off the event_scheduler
+ 
+ 
+SHOW VARIABLES LIKE 'event_scheduler'; -- To confirm that the event scheduler is disabled
+ 
+SHOW EVENTS;                    
+ 
+ 
+DROP EVENT IF EXISTS delete_expired_tasks; -- to drop the event created
+has context menu
+
+
+
+
+
+
+
+
+
+
