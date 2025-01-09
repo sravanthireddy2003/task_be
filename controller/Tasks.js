@@ -697,16 +697,22 @@ const nodemailer = require('nodemailer');
 
 
 // updateing tasktime for old task
+
 router.post('/createjson', async (req, res) => {
   try {
     const { assigned_to, priority, stage, taskDate, title, description, time_alloted, client_id } = req.body;
 
-    const createdAt = new Date().toISOString();
+    // const createdAt = new Date().toISOString();
+    const createdAt = new Date(new Date().getTime() + (5.5 * 60 * 60 * 1000)).toISOString();   
     const updatedAt = createdAt;
 
-    // Validate input
-    if (!title || !stage || !Array.isArray(assigned_to) || !client_id) {
-      return res.status(400).send('Invalid input');
+    // Enhanced input validation
+    if (!title || !stage || !client_id) {
+      return res.status(400).send('Missing required fields: title, stage, or client_id');
+    }
+
+    if (!Array.isArray(assigned_to) || assigned_to.length === 0) {
+      return res.status(400).send('assigned_to must be a non-empty array of user IDs');
     }
 
     db.getConnection((err, connection) => {
@@ -714,6 +720,7 @@ router.post('/createjson', async (req, res) => {
         console.error('Error getting database connection:', err);
         return res.status(500).send('Database connection error');
       }
+      
       connection.beginTransaction((err) => {
         if (err) {
           connection.release();
@@ -743,24 +750,20 @@ router.post('/createjson', async (req, res) => {
 
           // Priority adjustment logic with task date calculation
           if (priority === 'HIGH' && highPriorityCount > 0) {
-            // Calculate new task date based on priority change
             const existingTaskDate = new Date(checkResults[0].existingTaskDate);
             const currentDate = new Date();
             const daysDifference = Math.ceil((existingTaskDate - currentDate) / (1000 * 60 * 60 * 24));
 
-            // Adjust task date based on priority change
-            // Logic: HIGH to MEDIUM adds more days, HIGH to LOW adds even more days
             let dateAdjustmentDays = 0;
             if (checkResults[0].existingPriority === 'LOW') {
-              dateAdjustmentDays = Math.ceil(daysDifference * 1.5); // Add 50% more days
+              dateAdjustmentDays = Math.ceil(daysDifference * 1.5);
             } else if (checkResults[0].existingPriority === 'MEDIUM') {
-              dateAdjustmentDays = Math.ceil(daysDifference * 1.2); // Add 20% more days
+              dateAdjustmentDays = Math.ceil(daysDifference * 1.2);
             }
 
             finalTaskDate = new Date(existingTaskDate);
             finalTaskDate.setDate(finalTaskDate.getDate() + dateAdjustmentDays);
 
-            // Update existing HIGH priority task to MEDIUM
             const updateExistingTaskQuery = `
               UPDATE tasks 
               SET priority = 'MEDIUM', updatedAt = ?, taskDate = ?
@@ -770,7 +773,7 @@ router.post('/createjson', async (req, res) => {
             connection.query(
               updateExistingTaskQuery, 
               [updatedAt, finalTaskDate.toISOString(), client_id], 
-              (updateErr, updateResult) => {
+              (updateErr) => {
                 if (updateErr) {
                   return connection.rollback(() => {
                     connection.release();
@@ -779,7 +782,6 @@ router.post('/createjson', async (req, res) => {
                   });
                 }
 
-                // Proceed with task insertion with the modified priority and task date
                 continueTaskCreation(
                   connection, 
                   { ...req.body, taskDate: finalTaskDate.toISOString() }, 
@@ -791,7 +793,6 @@ router.post('/createjson', async (req, res) => {
               }
             );
           } else {
-            // No existing high priority task or new task is not high priority
             continueTaskCreation(connection, req.body, createdAt, updatedAt, priority, res);
           }
         });
@@ -803,11 +804,9 @@ router.post('/createjson', async (req, res) => {
   }
 });
 
-// Extracted function to continue task creation process
 function continueTaskCreation(connection, body, createdAt, updatedAt, finalPriority, res) {
   const { assigned_to, stage, taskDate, title, description, time_alloted, client_id } = body;
 
-  // Insert task with client_id and potentially modified priority, added description
   const insertTaskQuery = `
     INSERT INTO tasks (title, description, stage, taskDate, priority, createdAt, updatedAt, time_alloted, client_id) 
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
@@ -825,15 +824,29 @@ function continueTaskCreation(connection, body, createdAt, updatedAt, finalPrior
       }
 
       const taskId = result.insertId;
-      const taskAssignments = assigned_to.map(userId => [taskId, userId]);
+      
+      // Validate taskAssignments array
+      if (!taskId || !Array.isArray(assigned_to) || assigned_to.length === 0) {
+        return connection.rollback(() => {
+          connection.release();
+          console.error('Invalid task ID or assigned_to array');
+          return res.status(500).send('Error creating task assignments');
+        });
+      }
 
-      // Insert task assignments
+      const taskAssignments = assigned_to.map(userId => [taskId, userId]);
+      
+      // Add validation to ensure taskAssignments is not empty
       const insertTaskAssignmentsQuery = `
-        INSERT INTO TaskAssignments (task_id, user_id) VALUES ?`;
+        INSERT INTO TaskAssignments (task_id, user_id) 
+        VALUES ${taskAssignments.map(() => '(?, ?)').join(', ')}`;
+
+      // Flatten the taskAssignments array for the query
+      const flattenedValues = taskAssignments.flat();
 
       connection.query(
         insertTaskAssignmentsQuery,
-        [taskAssignments],
+        flattenedValues,
         async (err, result) => {
           if (err) {
             return connection.rollback(() => {
@@ -843,7 +856,6 @@ function continueTaskCreation(connection, body, createdAt, updatedAt, finalPrior
             });
           }
 
-          // Fetch emails of assigned users
           const userEmailsQuery = `
             SELECT email, name FROM users WHERE _id IN (?)`;
 
@@ -859,7 +871,6 @@ function continueTaskCreation(connection, body, createdAt, updatedAt, finalPrior
             const emails = userResults.map(user => user.email);
             const userNames = userResults.map(user => user.name);
 
-            // Send email notifications
             const transporter = nodemailer.createTransport({
               service: 'gmail',
               auth: {
@@ -888,13 +899,6 @@ function continueTaskCreation(connection, body, createdAt, updatedAt, finalPrior
                     <p style="font-size: 16px;">${description}</p>
                   </div>
                   ` : ''}
-
-                  <div style="text-align: center; margin: 20px 0;">
-                    <img 
-                      src="https://img.freepik.com/free-vector/hand-drawn-business-planning-with-task-list_23-2149164275.jpg"
-                      alt="Task Assigned" 
-                      style="width: 100%; max-width: 400px; height: auto;" />
-                  </div>
 
                   <p style="font-size: 16px; color: #1a73e8;">
                     Don't forget to complete the task on time!
@@ -933,174 +937,6 @@ function continueTaskCreation(connection, body, createdAt, updatedAt, finalPrior
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// NO client
-// router.post('/createjson', async (req, res) => {
-//   try {
-//     const { assigned_to, priority, stage, taskDate, title, time_alloted } = req.body;
-
-//     const createdAt = new Date().toISOString();
-//     const updatedAt = createdAt;
-
-//     if (!title || !stage || !Array.isArray(assigned_to)) {
-//       return res.status(400).send('Invalid input');
-//     }
-
-//     db.getConnection((err, connection) => {
-//       if (err) {
-//         console.error('Error getting database connection:', err);
-//         return res.status(500).send('Database connection error');
-//       }
-
-//       connection.beginTransaction((err) => {
-//         if (err) {
-//           connection.release();
-//           console.error('Error starting transaction:', err);
-//           return res.status(500).send('Error starting transaction');
-//         }
-
-//         const insertTaskQuery = `
-//           INSERT INTO tasks (title, stage, taskDate, priority, createdAt, updatedAt, time_alloted) 
-//           VALUES (?, ?, ?, ?, ?, ?, ?)`;
-
-//         connection.query(
-//           insertTaskQuery,
-//           [title, stage, taskDate, priority, createdAt, updatedAt, time_alloted],
-//           (err, result) => {
-//             if (err) {
-//               return connection.rollback(() => {
-//                 connection.release();
-//                 console.error('Error inserting task:', err);
-//                 return res.status(500).send('Error inserting task');
-//               });
-//             }
-
-//             const taskId = result.insertId;
-//             const taskAssignments = assigned_to.map(userId => [taskId, userId]);
-
-//             const insertTaskAssignmentsQuery = `
-//               INSERT INTO TaskAssignments (task_id, user_id) VALUES ?`;
-
-//             connection.query(
-//               insertTaskAssignmentsQuery,
-//               [taskAssignments],
-//               async (err, result) => {
-//                 if (err) {
-//                   return connection.rollback(() => {
-//                     connection.release();
-//                     console.error('Error inserting task assignments:', err);
-//                     return res.status(500).send('Error inserting task assignments');
-//                   });
-//                 }
-
-//                 // **Fetch emails of assigned users**
-//                 const userEmailsQuery = `
-//                   SELECT email, name FROM users WHERE _id IN (?)`;
-
-//                 connection.query(userEmailsQuery, [assigned_to], async (err, userResults) => {
-//                   if (err) {
-//                     return connection.rollback(() => {
-//                       connection.release();
-//                       console.error('Error fetching user emails:', err);
-//                       return res.status(500).send('Error fetching user emails');
-//                     });
-//                   }
-
-//                   const emails = userResults.map(user => user.email);
-//                   const userNames = userResults.map(user => user.name);
-
-//                   // **Send email notifications**
-//                   const transporter = nodemailer.createTransport({
-//                     service: 'gmail',
-//                     auth: {
-//                       user: process.env.EMAIL_USER, // Your email
-//                       pass: process.env.EMAIL_PASS, // Your email passwor
-//                     },
-//                   });
-
-//                   const mailOptions = {
-//                     from: process.env.EMAIL_USER,
-//                     to: emails,
-//                     subject: `New Task Assigned: ${title}`,
-//                     html: `
-//                       <div style="font-family: Arial, sans-serif; color: #333;">
-//                         <h1 style="color: #1a73e8;">New Task Assigned!</h1>
-//                         <p style="font-size: 18px;">Dear ${userNames.join(', ')},</p>
-//                         <p style="font-size: 16px;">
-//                           You have been assigned a new task: <strong style="color: #1a73e8;">${title}</strong>.
-//                           Please check your dashboard for more details.
-//                         </p>
-
-//                         <div style="text-align: center; margin: 20px 0;">
-//                           <img 
-//                             src="https://img.freepik.com/free-vector/hand-drawn-business-planning-with-task-list_23-2149164275.jpg"
-//                             alt="Task Assigned" 
-//                             style="width: 100%; max-width: 400px; height: auto;" />
-//                         </div>
-
-//                         <p style="font-size: 16px; color: #1a73e8;">
-//                           Don't forget to complete the task on time!
-//                         </p>
-//                       </div>
-//                     `,
-//                   };
-
-//                   try {
-//                     await transporter.sendMail(mailOptions);
-//                     console.log('Emails sent successfully');
-//                   } catch (mailError) {
-//                     console.error('Error sending emails:', mailError);
-//                   }
-
-//                   connection.commit((err) => {
-//                     if (err) {
-//                       return connection.rollback(() => {
-//                         connection.release();
-//                         console.error('Error committing transaction:', err);
-//                         return res.status(500).send('Error committing transaction');
-//                       });
-//                     }
-
-//                     connection.release();
-//                     res.status(201).send('Task created and email notifications sent successfully');
-//                   });
-//                 });
-//               }
-//             );
-//           }
-//         );
-//       });
-//     });
-//   } catch (error) {
-//     console.error('Error in task creation process:', error);
-//     return res.status(500).send('Error in task creation process');
-//   }
-// });
 
 
 
@@ -1245,6 +1081,7 @@ router.get("/gettaskss", (req, res) => {
   let query = `
       SELECT 
           t.id AS task_id, 
+          c.name AS client_name,
           t.title, 
           t.description,
           t.stage, 
@@ -1261,6 +1098,9 @@ router.get("/gettaskss", (req, res) => {
           TaskAssignments ta ON t.id = ta.task_id
       LEFT JOIN 
           users u ON ta.user_id = u._id
+      LEFT JOIN 
+          clientss c ON t.client_id = c.id
+
   `;
 
   // User access control
@@ -1311,6 +1151,7 @@ router.get("/gettaskss", (req, res) => {
           if (!tasks[row.task_id]) {
               tasks[row.task_id] = {
                   task_id: row.task_id,
+                  client_name:row.client_name,
                   title: row.title,
                   description:row.description,
                   stage: row.stage,
@@ -1357,6 +1198,7 @@ router.get("/gettasks", (req, res) => {
     const query = `
         SELECT 
             t.id AS task_id, 
+            c.name AS client_name,
             t.title, 
             t.stage, 
             t.taskDate, 
@@ -1372,6 +1214,8 @@ router.get("/gettasks", (req, res) => {
             TaskAssignments ta ON t.id = ta.task_id
         LEFT JOIN 
             users u ON ta.user_id = u._id
+        LEFT JOIN 
+          clientss c ON t.client_id = c.id    
         ORDER BY 
             t.createdAt;
     `;
@@ -1388,6 +1232,7 @@ router.get("/gettasks", (req, res) => {
             if (!tasks[row.task_id]) {
                 tasks[row.task_id] = {
                     task_id: row.task_id,
+                    client_name:row.client_name,
                     title: row.title,
                     stage: row.stage,
                     taskDate: row.taskDate,
@@ -1417,6 +1262,7 @@ router.get("/gettaskbyId/:task_id", (req, res) => {
   const query = `
       SELECT 
           t.id AS task_id, 
+          c.name AS client_name,
           t.title, 
           t.description, 
           t.stage, 
@@ -1434,11 +1280,13 @@ router.get("/gettaskbyId/:task_id", (req, res) => {
           TaskAssignments ta ON t.id = ta.task_id
       LEFT JOIN 
           users u ON ta.user_id = u._id
+      LEFT JOIN 
+          clientss c ON t.client_id = c.id 
       WHERE 
           t.id = ?
       ORDER BY 
           t.id;
-  `;
+  `;  
 
   db.query(query, [task_id], (err, results) => {
       if (err) {
@@ -1454,6 +1302,7 @@ router.get("/gettaskbyId/:task_id", (req, res) => {
       const task = {
           task_id: results[0].task_id,
           title: results[0].title,
+          client_name: results[0].client_name,
           description: results[0].description,
           stage: results[0].stage,
           taskDate: results[0].taskDate,
@@ -1478,56 +1327,80 @@ router.get("/gettaskbyId/:task_id", (req, res) => {
   });
 });
 
+
 router.delete('/deltask/:task_id', (req, res) => {
-        const { task_id } = req.params;
-      
-        const sqlDelete = 'DELETE FROM tasks WHERE id = ?';
-      
-        db.query(sqlDelete, [task_id], (err, result) => {
-          if (err) {
+    const { task_id } = req.params;
+
+    const sqlDelete = 'DELETE FROM tasks WHERE id = ?';
+
+    db.query(sqlDelete, [task_id], (err, result) => {
+        if (err) {
+            logger.error(`Error deleting task with ID ${task_id}: ${err.message}`);
             console.error('Error deleting task:', err);
-            return res.status(500).send({ success: false, message: 'Database error', error: err.message });
-          }
-      
-          if (result.affectedRows === 0) {
-            return res.status(404).send({ success: false, message: 'Task not found' });
-          }
-      
-          return res.status(200).send({ success: true, message: 'Task and its assignments deleted successfully' });
+
+            return res.status(500).send({
+                success: false,
+                message: 'Database error',
+                error: err.message
+            });
+        }
+
+        if (result.affectedRows === 0) {
+            logger.warn(`Attempt to delete non-existing task with ID ${task_id}`);
+            return res.status(404).send({
+                success: false,
+                message: 'Task not found'
+            });
+        }
+
+        logger.info(`Task with ID ${task_id} deleted successfully`);
+        return res.status(200).send({
+            success: true,
+            message: 'Task and its assignments deleted successfully'
         });
+    });
 });
 
-router.post('/createsub/:task_id', async (req, res) => {
+router.post('/createsub/:task_id', (req, res) => {
     const { task_id } = req.params;
     const { title, due_date, tag } = req.body;
     const createdAt = new Date().toISOString();
     const updatedAt = createdAt;
-  
+
     if (!title || !due_date || !tag) {
-      return res.status(400).send('Invalid input');
+        logger.warn(`Invalid input provided for task_id: ${task_id}`);
+        return res.status(400).send({ success: false, message: 'Invalid input' });
     }
-  
-    const insertsubTaskQuery = `
-      INSERT INTO subtasks (task_id, title, due_date, tag, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)`;
-    
-    
-    try {
-      db.query(
-        insertsubTaskQuery,
-        [task_id, title, due_date, tag, createdAt, updatedAt],
-        (err, results) => {
-          if (err) {
-            return res.status(500).send({ auth: false, message: err.message });
-          }
-          res.status(201).json({ id: results.insertId, task_id, title, due_date, tag, created_at: createdAt, updated_at: updatedAt });
+
+    const insertSubTaskQuery = `
+        INSERT INTO subtasks (task_id, title, due_date, tag, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)`;
+
+    // Execute query
+    db.query(insertSubTaskQuery, [task_id, title, due_date, tag, createdAt, updatedAt], (err, results) => {
+        if (err) {
+            logger.error(`Error inserting subtask for task_id: ${task_id} - ${err.message}`);
+            return res.status(500).send({ success: false, message: 'Database error', error: err.message });
         }
-      );
-    } catch (err) {
-      console.error(err.message);
-      res.status(500).json({ error: 'Server error' });
-    }
-  });
+
+        // Success response
+        logger.info(`Subtask created successfully for task_id: ${task_id}, subtask_id: ${results.insertId}`);
+        return res.status(201).json({
+            success: true,
+            message: 'Subtask created successfully',
+            data: {
+                id: results.insertId,
+                task_id,
+                title,
+                due_date,
+                tag,
+                created_at: createdAt,
+                updated_at: updatedAt
+            }
+        });
+    });
+});
+
 
 router.get('/getsubtasks/:task_id',(req,res)=>{
     const {task_id}=req.params;
@@ -1779,12 +1652,11 @@ router.post('/taskhours', async (req, res) => {
 });
   
 
-
-
 router.put('/updatetask/:taskId', async (req, res) => {
-  const { taskId } = req.params;  
-  const { stage } = req.body;   
-  console.log('Updating task stage:', stage);
+  const { taskId } = req.params;
+  const { stage } = req.body;
+
+  logger.info(`Received PUT request to update task: taskId=${taskId}, newStage=${stage}`);
 
   try {
     const updateStatusQuery = `UPDATE tasks SET stage = ?, updatedAt = ? WHERE id = ?`;
@@ -1794,20 +1666,23 @@ router.put('/updatetask/:taskId', async (req, res) => {
       [stage, new Date(), taskId],
       (err, result) => {
         if (err) {
-          console.error('Error updating task status:', err);
-          return res.status(500).json({ 
+          logger.error(`Error updating task status: taskId=${taskId}, error=${err.message}`);
+          return res.status(500).json({
             success: false,
             error: 'Error updating task status',
-            details: err.message 
+            details: err.message,
           });
         }
 
         if (result.affectedRows === 0) {
-          return res.status(404).json({ 
+          logger.warn(`Task not found: taskId=${taskId}`);
+          return res.status(404).json({
             success: false,
-            error: 'Task not found' 
+            error: 'Task not found',
           });
         }
+
+        logger.info(`Task status updated successfully: taskId=${taskId}, newStage=${stage}`);
 
         const assignedUsersQuery = `
           SELECT u.email, u.name 
@@ -1818,34 +1693,36 @@ router.put('/updatetask/:taskId', async (req, res) => {
 
         db.query(assignedUsersQuery, [taskId], async (err, userResults) => {
           if (err) {
-            console.error('Error fetching assigned user emails:', err);
-            return res.status(500).json({ 
+            logger.error(`Error fetching assigned user emails: taskId=${taskId}, error=${err.message}`);
+            return res.status(500).json({
               success: false,
               error: 'Error fetching assigned user emails',
-              details: err.message 
+              details: err.message,
             });
           }
 
-          const emails = userResults.map(user => user.email);
-          const userNames = userResults.map(user => user.name);
+          const emails = userResults.map((user) => user.email);
+          const userNames = userResults.map((user) => user.name);
 
-          // If no users assigned, just return task update success
           if (emails.length === 0) {
-            return res.status(200).json({ 
+            logger.info(`No users assigned for taskId=${taskId}`);
+            return res.status(200).json({
               success: true,
               message: 'Task status updated successfully',
-              data: { 
-                taskId, 
-                newStage: stage 
-              }
+              data: {
+                taskId,
+                newStage: stage,
+              },
             });
           }
 
+          logger.info(`Sending email notifications for taskId=${taskId} to users: ${emails.join(', ')}`);
+
           const transporter = nodemailer.createTransport({
-            service: 'gmail',  
+            service: 'gmail',
             auth: {
-              user: process.env.EMAIL_USER, 
-              pass: process.env.EMAIL_PASS, 
+              user: process.env.EMAIL_USER,
+              pass: process.env.EMAIL_PASS,
             },
           });
 
@@ -1868,44 +1745,41 @@ router.put('/updatetask/:taskId', async (req, res) => {
 
           try {
             await transporter.sendMail(mailOptions);
-            console.log('Email notifications sent successfully');
-            
-            // Send success response with task and email notification details
-            res.status(200).json({ 
+            logger.info(`Email notifications sent successfully for taskId=${taskId}`);
+            res.status(200).json({
               success: true,
               message: 'Task status updated successfully and notifications sent',
-              data: { 
-                taskId, 
+              data: {
+                taskId,
                 newStage: stage,
-                notifiedUsers: userNames
-              }
+                notifiedUsers: userNames,
+              },
             });
           } catch (mailError) {
-            console.error('Error sending email notifications:', mailError);
-            
-            // Even if email fails, return task update success
-            res.status(200).json({ 
+            logger.error(`Error sending email notifications: taskId=${taskId}, error=${mailError.message}`);
+            res.status(200).json({
               success: true,
               message: 'Task status updated, but email notifications failed',
-              data: { 
-                taskId, 
-                newStage: stage 
+              data: {
+                taskId,
+                newStage: stage,
               },
-              error: mailError.message
+              error: mailError.message,
             });
           }
         });
       }
     );
   } catch (error) {
-    console.error('Unexpected error updating task status:', error);
-    res.status(500).json({ 
+    logger.error(`Unexpected error updating task status: taskId=${taskId}, error=${error.message}`);
+    res.status(500).json({
       success: false,
       error: 'Unexpected server error',
-      details: error.message 
+      details: error.message,
     });
   }
 });
+
 
 
 
@@ -1984,25 +1858,28 @@ router.post('/tasks/:id/complete', async (req, res) => {
 });
 
 
-router.post('/taskdetail/Postactivity',async(req,res)=>{
-  try {
+router.post('/taskdetail/Postactivity', (req, res) => {
   const { task_id, user_id, type, activity } = req.body;
+
+  logger.info(`Received POST request to add task activity: task_id=${task_id}, user_id=${user_id}`);
+
   const sql = `
-  INSERT INTO task_activities (task_id, user_id, type, activity)
-  VALUES (?, ?, ?, ?)
-`;
-db.query(sql, [task_id, user_id, type, activity], (err, result) => {
-  if (err) {
-    console.error('Error inserting task activity:', err);
-    return res.status(500).json({ error: 'Failed to add task activity.' });
-  }
-  res.status(201).json({ message: 'Task activity added successfully.', id: result.insertId });
+    INSERT INTO task_activities (task_id, user_id, type, activity)
+    VALUES (?, ?, ?, ?)
+  `;
+
+  db.query(sql, [task_id, user_id, type, activity], (err, result) => {
+    if (err) {
+      logger.error(`Error inserting task activity: task_id=${task_id}, user_id=${user_id}, error=${err.message}`);
+      return res.status(500).json({ error: 'Failed to add task activity.' });
+    }
+
+    logger.info(`Task activity added successfully: task_id=${task_id}, user_id=${user_id}, activity_id=${result.insertId}`);
+    res.status(201).json({ message: 'Task activity added successfully.', id: result.insertId });
+  });
 });
-  } catch (error) {
-    console.error('Unexpected error:', error);
-    res.status(500).json({ error: 'An unexpected error occurred.' });
-  }
-})
+
+
 
 router.get('/taskdetail/getactivity/:id', async (req, res) => {
   try {

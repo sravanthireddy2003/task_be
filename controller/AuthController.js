@@ -104,7 +104,7 @@ router.post("/register", (req, res) => {
   let hashedPassword = bcrypt.hashSync(password, 8);
  
   const tasks = JSON.stringify([]);  
-  const createdAt = new Date().toISOString();
+  const createdAt = new Date(new Date().getTime() + (5.5 * 60 * 60 * 1000)).toISOString();   
   const updatedAt = createdAt;
   const __v = 0;
  
