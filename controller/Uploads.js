@@ -113,7 +113,8 @@ router.get('/getuploads/:id', async (req, res) => {
             // Return the fetched file upload as JSON
             res.status(200).json({
                 message: 'File upload fetched successfully',
-                data: results[0]
+                // data: results[0]
+                data: results
             });
         });
     } catch (error) {

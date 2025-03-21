@@ -10,6 +10,11 @@ const { ref, uploadBytes, getDownloadURL } = require('firebase/storage');
 const CryptoJS = require('crypto-js');
 const cron = require('node-cron');
 const nodemailer = require('nodemailer');
+const logger =require('winston')
+const { google } = require('googleapis');
+require('dotenv').config();
+
+
 
 
 
@@ -935,8 +940,406 @@ function continueTaskCreation(connection, body, createdAt, updatedAt, finalPrior
 
 
 
+// // Safe JSON parsing function
+// // function safeJSONParse(jsonString, defaultValue = null) {
+// //   try {
+// //     const trimmedString = typeof jsonString === 'string' ? jsonString.trim() : jsonString;
+// //     return trimmedString ? JSON.parse(trimmedString) : defaultValue;
+// //   } catch (error) {
+// //     console.error('JSON Parsing Error:', {
+// //       message: error.message,
+// //       inputString: jsonString
+// //     });
+// //     return defaultValue;
+// //   }
+// // }
 
+// // Configure Google Service Account
+// // let serviceAccountKey;
+// // try {
+// //   // serviceAccountKey = safeJSONParse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
+// //   const serviceAccountKey = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
 
+// //   console.log(serviceAccountKey.client_email);
+// //   if (!serviceAccountKey) {
+// //     throw new Error('Invalid service account key');
+// //   }
+// // } catch (error) {
+// //   console.error('Service Account Key Configuration Error:', error);
+// //   serviceAccountKey = null;
+// // }
+
+// // Function to add event to Google Calendar for a specific user
+// async function addTaskToGoogleCalendar(userEmail, taskDetails) {
+//   // if (!serviceAccountKey) {
+//   //   console.warn('Google Service Account not configured');
+//   //   return null;
+//   // }
+
+//   try {
+//     const jwtClient = new google.auth.JWT(
+//       // serviceAccountKey.client_email,
+//       'task-manager-app@taskmanager-452805.iam.gserviceaccount.com',
+//       null,
+//       // serviceAccountKey.private_key,
+//       '-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCyb6cglpe9upRw\n/hTSjcSgBhq7B8hYoIfnhfrZ6/TL8/A+rn7qCavzeQRH6B6cZY2z+0JW2SMBq6wh\n05VqJcgGXnV7zcdQh7/0rAr+2nRfPXiWTqJemsmSB8TLcKedDGCJJqsbbNRSyefF\nlkfD+v5YO3NV/L085r1AJNg4BuvOiZqOnCcBBEDtA4ro+FLb1Jdbnisi5mAf33xL\npP5/+Dm+jpsUc9xIfnuWkga6AQWbCcUO7Q0JJAPFYQs8x4tT7xNxfEeZ+olxurKA\nodBLTirvw17W/vp33zWYieHZzc4rFjdFwuiP0lstNHtoy2MfYAvZVsUzXDAePiyL\npDXk+Hq3AgMBAAECggEABltkTLdrbDF8/1zgo120nxozPULk4toZQr4rC99+/FMn\nqyauqSozYOcIqC0qBgViMS18QA7X/e5pTAKMj1hi523Zvqbmo8T/qY5a4ph9eTUo\nmiZEB53OckWU6nCMMClUOR6nuEA+J5LqOcewV9hAfnvjuzECvEGLhYD/3lh0xzS1\nYJS1HK7K1zR4LIqEz1GjhWza5vjgieRdoGfB/YiFaSnYQT/nnLUdrFb6ZMjus+He\nAUd1gGcoVCJizQxIUdMroJX39qkJ5hGCVqac6ip0uVjsxTedVMIGb01a+s1wSUCU\nWRuRxVS9l5HXT1C1vnb9+e793QL3Sa8oYcyLEnHJwQKBgQD6xquf+fRs/7/oLaNS\nsYiNF6akbhW5AeW7P8WtSzuar5KOUPlzxeEpO8avswELuBIgPUkOb9ppgmH7eX9Y\nwBnUmcgbhwfLJpD/Tlaz2RRht4MZJVdGbeQdojFZaxttKb3Gf0niNqJLeuOhD/Ai\n+LJSiRafxZEObg1RbUQ5A3SqdwKBgQC2JzXyhu9s715GLEfSvFR2sjowta4KbMPh\nYT4iTSZJm4UYZM0vqnacvAzO6YsGKzJaJ1l19hC1ZzEaUGvF8ftHYo6hzI6BEGdn\nMh2xcJhiVzDauInpUlMwhe3a7AwAxZq1jmYkkPC7cBR9K1V1233s9r+Ju/z8mAnj\neX9EylKBwQKBgQDk9CGZKyHnqg/RsGkehIvBFUjFcuRORtcxf+XAc6F1drp9SJyX\nAKCzfqnFm85mnqWd3ZYnoiNslOdUKvcDVk++9K/nwf5xkUJsdV9fT9/13w/IE3l9\nCbNtArm/g7RElAl5gpk3+N1vwEC2udBqfViBVjvbnwrye7OZFgNlciw/vQKBgGeD\nUuH3EnqqcL2aDlrQkYM+d1kU9cmQ06PxufiONTLhQTqCliP/UBZzuyeeilXAGIYp\nFGq3ofkkoj/c8dH0WKLRfFKwR09K/igjz8H1RXOlLusssZq5IPNTOL8PIycRJIEG\nYj9napZp9ArJpHAsgpw2ANUJ0pPM5tmxQsTZ4RdBAoGAKnKb84LMs2w9Sq+Oq3o9\nv3Mmnvwj+dKo6waM5BbZ9ET5/rw06SsPUmlNnuPdUinHyN9ixcRSlGmtHxFEZKHe\nrqbLPlODypc5hx6LD4bahAb1c5nm8ixBa6rxF8ABKxuz5xutYdfn6+EQ7IDBXP6m\noxpjZBdxIg8WtNZrvMRvMaU=\n-----END PRIVATE KEY-----\n"',
+  
+//       ['https://www.googleapis.com/auth/calendar']
+//     );
+
+//     // Authorize the client
+//     await jwtClient.authorize();
+
+//     const calendar = google.calendar({ version: 'v3', auth: jwtClient });
+
+//     // Validate and sanitize task details
+//     const validatedTaskDetails = {
+//       title: taskDetails.title || 'Untitled Task',
+//       description: taskDetails.description || 'Task assigned to you',
+//       taskDate: taskDetails.taskDate ? new Date(taskDetails.taskDate) : new Date(),
+//       time_alloted: parseInt(taskDetails.time_alloted) || 1,
+//       priority: taskDetails.priority || 'LOW'
+//     };
+
+//     const event = {
+//       summary: validatedTaskDetails.title,
+//       description: validatedTaskDetails.description,
+//       start: {
+//         dateTime: validatedTaskDetails.taskDate.toISOString(),
+//         timeZone: 'UTC',
+//       },
+//       end: {
+//         dateTime: new Date(
+//           validatedTaskDetails.taskDate.getTime() + 
+//           (validatedTaskDetails.time_alloted * 60 * 60 * 1000)
+//         ).toISOString(),
+//         timeZone: 'UTC',
+//       },
+//       attendees: [{ email: userEmail }],
+//       colorId: validatedTaskDetails.priority === 'HIGH' ? '11' :
+//                validatedTaskDetails.priority === 'MEDIUM' ? '5' : '10',
+//     };
+
+//     const calendarResponse = await calendar.events.insert({
+//       calendarId: userEmail,
+//       resource: event,
+//     });
+
+//     return calendarResponse.data.htmlLink;
+//   } catch (error) {
+//     console.error('Error adding event to Google Calendar:', error);
+//     return null;
+//   }
+// }
+
+// // Send task assignment emails
+// async function sendTaskAssignmentEmails(userResults, title, description, finalPriority, originalPriority, calendarResults) {
+//   const emails = userResults.map(user => user.email);
+//   const userNames = userResults.map(user => user.name);
+
+//   const transporter = nodemailer.createTransport({
+//     service: 'gmail',
+//     auth: {
+//       user: process.env.EMAIL_USER,
+//       pass: process.env.EMAIL_PASS,
+//     },
+//   });
+
+//   const mailOptions = {
+//     from: process.env.EMAIL_USER,
+//     to: emails,
+//     subject: `New Task Assigned: ${title}`,
+//     html: generateEmailHTML(userNames, title, description, finalPriority, originalPriority, calendarResults)
+//   };
+
+//   try {
+//     await transporter.sendMail(mailOptions);
+//     console.log('Emails sent successfully');
+//   } catch (mailError) {
+//     console.error('Error sending emails:', mailError);
+//     throw mailError;
+//   }
+// }
+
+// // Generate email HTML
+// function generateEmailHTML(userNames, title, description, finalPriority, originalPriority, calendarResults) {
+//   return `
+//     <div style="font-family: Arial, sans-serif; color: #333;">
+//       <h1 style="color: #1a73e8;">New Task Assigned!</h1>
+//       <p style="font-size: 18px;">Dear ${userNames.join(', ')},</p>
+//       <p style="font-size: 16px;">
+//         You have been assigned a new task: <strong style="color: #1a73e8;">${title}</strong>.
+//         ${finalPriority !== originalPriority ? `(Priority adjusted to ${finalPriority})` : ''}
+//         Please check your dashboard for more details.
+//       </p>
+
+//       ${description ? `
+//       <div style="background-color: #f0f0f0; padding: 15px; border-radius: 5px; margin: 10px 0;">
+//         <h3 style="color: #1a73e8;">Task Description:</h3>
+//         <p style="font-size: 16px;">${description}</p>
+//       </div>
+//       ` : ''}
+
+//       ${calendarResults.filter(result => result).map(result => 
+//         `<p>View in Google Calendar: <a href="${result.calendarLink}">Open Event</a></p>`
+//       ).join('')}
+
+//       <p style="font-size: 16px; color: #1a73e8;">
+//         Don't forget to complete the task on time!
+//       </p>
+//     </div>
+//   `;
+// }
+
+// // Continue task creation process
+// function continueTaskCreation(connection, body, createdAt, updatedAt, finalPriority, res) {
+//   const { 
+//     assigned_to = [], 
+//     stage, 
+//     taskDate, 
+//     title, 
+//     description, 
+//     time_alloted, 
+//     client_id 
+//   } = body;
+
+//   // Validate required fields
+//   if (!title || !stage || !client_id) {
+//     return res.status(400).send('Missing required task fields');
+//   }
+
+//   const insertTaskQuery = `
+//     INSERT INTO tasks (title, description, stage, taskDate, priority, createdAt, updatedAt, time_alloted, client_id) 
+//     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+//   connection.query(
+//     insertTaskQuery,
+//     [title, description, stage, taskDate, finalPriority, createdAt, updatedAt, time_alloted, client_id],
+//     (err, result) => {
+//       if (err) {
+//         return connection.rollback(() => {
+//           connection.release();
+//           console.error('Error inserting task:', err);
+//           return res.status(500).send('Error inserting task');
+//         });
+//       }
+
+//       const taskId = result.insertId;
+      
+//       // Validate task assignments
+//       if (!taskId || !Array.isArray(assigned_to) || assigned_to.length === 0) {
+//         return connection.rollback(() => {
+//           connection.release();
+//           console.error('Invalid task ID or assigned_to array');
+//           return res.status(500).send('Error creating task assignments');
+//         });
+//       }
+
+//       const taskAssignments = assigned_to.map(userId => [taskId, userId]);
+      
+//       const insertTaskAssignmentsQuery = `
+//         INSERT INTO TaskAssignments (task_id, user_id) 
+//         VALUES ${taskAssignments.map(() => '(?, ?)').join(', ')}`;
+
+//       const flattenedValues = taskAssignments.flat();
+
+//       connection.query(
+//         insertTaskAssignmentsQuery,
+//         flattenedValues,
+//         async (err) => {
+//           if (err) {
+//             return connection.rollback(() => {
+//               connection.release();
+//               console.error('Error inserting task assignments:', err);
+//               return res.status(500).send('Error inserting task assignments');
+//             });
+//           }
+
+//           const userEmailsQuery = `
+//             SELECT _id, email, name FROM users WHERE _id IN (?)`;
+
+//           connection.query(userEmailsQuery, [assigned_to], async (err, userResults) => {
+//             if (err) {
+//               return connection.rollback(() => {
+//                 connection.release();
+//                 console.error('Error fetching user emails:', err);
+//                 return res.status(500).send('Error fetching user emails');
+//               });
+//             }
+
+//             try {
+//               // Add Google Calendar events for each assigned user
+//               const calendarPromises = userResults.map(async (user) => {
+//                 try {
+//                   const calendarLink = await addTaskToGoogleCalendar(user.email, {
+//                     title,
+//                     description,
+//                     taskDate,
+//                     time_alloted,
+//                     priority: finalPriority
+//                   });
+//                   return { userId: user._id, calendarLink };
+//                 } catch (calendarError) {
+//                   console.error(`Error adding calendar event for user ${user._id}:`, calendarError);
+//                   return null;
+//                 }
+//               });
+
+//               const calendarResults = await Promise.all(calendarPromises);
+
+//               // Send email notifications
+//               await sendTaskAssignmentEmails(
+//                 userResults, 
+//                 title, 
+//                 description, 
+//                 finalPriority, 
+//                 body.priority, 
+//                 calendarResults
+//               );
+
+//               // Commit transaction
+//               connection.commit((commitErr) => {
+//                 if (commitErr) {
+//                   return connection.rollback(() => {
+//                     connection.release();
+//                     console.error('Error committing transaction:', commitErr);
+//                     return res.status(500).send('Error committing transaction');
+//                   });
+//                 }
+
+//                 connection.release();
+//                 res.status(201).send('Task created successfully');
+//               });
+//             } catch (processError) {
+//               return connection.rollback(() => {
+//                 connection.release();
+//                 console.error('Error in task assignment process:', processError);
+//                 return res.status(500).send('Error processing task assignment');
+//               });
+//             }
+//           });
+//         }
+//       );
+//     }
+//   );
+// }
+
+// Main route handler for task creation
+// router.post('/createjson', async (req, res) => {
+//   try {
+//     const { 
+//       assigned_to, 
+//       priority, 
+//       stage, 
+//       taskDate, 
+//       title, 
+//       description, 
+//       time_alloted, 
+//       client_id 
+//     } = req.body;
+
+//     // Use Indian Standard Time (IST)
+//     const createdAt = new Date(new Date().getTime() + (5.5 * 60 * 60 * 1000)).toISOString();   
+//     const updatedAt = createdAt;
+
+//     // Enhanced input validation
+//     if (!title || !stage || !client_id) {
+//       return res.status(400).send('Missing required fields: title, stage, or client_id');
+//     }
+
+//     if (!Array.isArray(assigned_to) || assigned_to.length === 0) {
+//       return res.status(400).send('assigned_to must be a non-empty array of user IDs');
+//     }
+
+//     // Database connection and transaction
+//     db.getConnection((err, connection) => {
+//       if (err) {
+//         console.error('Error getting database connection:', err);
+//         return res.status(500).send('Database connection error');
+//       }
+      
+//       connection.beginTransaction((transactionErr) => {
+//         if (transactionErr) {
+//           connection.release();
+//           console.error('Error starting transaction:', transactionErr);
+//           return res.status(500).send('Error starting transaction');
+//         }
+
+//         // Check existing high-priority tasks for the client
+//         const checkHighPriorityQuery = `
+//           SELECT COUNT(*) as highPriorityCount, priority as existingPriority, taskDate as existingTaskDate 
+//           FROM tasks 
+//           WHERE client_id = ? AND priority = 'HIGH'
+//         `;
+
+//         connection.query(checkHighPriorityQuery, [client_id], (checkErr, checkResults) => {
+//           if (checkErr) {
+//             return connection.rollback(() => {
+//               connection.release();
+//               console.error('Error checking high priority tasks:', checkErr);
+//               return res.status(500).send('Error checking existing tasks');
+//             });
+//           }
+
+//           const highPriorityCount = checkResults[0].highPriorityCount;
+//           let finalPriority = priority;
+//           let finalTaskDate = taskDate;
+
+//           // Priority adjustment logic
+//           if (priority === 'HIGH' && highPriorityCount > 0) {
+//             const existingTaskDate = new Date(checkResults[0].existingTaskDate);
+//             const currentDate = new Date();
+//             const daysDifference = Math.ceil((existingTaskDate - currentDate) / (1000 * 60 * 60 * 24));
+
+//             let dateAdjustmentDays = 0;
+//             if (checkResults[0].existingPriority === 'LOW') {
+//               dateAdjustmentDays = Math.ceil(daysDifference * 1.5);
+//             } else if (checkResults[0].existingPriority === 'MEDIUM') {
+//               dateAdjustmentDays = Math.ceil(daysDifference * 1.2);
+//             }
+
+//             finalTaskDate = new Date(existingTaskDate);
+//             finalTaskDate.setDate(finalTaskDate.getDate() + dateAdjustmentDays);
+
+//             const updateExistingTaskQuery = `
+//               UPDATE tasks 
+//               SET priority = 'MEDIUM', updatedAt = ?, taskDate = ?
+//               WHERE client_id = ? AND priority = 'HIGH'
+//             `;
+
+//             connection.query(
+//               updateExistingTaskQuery, 
+//               [updatedAt, finalTaskDate.toISOString(), client_id], 
+//               (updateErr) => {
+//                 if (updateErr) {
+//                   return connection.rollback(() => {
+//                     connection.release();
+//                     console.error('Error updating existing high priority task:', updateErr);
+//                     return res.status(500).send('Error managing task priorities');
+//                   });
+//                 }
+
+//                 continueTaskCreation(
+//                   connection, 
+//                   { ...req.body, taskDate: finalTaskDate.toISOString() }, 
+//                   createdAt, 
+//                   updatedAt, 
+//                   'HIGH', 
+//                   res
+//                 );
+//               }
+//             );
+//           } else {
+//             continueTaskCreation(connection, req.body, createdAt, updatedAt, priority, res);
+//           }
+//         });
+//       });
+//     });
+//   } catch (error) {
+//     console.error('Error in task creation process:', error);
+//     return res.status(500).send('Error in task creation process');
+//   }
+// });
 
 
 
@@ -1194,67 +1597,68 @@ router.get("/gettaskss", (req, res) => {
 
 
 
-router.get("/gettasks", (req, res) => {
-    const query = `
-        SELECT 
-            t.id AS task_id, 
-            c.name AS client_name,
-            t.title, 
-            t.stage, 
-            t.taskDate, 
-            t.priority, 
-            t.createdAt, 
-            t.updatedAt, 
-            u._id AS user_id, 
-            u.name AS user_name, 
-            u.role AS user_role
-        FROM 
-            tasks t
-        LEFT JOIN 
-            TaskAssignments ta ON t.id = ta.task_id
-        LEFT JOIN 
-            users u ON ta.user_id = u._id
-        LEFT JOIN 
-          clientss c ON t.client_id = c.id    
-        ORDER BY 
-            t.createdAt;
-    `;
+  router.get("/gettasks", (req, res) => {
+      const query = `
+          SELECT 
+              t.id AS task_id, 
+              c.name AS client_name,
+              t.title, 
+              t.stage, 
+              t.taskDate, 
+              t.priority, 
+              t.createdAt, 
+              t.updatedAt, 
+              u._id AS user_id, 
+              u.name AS user_name, 
+              u.role AS user_role
+          FROM 
+              tasks t
+          LEFT JOIN 
+              taskassignments ta ON t.id = ta.task_id
+          LEFT JOIN 
+              users u ON ta.user_id = u._id
+          LEFT JOIN 
+            clientss c ON t.client_id = c.id    
+          ORDER BY 
+              t.createdAt;
+      `;
 
-    db.query(query, (err, results) => {
-        if (err) {
-            console.error('Error fetching tasks:', err);
-            return res.status(500).send('Error fetching tasks');
-        }
+      db.query(query, (err, results) => {
+          if (err) {
+              console.error('Error fetching tasks:', err);
+              return res.status(500).send('Error fetching tasks');
+          }
 
-        // Group the results by task
-        const tasks = {};
-        results.forEach(row => {
-            if (!tasks[row.task_id]) {
-                tasks[row.task_id] = {
-                    task_id: row.task_id,
-                    client_name:row.client_name,
-                    title: row.title,
-                    stage: row.stage,
-                    taskDate: row.taskDate,
-                    priority: row.priority,
-                    createdAt: row.createdAt,
-                    updatedAt: row.updatedAt,
-                    assigned_users: []
-                };
-            }
+          // Group the results by task
+          const tasks = {};
+          results.forEach(row => {
+              if (!tasks[row.task_id]) {
+                  tasks[row.task_id] = {
+                      task_id: row.task_id,
+                      client_name:row.client_name,
+                      title: row.title,
+                      stage: row.stage,
+                      taskDate: row.taskDate,
+                      priority: row.priority,
+                      createdAt: row.createdAt,
+                      updatedAt: row.updatedAt,
+                      assigned_users: []
+                  };
+              }
 
-            if (row.user_id) {
-                tasks[row.task_id].assigned_users.push({
-                    user_id: row.user_id,
-                    user_name: row.user_name,
-                    user_role: row.user_role
-                });
-            }
-        });
+              if (row.user_id) {
+                  tasks[row.task_id].assigned_users.push({
+                      user_id: row.user_id,
+                      user_name: row.user_name,
+                      user_role: row.user_role
+                  });
+              }
+          });
 
-        res.status(200).json(Object.values(tasks));
-    });
-});
+          res.status(200).json(Object.values(tasks));
+      });
+  });
+
 
 router.get("/gettaskbyId/:task_id", (req, res) => {
   const { task_id } = req.params;
