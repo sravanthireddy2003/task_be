@@ -41,62 +41,6 @@ router.post("/login", (req, res) => {
   });
 });
 
-// router.post("/register", (req, res) => {
-//   const { name, title, role, email, password, isAdmin } = req.body;
-//   let hashedPassword = bcrypt.hashSync(password, 8);
-
-//   const tasks = JSON.stringify([]);  
-//   const createdAt = new Date().toISOString();
-//   const updatedAt = createdAt;
-//   const __v = 0; 
-
-//   const sqlFind = `SELECT * FROM users WHERE email='${email}'`;
-
-//   const sql = `
-//     INSERT INTO users (name, title, role, email, password, isAdmin, tasks, createdAt, updatedAt, __v, isActive)
-//     VALUES ('${name}', '${title}', '${role}', '${email}', '${hashedPassword}', ${isAdmin ? 1 : 0}, '${tasks}', '${createdAt}', '${updatedAt}', ${__v}, true)
-//   `;
-
-//   db.query(sqlFind, (err, result) => {
-//     if (err) return res.status(500).send({ auth: false, message: err.message });
-//     if (result && result.length > 0) {
-//       return res.status(500).send({ auth: false, status: "error", message: "loginId already exists" });
-//     }
-
-//     db.query(sql, (err, result) => {
-//       if (err && err.code === "ER_DUP_ENTRY") {
-//         return res.status(501).send({ auth: false, status: 2, message: "Email already exists" });
-//       }
-//       if (err) return res.status(500).send({ auth: false, message: err.message });
-
-//       const sqlGetUser = `SELECT * FROM users WHERE email='${email}'`;
-//       db.query(sqlGetUser, (err, result) => {
-//         if (err) return res.status(500).send({ auth: false, message: err.message });
-//         if (result && result.length > 0) {
-//           const user = result[0];
-//           return res.status(200).send({
-//             user: {
-//               _id: user._id,
-//               name: user.name,
-//               title: user.title,
-//               role: user.role,
-//               email: user.email,
-//               isAdmin: user.isAdmin,
-//               tasks: JSON.parse(user.tasks),
-//               createdAt: user.createdAt,
-//               updatedAt: user.updatedAt,
-//               __v: user.__v,
-//               isActive: user.isActive,
-//             }
-//           });
-//         }
-//         return res.status(500).send({ auth: false, message: "User registration failed" });
-//       });
-//     });
-//   });
-// });
-
-
 router.post("/register", (req, res) => {
   const { name, title, role, email, password, isAdmin , isGuest } = req.body;
   console.log({ name, title, role, email, password, isAdmin , isGuest })
@@ -154,11 +98,6 @@ router.post("/register", (req, res) => {
   });
 });
 
-
-
-
-
-
 router.post("/changepass", (req, res) => {
   const { oldPassword, newPassword, confirmPassword } = req.body;
   const { email } = req.user; // Assuming email is stored in req.user by authentication middleware
@@ -198,30 +137,5 @@ router.post("/changepass", (req, res) => {
       });
   });
 });
-
-
-// router.post('/forgot_password', (req, res) => {
-//     const { email, password } = req.body;
-//     const run = async () => {
-//         const sendEmailCommand = createSendEmailCommand(
-//             "recipient@example.com",
-//             "sender@example.com",
-//         );
-
-//         try {
-//             return await sesClient.send(sendEmailCommand);
-//         } catch (e) {
-//             console.error("Failed to send email.");
-//             return e;
-//         }
-//     };
-//     let hashedPassword = bcrypt.hashSync(password, 8);
-
-//     // const sql = `UPDATE USERS SET password = "${hashedPassword}" WHERE email= "${email}"`;
-//     db.query(sql, (err, result) => {
-//         if (err) return res.status(500).send({ auth: false, message: err.message });
-//         res.status(200).send({ auth: true, token: {}, user: result });
-//     });
-// });
 
 module.exports = router;
