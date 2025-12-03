@@ -3,7 +3,12 @@ const express = require('express');
 const multer = require('multer');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const router = express.Router();
+// tenantMiddleware intentionally not applied here (only Tasks/Projects are tenant-scoped)
+const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 require('dotenv').config();
+
+// Apply auth to uploads (tenant scoping removed — only Projects & Tasks will enforce tenant)
+router.use(requireAuth);
 
 // AWS S3 Client Setup
 const s3 = new S3Client({
@@ -18,8 +23,8 @@ const s3 = new S3Client({
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
-// POST route for file upload
-router.post('/upload', upload.single('file'), async (req, res) => {
+// POST route for file upload (Admin/Manager/Employee only)
+router.post('/upload', requireRole(['Admin','Manager','Employee']), upload.single('file'), async (req, res) => {
   try {
     // Ensure taskId and userId are provided in the body
     const { taskId, userId } = req.body;
@@ -65,18 +70,15 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       req.file.mimetype,
       req.file.size,
       taskId,
-      userId,
+      userId
     ];
-                  
+
     db.query(query, queryParams, (err, results) => {
       if (err) {
         console.error('Database Error:', err);
         return res.status(500).json({ error: 'Failed to save file details to the database' });
       }
-      res.status(201).json({
-        message: 'File uploaded successfully',
-        fileUrl,
-      });
+      res.status(201).json({ message: 'File uploaded successfully', fileUrl });
     });
   } catch (error) {
     console.error('Error in file upload process:', error);
@@ -84,23 +86,23 @@ router.post('/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-router.get('/getuploads/:id', async (req, res) => {
-    const { id } = req.params; 
+router.get('/getuploads/:id', requireRole(['Admin','Manager','Employee']), async (req, res) => {
+  const { id } = req.params; 
     try {
         const query = `
-            SELECT 
-                f.id, f.file_url, f.file_name, f.file_type, f.file_size, f.uploaded_at, f.isActive, 
-                t.id AS task_id, t.title AS task_name, 
-                u._id AS user_id, u.name AS user_name
-            FROM files f
-            LEFT JOIN tasks t ON f.task_id = t.id
-            LEFT JOIN users u ON f.user_id = u._id
-            WHERE t.id = ?
-            ORDER BY f.uploaded_at DESC
+          SELECT 
+            f.id, f.file_url, f.file_name, f.file_type, f.file_size, f.uploaded_at, f.isActive, 
+            t.id AS task_id, t.title AS task_name, 
+            u._id AS user_id, u.name AS user_name
+          FROM files f
+          LEFT JOIN tasks t ON f.task_id = t.id
+          LEFT JOIN users u ON f.user_id = u._id
+        WHERE t.id = ?
+          ORDER BY f.uploaded_at DESC
         `;
 
         // Pass the id as a parameter to prevent SQL injection
-        db.query(query, [id], (err, results) => {
+      db.query(query, [id], (err, results) => {
             if (err) {
                 console.error("Database Error:", err);
                 return res.status(500).json({ error: 'Failed to fetch the file upload from database' });

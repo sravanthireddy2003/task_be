@@ -2,9 +2,15 @@ const db = require(__root + "db");
 const express = require("express");
 const router = express.Router();
 const logger = require("../logger");
+// tenantMiddleware intentionally not applied here (only Tasks/Projects are tenant-scoped)
+const { requireAuth, requireRole } = require(__root + 'middleware/roles');
+require('dotenv').config();
+
+// All client endpoints require auth (tenant scoping removed — projects/tasks remain tenant-scoped)
+router.use(requireAuth);
 
 // CREATE - Add a new client
-router.post('/clients', (req, res) => {
+router.post('/clients', requireRole('Admin'), (req, res) => {
     const { name, email, phone, company, address, district, state, pincode } = req.body;
 
     logger.info(`Attempting to add new client: ${name}, Company: ${company}`);
@@ -57,25 +63,24 @@ router.post('/clients', (req, res) => {
 });
 
 // READ - Get all clients
-router.get('/clients', (req, res) => {
+router.get('/clients', requireRole(['Admin','Manager']), (req, res) => {
     // logger.info('Fetching all clients from the database.');
-
-    db.query('SELECT * FROM clientss', (err, results) => {
+    db.query('SELECT * FROM clientss', [], (err, results) => {
         if (err) {
             logger.error(`Error fetching clients: ${err.message}`);
             return res.status(500).json({ error: 'Database error' });
         }
-        // logger.info('Fetched all clients successfully.');
         res.status(200).json(results);
     });
 });
 
 // READ - Get a single client by ID
-router.get('/clients/:id', (req, res) => {
+router.get('/clients/:id', requireRole(['Admin','Manager']), (req, res) => {
     const { id } = req.params;
     logger.info(`Fetching client with ID: ${id}`);
 
-    db.query('SELECT * FROM clientss WHERE id = ?', [id], (err, result) => {
+    const sql = 'SELECT * FROM clientss WHERE id = ? LIMIT 1';
+    db.query(sql, [id], (err, result) => {
         if (err) {
             logger.error(`Error fetching client with ID ${id}: ${err.message}`);
             return res.status(500).json({ error: 'Database error' });
@@ -90,7 +95,7 @@ router.get('/clients/:id', (req, res) => {
 });
 
 // UPDATE - Edit a client by ID
-router.put('/clients/:id', (req, res) => {
+router.put('/clients/:id', requireRole('Admin'), (req, res) => {
     const { id } = req.params;
     const { ref, name, email, phone, company, address, district, state, pincode, taxId, paymentTerms, bankAccount, creditLimit } = req.body;
 
@@ -115,12 +120,14 @@ router.put('/clients/:id', (req, res) => {
 });
 
 // DELETE - Remove a client by ID
-router.delete('/clients/:id', (req, res) => {
+router.delete('/clients/:id', requireRole('Admin'), (req, res) => {
     const { id } = req.params;
 
     logger.info(`Deleting client with ID: ${id}`);
 
-    db.query('DELETE FROM clientss WHERE id = ?', [id], (err, result) => {
+    const sql = 'DELETE FROM clientss WHERE id = ?';
+
+    db.query(sql, [id], (err, result) => {
         if (err) {
             logger.error(`Error deleting client with ID ${id}: ${err.message}`);
             return res.status(500).json({ error: 'Database error' });

@@ -1,0 +1,150 @@
+{
+  "info": {
+    "name": "TaskManager BE - Full API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": "1.0"
+  },
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login (send OTP)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"P@ssword123\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api","auth","login"] }
+          }
+        },
+        {
+          "name": "Verify OTP",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"tempToken\": \"{{tempToken}}\",\n  \"otp\": \"123456\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/auth/verify-otp", "host": ["{{baseUrl}}"], "path": ["api","auth","verify-otp"] }
+          }
+        },
+        {
+          "name": "Forgot Password",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"user@example.com\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/auth/forgot-password", "host": ["{{baseUrl}}"], "path": ["api","auth","forgot-password"] }
+          }
+        },
+        {
+          "name": "Reset Password (OTP)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"user@example.com\",\n  \"otp\": \"123456\",\n  \"newPassword\": \"NewP@ssword123\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/auth/reset-password", "host": ["{{baseUrl}}"], "path": ["api","auth","reset-password"] }
+          }
+        },
+        {
+          "name": "Change Password (auth)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{token}}" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"oldPassword\": \"OldP@ss1\",\n  \"newPassword\": \"NewP@ssword123\",\n  \"confirmPassword\": \"NewP@ssword123\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/auth/change-password", "host": ["{{baseUrl}}"], "path": ["api","auth","change-password"] }
+          }
+        },
+        {
+          "name": "Get Profile",
+          "request": {
+            "method": "GET",
+            "header": [ { "key": "Authorization", "value": "Bearer {{token}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/profile", "host": ["{{baseUrl}}"], "path": ["api","auth","profile"] }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Authorization", "value": "Bearer {{token}}" }, { "key": "x-tenant-id", "value": "{{tenantId}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/logout", "host": ["{{baseUrl}}"], "path": ["api","auth","logout"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "item": [
+        {
+          "name": "Get Users (Admin)",
+          "request": { "method": "GET", "header": [ { "key": "Authorization", "value": "Bearer {{token}}" } ], "url": { "raw": "{{baseUrl}}/api/users/getusers", "host": ["{{baseUrl}}"], "path": ["api","users","getusers"] } }
+        },
+        {
+          "name": "Get User by ID (Admin)",
+          "request": { "method": "GET", "header": [ { "key": "Authorization", "value": "Bearer {{token}}" } ], "url": { "raw": "{{baseUrl}}/api/users/getuserbyid/{{userId}}", "host": ["{{baseUrl}}"], "path": ["api","users","getuserbyid", "{{userId}}"] } }
+        },
+        {
+          "name": "Update User (Admin)",
+          "request": { "method": "PUT", "header": [ { "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{token}}" } ], "body": { "mode": "raw", "raw": "{\n  \"name\": \"Updated Name\",\n  \"title\": \"Developer\",\n  \"email\": \"user@example.com\",\n  \"role\": \"Employee\",\n  \"isActive\": true\n}" }, "url": { "raw": "{{baseUrl}}/api/users/update/{{userId}}", "host": ["{{baseUrl}}"], "path": ["api","users","update","{{userId}}"] } }
+        },
+        {
+          "name": "Delete User (Admin)",
+          "request": { "method": "DELETE", "header": [ { "key": "Authorization", "value": "Bearer {{token}}" } ], "url": { "raw": "{{baseUrl}}/api/users/delete/{{userId}}", "host": ["{{baseUrl}}"], "path": ["api","users","delete","{{userId}}"] } }
+        }
+      ]
+    },
+    {
+      "name": "Clients",
+      "item": [
+        { "name": "Create Client (Admin)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{token}}" } ], "body": { "mode": "raw", "raw": "{\n  \"name\": \"Acme\",\n  \"email\": \"client@acme.com\",\n  \"phone\": \"1234567890\",\n  \"company\": \"Acme Inc\",\n  \"address\": \"123 Main St\",\n  \"district\": \"Central\",\n  \"state\": \"CA\",\n  \"pincode\": \"90001\"\n}" , "url": { "raw": "{{baseUrl}}/api/clients/clients", "host": ["{{baseUrl}}"], "path": ["api","clients","clients"] } } },
+        { "name": "List Clients (Admin/Manager)", "request": { "method": "GET", "header": [ { "key": "Authorization", "value": "Bearer {{token}}" } ], "url": { "raw": "{{baseUrl}}/api/clients/clients", "host": ["{{baseUrl}}"], "path": ["api","clients","clients"] } } },
+        { "name": "Get Client by ID", "request": { "method": "GET", "header": [ { "key": "Authorization", "value": "Bearer {{token}}" } ], "url": { "raw": "{{baseUrl}}/api/clients/clients/{{clientId}}", "host": ["{{baseUrl}}"], "path": ["api","clients","clients","{{clientId}}"] } } },
+        { "name": "Update Client (Admin)", "request": { "method": "PUT", "header": [ { "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{token}}" } ], "body": { "mode": "raw", "raw": "{\n  \"name\": \"Acme Updated\"\n}" }, "url": { "raw": "{{baseUrl}}/api/clients/clients/{{clientId}}", "host": ["{{baseUrl}}"], "path": ["api","clients","clients","{{clientId}}"] } } },
+        { "name": "Delete Client (Admin)", "request": { "method": "DELETE", "header": [ { "key": "Authorization", "value": "Bearer {{token}}" } ], "url": { "raw": "{{baseUrl}}/api/clients/clients/{{clientId}}", "host": ["{{baseUrl}}"], "path": ["api","clients","clients","{{clientId}}"] } } }
+      ]
+    },
+    {
+      "name": "Tasks",
+      "item": [
+        { "name": "Create Task (Admin/Manager)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{token}}" }, { "key": "x-tenant-id", "value": "{{tenantId}}" } ], "body": { "mode": "raw", "raw": "{\n  \"assigned_to\": [\"{{userId}}\"],\n  \"priority\": \"HIGH\",\n  \"stage\": \"TODO\",\n  \"taskDate\": \"2025-12-10\",\n  \"title\": \"New Task\",\n  \"description\": \"Task details\",\n  \"time_alloted\": 8,\n  \"client_id\": \"{{clientId}}\"\n}" }, "url": { "raw": "{{baseUrl}}/api/tasks/createjson", "host": ["{{baseUrl}}"], "path": ["api","tasks","createjson"] } } },
+        { "name": "List Tasks (role-aware)", "request": { "method": "GET", "header": [ { "key": "Authorization", "value": "Bearer {{token}}" }, { "key": "x-tenant-id", "value": "{{tenantId}}" } ], "url": { "raw": "{{baseUrl}}/api/tasks/gettasks", "host": ["{{baseUrl}}"], "path": ["api","tasks","gettasks"] } } },
+        { "name": "Get Task By ID", "request": { "method": "GET", "header": [ { "key": "Authorization", "value": "Bearer {{token}}" }, { "key": "x-tenant-id", "value": "{{tenantId}}" } ], "url": { "raw": "{{baseUrl}}/api/tasks/gettaskbyId/{{taskId}}", "host": ["{{baseUrl}}"], "path": ["api","tasks","gettaskbyId","{{taskId}}"] } } },
+        { "name": "Update Task (Admin/Manager)", "request": { "method": "PUT", "header": [ { "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{token}}" }, { "key": "x-tenant-id", "value": "{{tenantId}}" } ], "body": { "mode": "raw", "raw": "{\n  \"stage\": \"IN_PROGRESS\",\n  \"title\": \"Updated Title\"\n}" }, "url": { "raw": "{{baseUrl}}/api/tasks/updatetask/{{taskId}}", "host": ["{{baseUrl}}"], "path": ["api","tasks","updatetask","{{taskId}}"] } } },
+        { "name": "Delete Task (Admin/Manager)", "request": { "method": "DELETE", "header": [ { "key": "Authorization", "value": "Bearer {{token}}" }, { "key": "x-tenant-id", "value": "{{tenantId}}" } ], "url": { "raw": "{{baseUrl}}/api/tasks/deltask/{{taskId}}", "host": ["{{baseUrl}}"], "path": ["api","tasks","deltask","{{taskId}}"] } } },
+        { "name": "Create Subtask (Admin/Manager/Employee)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{token}}" }, { "key": "x-tenant-id", "value": "{{tenantId}}" } ], "body": { "mode": "raw", "raw": "{\n  \"title\": \"Subtask 1\",\n  \"due_date\": \"2025-12-11\",\n  \"tag\": \"QA\"\n}" }, "url": { "raw": "{{baseUrl}}/api/tasks/createsub/{{taskId}}", "host": ["{{baseUrl}}"], "path": ["api","tasks","createsub","{{taskId}}"] } } },
+        { "name": "Get Subtasks", "request": { "method": "GET", "header": [ { "key": "Authorization", "value": "Bearer {{token}}" }, { "key": "x-tenant-id", "value": "{{tenantId}}" } ], "url": { "raw": "{{baseUrl}}/api/tasks/getsubtasks/{{taskId}}", "host": ["{{baseUrl}}"], "path": ["api","tasks","getsubtasks","{{taskId}}"] } } },
+        { "name": "Add Working Hours (Employee)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{token}}" }, { "key": "x-tenant-id", "value": "{{tenantId}}" } ], "body": { "mode": "raw", "raw": "{\n  \"task_id\": \"{{taskId}}\",\n  \"date\": \"2025-12-03\",\n  \"start_time\": \"09:00\",\n  \"end_time\": \"17:00\"\n}" }, "url": { "raw": "{{baseUrl}}/api/tasks/working-hours", "host": ["{{baseUrl}}"], "path": ["api","tasks","working-hours"] } } }
+      ]
+    },
+    {
+      "name": "Uploads",
+      "item": [
+        {
+          "name": "Upload File (form-data)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Authorization", "value": "Bearer {{token}}" }, { "key": "x-tenant-id", "value": "{{tenantId}}" } ],
+            "body": { "mode": "formdata", "formdata": [ { "key": "file", "type": "file", "src": "" }, { "key": "taskId", "value": "{{taskId}}", "type": "text" }, { "key": "userId", "value": "{{userId}}", "type": "text" } ] },
+            "url": { "raw": "{{baseUrl}}/api/uploads/upload", "host": ["{{baseUrl}}"], "path": ["api","uploads","upload"] }
+          }
+        },
+        {
+          "name": "Get Uploads for Task",
+          "request": { "method": "GET", "header": [ { "key": "Authorization", "value": "Bearer {{token}}" }, { "key": "x-tenant-id", "value": "{{tenantId}}" } ], "url": { "raw": "{{baseUrl}}/api/uploads/getuploads/{{taskId}}", "host": ["{{baseUrl}}"], "path": ["api","uploads","getuploads","{{taskId}}"] } }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4000" },
+    { "key": "tenantId", "value": "tenant_1" },
+    { "key": "token", "value": "" },
+    { "key": "tempToken", "value": "" },
+    { "key": "userId", "value": "" },
+    { "key": "clientId", "value": "" },
+    { "key": "taskId", "value": "" },
+    { "key": "userId", "value": "" },
+    { "key": "userIdToDelete", "value": "" },
+    { "key": "clientIdToDelete", "value": "" },
+    { "key": "taskIdToDelete", "value": "" }
+  ]
+}

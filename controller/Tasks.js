@@ -1,7 +1,8 @@
 const db = require(__root + "db");
 const express = require("express");
 const router = express.Router();
-const verify = require("./VerifyToken");
+const tenantMiddleware = require(__root + 'middleware/tenant');
+const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const upload = require("../multer");
 const { storage } = require("./utils/Firestore");
 const cloudinary = require("cloudinary");
@@ -14,9 +15,13 @@ const logger = require("winston");
 const { google } = require("googleapis");
 require("dotenv").config();
 
+// enforce tenant + auth for all task routes
+router.use(tenantMiddleware);
+router.use(requireAuth);
+
 // updateing tasktime for old task
 
-router.post("/createjson", async (req, res) => {
+router.post("/createjson", requireRole(['Admin','Manager']), async (req, res) => {
   try {
     const {
       assigned_to,
@@ -376,7 +381,10 @@ router.get("/taskdropdownfortaskHrs", async (req, res) => {
 });
 
 router.get("/gettaskss", (req, res) => {
-  const { userId, isAdmin } = req.query;
+  // Use authenticated user for access control
+  const user = req.user;
+  const userId = user && (user._id || user.loginId);
+  const role = user && user.role;
   let query = `
       SELECT 
           t.id AS task_id, 
@@ -402,8 +410,8 @@ router.get("/gettaskss", (req, res) => {
 
   `;
 
-  // User access control
-  if (![1, 2].includes(parseInt(isAdmin, 10))) {
+  // User access control: Admin/Manager see all; Employee sees assigned tasks only
+  if (role === 'Employee') {
     query += ` WHERE t.id IN (
         SELECT task_id FROM TaskAssignments WHERE user_id = ?
     )`;
@@ -437,7 +445,7 @@ router.get("/gettaskss", (req, res) => {
     t.createdAt ASC;
   `;
 
-  const queryParams = [1, 2].includes(parseInt(isAdmin, 10)) ? [] : [userId];
+  const queryParams = role === 'Employee' ? [userId] : [];
 
   db.query(query, queryParams, (err, results) => {
     if (err) {
@@ -492,7 +500,11 @@ router.get("/gettaskss", (req, res) => {
 });
 
 router.get("/gettasks", (req, res) => {
-  const query = `
+  const user = req.user;
+  const role = user && user.role;
+  const userId = user && (user._id || user.loginId);
+
+  let query = `
           SELECT 
               t.id AS task_id, 
               c.name AS client_name,
@@ -517,7 +529,23 @@ router.get("/gettasks", (req, res) => {
               t.createdAt;
       `;
 
-  db.query(query, (err, results) => {
+  // If employee, restrict to assigned tasks
+  if (role === 'Employee') {
+    query = `
+      SELECT 
+         t.id AS task_id, c.name AS client_name, t.title, t.stage, t.taskDate, t.priority, t.createdAt, t.updatedAt, u._id AS user_id, u.name AS user_name, u.role AS user_role
+      FROM tasks t
+      JOIN TaskAssignments ta ON t.id = ta.task_id
+      LEFT JOIN users u ON ta.user_id = u._id
+      LEFT JOIN clientss c ON t.client_id = c.id
+      WHERE ta.user_id = ?
+      ORDER BY t.createdAt
+    `;
+  }
+
+  const params = role === 'Employee' ? [userId] : [];
+
+  db.query(query, params, (err, results) => {
     if (err) {
       console.error("Error fetching tasks:", err);
       return res.status(500).send("Error fetching tasks");
@@ -555,6 +583,9 @@ router.get("/gettasks", (req, res) => {
 
 router.get("/gettaskbyId/:task_id", (req, res) => {
   const { task_id } = req.params;
+  const user = req.user;
+  const role = user && user.role;
+  const userId = user && (user._id || user.loginId);
 
   const query = `
       SELECT 
@@ -620,11 +651,17 @@ router.get("/gettaskbyId/:task_id", (req, res) => {
       }
     });
 
+    // If employee, ensure the task is assigned to them
+    if (role === 'Employee') {
+      const assigned = task.assigned_users.some(u => String(u.user_id) === String(userId));
+      if (!assigned) return res.status(403).json({ message: 'Forbidden' });
+    }
+
     res.status(200).json(task);
   });
 });
 
-router.delete("/deltask/:task_id", (req, res) => {
+router.delete("/deltask/:task_id", requireRole(['Admin','Manager']), (req, res) => {
   const { task_id } = req.params;
 
   const sqlDelete = "DELETE FROM tasks WHERE id = ?";
@@ -657,7 +694,7 @@ router.delete("/deltask/:task_id", (req, res) => {
   });
 });
 
-router.post("/createsub/:task_id", (req, res) => {
+router.post("/createsub/:task_id", requireRole(['Admin','Manager','Employee']), (req, res) => {
   const { task_id } = req.params;
   const { title, due_date, tag } = req.body;
   const createdAt = new Date().toISOString();
@@ -759,7 +796,7 @@ router.get("/total-working-hours/:task_id", async (req, res) => {
   }
 });
 
-router.post("/working-hours", async (req, res) => {
+router.post("/working-hours", requireRole(['Admin','Manager','Employee']), async (req, res) => {
   try {
     const { task_id, date, start_time, end_time } = req.body;
 
@@ -834,7 +871,7 @@ router.get("/report", async (req, res) => {
   }
 });
 
-router.post("/taskhours", async (req, res) => {
+router.post("/taskhours", requireRole(['Admin','Manager','Employee']), async (req, res) => {
   const { encryptedData } = req.body;
 
   // Check for missing encrypted data
@@ -969,7 +1006,7 @@ router.post("/taskhours", async (req, res) => {
 //     });
 //   }
 // });
-router.put('/updatetask/:id', async (req, res) => {
+router.put('/updatetask/:id', requireRole(['Admin','Manager']), async (req, res) => {
   const { id: taskId } = req.params;
   const {
     stage,
