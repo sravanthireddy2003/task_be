@@ -70,6 +70,64 @@ async function isLocked(key) {
   return false;
 }
 
+// OTP resend rate limiting configuration
+const RESEND_MIN_INTERVAL = parseInt(process.env.OTP_RESEND_MIN_SECONDS || '60', 10); // seconds between resends
+const RESEND_MAX_PER_WINDOW = parseInt(process.env.OTP_RESEND_MAX || '3', 10); // max resends per window
+const RESEND_WINDOW_SECONDS = parseInt(process.env.OTP_RESEND_WINDOW_SECONDS || '600', 10); // window length in seconds
+
+async function canResendOtp(userId) {
+  if (redis) {
+    const lastKey = `otp:last:${userId}`;
+    const countKey = `otp:count:${userId}`;
+    const last = await redis.get(lastKey);
+    if (last) {
+      const since = Date.now() - parseInt(last, 10);
+      if (since < RESEND_MIN_INTERVAL * 1000) {
+        return { ok: false, retryAfter: Math.ceil((RESEND_MIN_INTERVAL * 1000 - since) / 1000) };
+      }
+    }
+    const count = parseInt(await redis.get(countKey) || '0', 10);
+    if (count >= RESEND_MAX_PER_WINDOW) return { ok: false, limitReached: true };
+    return { ok: true };
+  }
+
+  // in-memory fallback
+  if (!global.__otpResend) global.__otpResend = new Map();
+  const rec = global.__otpResend.get(String(userId)) || { count: 0, windowStart: Date.now(), last: 0 };
+  const now = Date.now();
+  if (now - rec.last < RESEND_MIN_INTERVAL * 1000) {
+    return { ok: false, retryAfter: Math.ceil((RESEND_MIN_INTERVAL * 1000 - (now - rec.last)) / 1000) };
+  }
+  // reset window if expired
+  if (now - rec.windowStart > RESEND_WINDOW_SECONDS * 1000) {
+    rec.count = 0;
+    rec.windowStart = now;
+  }
+  if (rec.count >= RESEND_MAX_PER_WINDOW) return { ok: false, limitReached: true };
+  return { ok: true };
+}
+
+async function noteResendOtp(userId) {
+  if (redis) {
+    const lastKey = `otp:last:${userId}`;
+    const countKey = `otp:count:${userId}`;
+    await redis.set(lastKey, String(Date.now()), 'EX', RESEND_WINDOW_SECONDS);
+    const count = await redis.incr(countKey);
+    if (count === 1) await redis.expire(countKey, RESEND_WINDOW_SECONDS);
+    return;
+  }
+  if (!global.__otpResend) global.__otpResend = new Map();
+  const now = Date.now();
+  const rec = global.__otpResend.get(String(userId)) || { count: 0, windowStart: now, last: 0 };
+  if (now - rec.windowStart > RESEND_WINDOW_SECONDS * 1000) {
+    rec.count = 0;
+    rec.windowStart = now;
+  }
+  rec.count = (rec.count || 0) + 1;
+  rec.last = now;
+  global.__otpResend.set(String(userId), rec);
+}
+
 // Login: prefer tenant from header/body/query; if missing, attempt to infer tenant by email.
 router.post('/login', async (req, res) => {
   const { email, password } = req.body;
@@ -309,6 +367,47 @@ router.post('/forgot-password', (req, res) => {
       return res.json({ message: 'OTP sent' });
     } catch (e) {
       return res.status(500).json({ message: 'Failed to send OTP' });
+    }
+  });
+});
+
+// Resend OTP: accept a tempToken (issued at login) and resend the OTP with rate-limiting
+router.post('/resend-otp', async (req, res) => {
+  const { tempToken } = req.body;
+  if (!tempToken) return res.status(400).json({ message: 'tempToken required' });
+
+  let payload;
+  try {
+    payload = jwt.verify(tempToken, process.env.SECRET || 'secret');
+  } catch (e) {
+    return res.status(401).json({ message: 'Invalid or expired temp token' });
+  }
+  if (!payload || payload.step !== 'otp' || !payload.id) return res.status(400).json({ message: 'Invalid temp token' });
+
+  const userId = payload.id;
+
+  // resolve user email
+  db.query('SELECT _id, email FROM users WHERE _id = ? LIMIT 1', [userId], async (err, rows) => {
+    if (err) return res.status(500).json({ message: 'DB error', error: err.message });
+    if (!rows || rows.length === 0) return res.status(404).json({ message: 'User not found' });
+    const user = rows[0];
+
+    try {
+      const can = await canResendOtp(userId);
+      if (!can.ok) {
+        if (can.limitReached) return res.status(429).json({ message: 'Resend limit reached. Try later.' });
+        return res.status(429).json({ message: 'Too many requests. Retry after seconds.', retryAfter: can.retryAfter || RESEND_MIN_INTERVAL });
+      }
+
+      const otpRes = await otpService.resendOtp(user.email, userId);
+      await noteResendOtp(userId);
+      const includeOtp = process.env.DEV_INCLUDE_OTP === 'true' || otpRes.sent === false;
+      const resp = { message: 'OTP resent', sent: !!otpRes.sent };
+      if (includeOtp) resp.otp = otpRes.code;
+      return res.json(resp);
+    } catch (e) {
+      console.warn('Resend OTP failed', e && e.message);
+      return res.status(500).json({ message: 'Failed to resend OTP' });
     }
   });
 });
