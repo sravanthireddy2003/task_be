@@ -383,8 +383,12 @@ router.get("/taskdropdownfortaskHrs", async (req, res) => {
 router.get("/gettaskss", (req, res) => {
   // Use authenticated user for access control
   const user = req.user;
-  const userId = user && (user._id || user.loginId);
   const role = user && user.role;
+
+  // optional filter: ?userId=<public_id|internal_id>
+  const filterUserParam = req.query.userId;
+
+  const buildAndRun = (resolvedUserId) => {
   let query = `
       SELECT 
           t.id AS task_id, 
@@ -410,12 +414,23 @@ router.get("/gettaskss", (req, res) => {
 
   `;
 
-  // User access control: Admin/Manager see all; Employee sees assigned tasks only
-  if (role === 'Employee') {
-    query += ` WHERE t.id IN (
-        SELECT task_id FROM TaskAssignments WHERE user_id = ?
-    )`;
-  }
+    // User access control: Employee sees assigned tasks only
+    if (role === 'Employee') {
+      query += ` WHERE t.id IN (
+          SELECT task_id FROM TaskAssignments WHERE user_id = ?
+      )`;
+    }
+
+    // If a filter user id provided (admin/manager usage), apply it
+    if (resolvedUserId && role !== 'Employee') {
+      // if query already has WHERE, append AND to filter assigned user
+      if (query.includes('WHERE')) {
+        query = query.replace(/ORDER BY[\s\S]*$/m, '');
+        query += ` AND t.id IN (SELECT task_id FROM TaskAssignments WHERE user_id = ?)`;
+      } else {
+        query += ` WHERE t.id IN (SELECT task_id FROM TaskAssignments WHERE user_id = ?)`;
+      }
+    }
   query += ` 
   ORDER BY 
     CASE t.priority
@@ -445,9 +460,9 @@ router.get("/gettaskss", (req, res) => {
     t.createdAt ASC;
   `;
 
-  const queryParams = role === 'Employee' ? [userId] : [];
+    const queryParams = role === 'Employee' ? [resolvedUserId] : (resolvedUserId ? [resolvedUserId] : []);
 
-  db.query(query, queryParams, (err, results) => {
+    db.query(query, queryParams, (err, results) => {
     if (err) {
       console.error("Error fetching tasks:", err);
       return res.status(500).send("Error fetching tasks");
@@ -478,6 +493,44 @@ router.get("/gettaskss", (req, res) => {
         });
       }
     });
+ 
+    // map assigned user internal ids to external public_id when available
+    try {
+      const userIds = new Set();
+      Object.values(tasks).forEach(t => t.assigned_users.forEach(u => { if (u.user_id) userIds.add(u.user_id); }));
+      if (userIds.size > 0) {
+        const idsArr = Array.from(userIds);
+        db.query('SELECT _id, public_id FROM users WHERE _id IN (?)', [idsArr], (errU, rowsU) => {
+              if (!errU && Array.isArray(rowsU)) {
+                const map = {};
+                rowsU.forEach(r => { if (r && r._id) map[r._id] = r.public_id || r._id; });
+                Object.values(tasks).forEach(t => {
+                  t.assigned_users = t.assigned_users.map(u => ({ user_id: map[u.user_id] || u.user_id, user_name: u.user_name, user_role: u.user_role }));
+                });
+              }
+          // continue sorting and response regardless of mapping errors
+          const sortedTasks = Object.values(tasks).sort((a, b) => {
+            const priorityOrder = { HIGH: 1, MEDIUM: 2, LOW: 3 };
+            const stageOrder = { TODO: 1, IN_PROGRESS: 2, COMPLETED: 3 };
+
+            if (priorityOrder[a.priority] !== priorityOrder[b.priority]) {
+              return priorityOrder[a.priority] - priorityOrder[b.priority];
+            }
+
+            if (stageOrder[a.stage] !== stageOrder[b.stage]) {
+              return stageOrder[a.stage] - stageOrder[b.stage];
+            }
+
+            return new Date(a.createdAt) - new Date(b.createdAt);
+          });
+
+          res.status(200).json(sortedTasks);
+        });
+        return;
+      }
+    } catch (e) {
+      // ignore mapping errors and fall back to original data
+    }
 
     // Optional: Additional client-side sorting as a fallback
     const sortedTasks = Object.values(tasks).sort((a, b) => {
@@ -496,15 +549,40 @@ router.get("/gettaskss", (req, res) => {
     });
 
     res.status(200).json(sortedTasks);
-  });
+    });
+  };
+
+  // If a filter user id is provided and it's a public_id, resolve to internal _id first
+  if (filterUserParam) {
+    const isNumeric = /^\d+$/.test(String(filterUserParam));
+    if (isNumeric) {
+      buildAndRun(filterUserParam);
+      return;
+    }
+    // resolve public_id -> _id
+    db.query('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [filterUserParam], (err, rows) => {
+      if (err) return res.status(500).json({ message: 'DB error resolving userId', error: err.message });
+      if (!rows || rows.length === 0) return res.status(404).json({ message: 'User not found for provided userId' });
+      const resolved = rows[0]._id;
+      buildAndRun(resolved);
+    });
+    return;
+  }
+
+  // No filter param, run with current authenticated user context
+  const currentUserInternal = user && user._id;
+  buildAndRun(currentUserInternal);
 });
 
 router.get("/gettasks", (req, res) => {
-  const user = req.user;
-  const role = user && user.role;
-  const userId = user && (user._id || user.loginId);
+  const authUser = req.user;
+  const role = authUser && authUser.role;
 
-  let query = `
+  // optional filter param: userId (can be public_id or numeric _id)
+  const filterUserParam = req.query.userId;
+
+  const buildAndRun = (resolvedUserId) => {
+    let query = `
           SELECT 
               t.id AS task_id, 
               c.name AS client_name,
@@ -529,9 +607,9 @@ router.get("/gettasks", (req, res) => {
               t.createdAt;
       `;
 
-  // If employee, restrict to assigned tasks
-  if (role === 'Employee') {
-    query = `
+    // If employee, restrict to assigned tasks
+    if (role === 'Employee') {
+      query = `
       SELECT 
          t.id AS task_id, c.name AS client_name, t.title, t.stage, t.taskDate, t.priority, t.createdAt, t.updatedAt, u._id AS user_id, u.name AS user_name, u.role AS user_role
       FROM tasks t
@@ -541,44 +619,91 @@ router.get("/gettasks", (req, res) => {
       WHERE ta.user_id = ?
       ORDER BY t.createdAt
     `;
-  }
-
-  const params = role === 'Employee' ? [userId] : [];
-
-  db.query(query, params, (err, results) => {
-    if (err) {
-      console.error("Error fetching tasks:", err);
-      return res.status(500).send("Error fetching tasks");
     }
 
-    // Group the results by task
-    const tasks = {};
-    results.forEach((row) => {
-      if (!tasks[row.task_id]) {
-        tasks[row.task_id] = {
-          task_id: row.task_id,
-          client_name: row.client_name,
-          title: row.title,
-          stage: row.stage,
-          taskDate: row.taskDate,
-          priority: row.priority,
-          createdAt: row.createdAt,
-          updatedAt: row.updatedAt,
-          assigned_users: [],
-        };
+    // If filter provided and caller is not Employee, apply assigned-user filter
+    if (resolvedUserId && role !== 'Employee') {
+      // replace trailing ORDER BY to append filter
+      query = query.replace(/ORDER BY[\s\S]*$/m, '');
+      query += ` WHERE t.id IN (SELECT task_id FROM TaskAssignments WHERE user_id = ?)`;
+      query += ` ORDER BY t.createdAt`;
+    }
+
+    const params = role === 'Employee' ? [resolvedUserId] : (resolvedUserId ? [resolvedUserId] : []);
+
+    db.query(query, params, (err, results) => {
+      if (err) {
+        console.error("Error fetching tasks:", err);
+        return res.status(500).send("Error fetching tasks");
       }
 
-      if (row.user_id) {
-        tasks[row.task_id].assigned_users.push({
-          user_id: row.user_id,
-          user_name: row.user_name,
-          user_role: row.user_role,
-        });
+      // Group the results by task
+      const tasks = {};
+      results.forEach((row) => {
+        if (!tasks[row.task_id]) {
+          tasks[row.task_id] = {
+            task_id: row.task_id,
+            client_name: row.client_name,
+            title: row.title,
+            stage: row.stage,
+            taskDate: row.taskDate,
+            priority: row.priority,
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt,
+            assigned_users: [],
+          };
+        }
+
+        if (row.user_id) {
+          tasks[row.task_id].assigned_users.push({
+            user_id: row.user_id,
+            user_name: row.user_name,
+            user_role: row.user_role,
+          });
+        }
+      });
+
+      // Map assigned internal ids to public_id where available
+      try {
+        const userIds = new Set();
+        Object.values(tasks).forEach(t => t.assigned_users.forEach(u => { if (u.user_id) userIds.add(u.user_id); }));
+        if (userIds.size > 0) {
+          const idsArr = Array.from(userIds);
+          db.query('SELECT _id, public_id FROM users WHERE _id IN (?)', [idsArr], (errU, rowsU) => {
+            if (!errU && Array.isArray(rowsU)) {
+              const map = {};
+              rowsU.forEach(r => { if (r && r._id) map[r._id] = r.public_id || r._id; });
+              Object.values(tasks).forEach(t => {
+                t.assigned_users = t.assigned_users.map(u => ({ user_id: map[u.user_id] || u.user_id, user_name: u.user_name, user_role: u.user_role }));
+              });
+            }
+            return res.status(200).json(Object.values(tasks));
+          });
+          return;
+        }
+      } catch (e) {
+        // ignore mapping errors
       }
+
+      res.status(200).json(Object.values(tasks));
     });
+  };
 
-    res.status(200).json(Object.values(tasks));
-  });
+  // If filter param provided, resolve public_id -> _id if needed
+  if (filterUserParam) {
+    const isNumeric = /^\d+$/.test(String(filterUserParam));
+    if (isNumeric) { buildAndRun(filterUserParam); return; }
+    db.query('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [filterUserParam], (err, rows) => {
+      if (err) return res.status(500).json({ message: 'DB error resolving userId', error: err.message });
+      if (!rows || rows.length === 0) return res.status(404).json({ message: 'User not found for provided userId' });
+      buildAndRun(rows[0]._id);
+    });
+    return;
+  }
+
+  // Default: use authenticated user internal id for employee filtering
+  const currentUserInternal = authUser && authUser._id;
+  buildAndRun(currentUserInternal);
 });
 
 router.get("/gettaskbyId/:task_id", (req, res) => {

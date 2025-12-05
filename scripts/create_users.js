@@ -41,8 +41,9 @@ async function run() {
       const title = u.title || '';
       const isAdmin = u.role === 'Admin' ? 1 : 0;
       const tasks = JSON.stringify([]);
-      const insert = 'INSERT INTO users (name, title, role, email, password, isAdmin, tasks, isActive, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
-      const result = await q(insert, [u.name, title, u.role, u.email, hashed, isAdmin, tasks, 1, DEFAULT_TENANT]);
+      const publicId = crypto.randomBytes(8).toString('hex');
+      const insert = 'INSERT INTO users (name, title, role, email, password, isAdmin, tasks, isActive, tenant_id, public_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+      const result = await q(insert, [u.name, title, u.role, u.email, hashed, isAdmin, tasks, 1, DEFAULT_TENANT, publicId]);
 
       const newId = result && result.insertId ? result.insertId : '(unknown)';
       console.log(`Created user: ${u.email}  role=${u.role}  _id=${newId}  password=${password}`);

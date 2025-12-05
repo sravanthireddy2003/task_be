@@ -70,7 +70,16 @@ router.get('/clients', requireRole(['Admin','Manager']), (req, res) => {
             logger.error(`Error fetching clients: ${err.message}`);
             return res.status(500).json({ error: 'Database error' });
         }
-        res.status(200).json(results);
+                // try to map numeric ids to external public_id if the column exists
+                db.query('SELECT id, public_id FROM clientss', [], (mapErr, mapRows) => {
+                    if (mapErr || !Array.isArray(mapRows) || mapRows.length === 0) {
+                        return res.status(200).json(results);
+                    }
+                    const map = {};
+                    mapRows.forEach(r => { map[r.id] = r.public_id || r.id; });
+                    const out = results.map(c => ({ ...c, id: map[c.id] || c.id }));
+                    return res.status(200).json(out);
+                });
     });
 });
 
@@ -90,7 +99,14 @@ router.get('/clients/:id', requireRole(['Admin','Manager']), (req, res) => {
             return res.status(404).json({ error: 'Client not found' });
         }
         logger.info(`Fetched client with ID: ${id} successfully.`);
-        res.status(200).json(result[0]);
+                const row = result[0];
+                // attempt to fetch public_id for this client (safe fallback)
+                db.query('SELECT public_id FROM clientss WHERE id = ? LIMIT 1', [id], (mapErr, mapRows) => {
+                    if (mapErr || !mapRows || mapRows.length === 0) return res.status(200).json(row);
+                    const pub = mapRows[0] && mapRows[0].public_id;
+                    if (pub) row.id = pub;
+                    return res.status(200).json(row);
+                });
     });
 });
 

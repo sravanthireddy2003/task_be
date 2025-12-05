@@ -26,60 +26,47 @@ const upload = multer({ storage });
 // POST route for file upload (Admin/Manager/Employee only)
 router.post('/upload', requireRole(['Admin','Manager','Employee']), upload.single('file'), async (req, res) => {
   try {
-    // Ensure taskId and userId are provided in the body
     const { taskId, userId } = req.body;
 
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-    if (!taskId || !userId) {
-      return res.status(400).json({ error: 'Task ID and User ID are required' });
-    }
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    if (!taskId || !userId) return res.status(400).json({ error: 'Task ID and User ID are required' });
 
-    // Log the incoming request body and file data for debugging
-    console.log('Request Body:', req.body);
-    console.log('Uploaded File:', req.file);
-
-    // Generate a unique name for the file
+    // Generate unique file name and upload to S3
     const uniqueName = `${Date.now()}-${req.file.originalname}`;
-
-    // Upload the file to AWS S3
     const uploadParams = {
       Bucket: process.env.AWS_S3_BUCKET_NAME,
       Key: uniqueName,
       Body: req.file.buffer,
       ContentType: req.file.mimetype,
     };
-
-    const uploadCommand = new PutObjectCommand(uploadParams);
-
-    // Send the file to S3 and wait for the upload to complete
-    await s3.send(uploadCommand);
-
-    // Construct the file URL from the S3 bucket and key
+    await s3.send(new PutObjectCommand(uploadParams));
     const fileUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${uniqueName}`;
 
-    // Insert the file details into the database
-    const query = `
-      INSERT INTO files (file_url, file_name, file_type, file_size, task_id, user_id, uploaded_at, isActive)
-      VALUES (?, ?, ?, ?, ?, ?, NOW(), 1)
-    `;
-    const queryParams = [
-      fileUrl,
-      req.file.originalname,
-      req.file.mimetype,
-      req.file.size,
-      taskId,
-      userId
-    ];
+    const doInsert = (resolvedUserId) => {
+      const sql = `INSERT INTO files (file_url, file_name, file_type, file_size, task_id, user_id, uploaded_at, isActive) VALUES (?, ?, ?, ?, ?, ?, NOW(), 1)`;
+      const params = [fileUrl, req.file.originalname, req.file.mimetype, req.file.size, taskId, resolvedUserId];
+      db.query(sql, params, (err) => {
+        if (err) {
+          console.error('Database Error:', err);
+          return res.status(500).json({ error: 'Failed to save file details to the database' });
+        }
+        return res.status(201).json({ message: 'File uploaded successfully', fileUrl });
+      });
+    };
 
-    db.query(query, queryParams, (err, results) => {
-      if (err) {
-        console.error('Database Error:', err);
-        return res.status(500).json({ error: 'Failed to save file details to the database' });
-      }
-      res.status(201).json({ message: 'File uploaded successfully', fileUrl });
-    });
+    if (!/^\d+$/.test(String(userId))) {
+      // resolve public_id -> _id
+      db.query('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [userId], (uErr, uRows) => {
+        if (uErr) {
+          console.error('User lookup error:', uErr);
+          return res.status(500).json({ error: 'Failed to resolve userId' });
+        }
+        if (!uRows || uRows.length === 0) return res.status(400).json({ error: 'Invalid userId' });
+        doInsert(uRows[0]._id);
+      });
+    } else {
+      doInsert(userId);
+    }
   } catch (error) {
     console.error('Error in file upload process:', error);
     res.status(500).json({ error: 'Internal Server Error' });
@@ -87,44 +74,72 @@ router.post('/upload', requireRole(['Admin','Manager','Employee']), upload.singl
 });
 
 router.get('/getuploads/:id', requireRole(['Admin','Manager','Employee']), async (req, res) => {
-  const { id } = req.params; 
-    try {
-        const query = `
-          SELECT 
-            f.id, f.file_url, f.file_name, f.file_type, f.file_size, f.uploaded_at, f.isActive, 
-            t.id AS task_id, t.title AS task_name, 
-            u._id AS user_id, u.name AS user_name
-          FROM files f
-          LEFT JOIN tasks t ON f.task_id = t.id
-          LEFT JOIN users u ON f.user_id = u._id
-        WHERE t.id = ?
-          ORDER BY f.uploaded_at DESC
-        `;
+  const { id } = req.params;
+  try {
+    const baseQuery = `
+      SELECT 
+        f.id, f.file_url, f.file_name, f.file_type, f.file_size, f.uploaded_at, f.isActive, 
+        t.id AS task_id, t.title AS task_name, 
+        u._id AS user_id, u.name AS user_name
+      FROM files f
+      LEFT JOIN tasks t ON f.task_id = t.id
+      LEFT JOIN users u ON f.user_id = u._id
+      WHERE t.id = ?
+      ORDER BY f.uploaded_at DESC
+    `;
 
-        // Pass the id as a parameter to prevent SQL injection
-      db.query(query, [id], (err, results) => {
-            if (err) {
-                console.error("Database Error:", err);
-                return res.status(500).json({ error: 'Failed to fetch the file upload from database' });
-            }
+    const filterUserParam = req.query.userId;
 
-            if (results.length === 0) {
-                return res.status(201).json({ message: 'Please upload a File' });
-            }
+    const runQuery = (resolvedUserId) => {
+      let sql = baseQuery;
+      const params = [id];
+      if (resolvedUserId) {
+        sql = sql.replace(/ORDER BY[\s\S]*$/m, '');
+        sql += ' AND f.user_id = ? ORDER BY f.uploaded_at DESC';
+        params.push(resolvedUserId);
+      }
+      db.query(sql, params, (err, results) => {
+        if (err) {
+          console.error('Database Error:', err);
+          return res.status(500).json({ error: 'Failed to fetch the file upload from database' });
+        }
+        if (!results || results.length === 0) return res.status(201).json({ message: 'Please upload a File' });
 
-            // Return the fetched file upload as JSON
-            res.status(200).json({
-                message: 'File upload fetched successfully',
-                // data: results[0]
-                data: results
-            });
-        });
-    } catch (error) {
-        console.error("Error fetching file upload:", error);
-        res.status(500).json({ error: 'Internal server error' });
+        try {
+          const userIds = Array.from(new Set(results.map(r => r.user_id).filter(Boolean)));
+          if (userIds.length === 0) return res.status(200).json({ message: 'File upload fetched successfully', data: results });
+          db.query('SELECT _id, public_id FROM users WHERE _id IN (?)', [userIds], (uErr, uRows) => {
+            if (uErr || !Array.isArray(uRows)) return res.status(200).json({ message: 'File upload fetched successfully', data: results });
+            const map = {};
+            uRows.forEach(u => { map[u._id] = u.public_id || u._id; });
+            const out = results.map(r => ({ ...r, user_id: map[r.user_id] || r.user_id }));
+            return res.status(200).json({ message: 'File upload fetched successfully', data: out });
+          });
+        } catch (e) {
+          return res.status(200).json({ message: 'File upload fetched successfully', data: results });
+        }
+      });
+    };
+
+    if (filterUserParam) {
+      const isNumeric = /^\d+$/.test(String(filterUserParam));
+      if (isNumeric) { runQuery(filterUserParam); return; }
+      db.query('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [filterUserParam], (err, rows) => {
+        if (err) return res.status(500).json({ error: 'DB error resolving userId' });
+        if (!rows || rows.length === 0) return res.status(404).json({ message: 'User not found for provided userId' });
+        runQuery(rows[0]._id);
+      });
+      return;
     }
+
+    runQuery(null);
+  } catch (error) {
+    console.error('Error fetching file upload:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-
-
 module.exports = router;
+
+
+

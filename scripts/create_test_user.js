@@ -17,9 +17,11 @@ async function run() {
       process.exit(0);
     }
     const hashed = await bcrypt.hash(password, 10);
-    const insert = 'INSERT INTO users (name, title, role, email, password, isAdmin, tasks, isActive, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
-    const r = await q(insert, ['Test Dev', 'Dev', 'Admin', email, hashed, 1, JSON.stringify([]), 1, tenant]);
-    console.log('Created test user:', email, 'password=', password, 'id=', r.insertId);
+    const crypto = require('crypto');
+    const publicId = crypto.randomBytes(8).toString('hex');
+    const insert = 'INSERT INTO users (name, title, role, email, password, isAdmin, tasks, isActive, tenant_id, public_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+    const r = await q(insert, ['Test Dev', 'Dev', 'Admin', email, hashed, 1, JSON.stringify([]), 1, tenant, publicId]);
+    console.log('Created test user:', email, 'password=', password, 'public_id=', publicId);
     process.exit(0);
   } catch (e) {
     console.error('Failed to create test user', e.message || e);

@@ -103,6 +103,11 @@ async function sendOtp(email, userId) {
 
 async function verifyOtp(userId, code) {
   const stored = await _getAndDeleteOtp(userId);
+  if (process.env.OTP_DEBUG === 'true') {
+    try {
+      console.log(`[OTP DEBUG] verifyOtp userId=${userId} provided=${code} stored=${stored}`);
+    } catch (e) {}
+  }
   if (!stored) return false;
   return String(stored) === String(code);
 }

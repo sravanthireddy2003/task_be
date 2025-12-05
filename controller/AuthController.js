@@ -257,68 +257,77 @@ router.post('/verify-otp', (req, res) => {
       const ok = await otpService.verifyOtp(user._id || user.email, otp);
       if (!ok) return res.status(401).json({ message: 'Invalid or expired OTP' });
 
-      // generate full access token
-      const token = jwt.sign({ id: user._id }, process.env.SECRET || 'secret', { expiresIn: '8h' });
+          // generate full access token using public_id if available (external random id)
+          const tokenIdForJwt = user.public_id || String(user._id);
+          // Make access token valid for 7 days
+          const token = jwt.sign({ id: tokenIdForJwt }, process.env.SECRET || 'secret', { expiresIn: '7d' });
 
-      // attach modules list based on role
+      // prefer modules stored on user record (JSON). If present, parse and normalize
+      const crypto = require('crypto');
+      function normalizeModulesFromUser(user) {
+        if (!user) return null;
+        const raw = user.modules;
+        if (!raw) return null;
+        let arr = null;
+        try {
+          arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        } catch (e) {
+          return null;
+        }
+        if (!Array.isArray(arr) || arr.length === 0) return null;
+
+        // normalize each entry to have `moduleId` (string), `name`, `access`
+        const out = arr.map(m => {
+          const name = m.name || m.module || '';
+          const access = m.access || 'full';
+          // accept `moduleId` or `id` or numeric `moduleId`
+          let mid = m.moduleId || m.id || m.module_id || m.module || '';
+          if (typeof mid === 'number') mid = String(mid);
+          if (!mid) mid = crypto.randomBytes(8).toString('hex');
+          return { moduleId: mid, name, access };
+        }).filter(m => (m.name || '').toLowerCase() !== 'team & employees');
+
+        return out;
+      }
+
       function getModulesForRole(role) {
-        const admin = [
-          { moduleId: 1, name: 'User Management', access: 'full' },
-          { moduleId: 2, name: 'Dashboard', access: 'full' },
-          { moduleId: 3, name: 'Clients', access: 'full' },
-          { moduleId: 4, name: 'Departments', access: 'full' },
-          { moduleId: 5, name: 'Tasks', access: 'full' },
-          { moduleId: 6, name: 'Projects', access: 'full' },
-          { moduleId: 7, name: 'Team & Employees', access: 'full' },
-          { moduleId: 8, name: 'Workflow (Project & Task Flow)', access: 'full' },
-          { moduleId: 9, name: 'Notifications', access: 'full' },
-          { moduleId: 10, name: 'Reports & Analytics', access: 'full' },
-          { moduleId: 11, name: 'Document & File Management', access: 'full' },
-          { moduleId: 12, name: 'Settings & Master Configuration', access: 'full' },
-          { moduleId: 13, name: 'Chat / Real-Time Collaboration', access: 'full' },
-          { moduleId: 14, name: 'Approval Workflows', access: 'full' }
+        // fallback role-based list — generate string moduleIds
+        function mk(n, name, access) { return { moduleId: crypto.randomBytes(8).toString('hex'), name, access }; }
+        if (role === 'Admin') return [
+          mk(1,'User Management','full'),
+          mk(2,'Dashboard','full'),
+          mk(3,'Clients','full'),
+          mk(4,'Departments','full'),
+          mk(5,'Tasks','full'),
+          mk(6,'Projects','full'),
+          // Team & Employees intentionally omitted
+          mk(8,'Workflow (Project & Task Flow)','full'),
+          mk(9,'Notifications','full'),
+          mk(10,'Reports & Analytics','full'),
+          mk(11,'Document & File Management','full'),
+          mk(12,'Settings & Master Configuration','full'),
+          mk(13,'Chat / Real-Time Collaboration','full'),
+          mk(14,'Approval Workflows','full')
         ];
-
-        const manager = [
-          { moduleId: 2, name: 'Dashboard', access: 'full' },
-          { moduleId: 4, name: 'Departments', access: 'full' },
-          { moduleId: 5, name: 'Tasks', access: 'full' },
-          { moduleId: 6, name: 'Projects', access: 'full' },
-          { moduleId: 7, name: 'Team & Employees', access: 'full' },
-          { moduleId: 8, name: 'Workflow (Project & Task Flow)', access: 'full' },
-          { moduleId: 9, name: 'Notifications', access: 'limited' },
-          { moduleId: 10, name: 'Reports & Analytics', access: 'full' },
-          { moduleId: 11, name: 'Document & File Management', access: 'limited' },
-          { moduleId: 13, name: 'Chat / Real-Time Collaboration', access: 'full' },
-          { moduleId: 14, name: 'Approval Workflows', access: 'limited' }
+        if (role === 'Manager') return [
+          mk(2,'Dashboard','full'), mk(4,'Departments','full'), mk(5,'Tasks','full'), mk(6,'Projects','full'),
+          mk(8,'Workflow (Project & Task Flow)','full'), mk(9,'Notifications','limited'), mk(10,'Reports & Analytics','full'),
+          mk(11,'Document & File Management','limited'), mk(13,'Chat / Real-Time Collaboration','full'), mk(14,'Approval Workflows','limited')
         ];
-
-        const employee = [
-          { moduleId: 2, name: 'Dashboard', access: 'view' },
-          { moduleId: 5, name: 'Tasks', access: 'limited' },
-          { moduleId: 7, name: 'Team & Employees', access: 'view' },
-          { moduleId: 9, name: 'Notifications', access: 'limited' },
-          { moduleId: 10, name: 'Reports & Analytics', access: 'limited' },
-          { moduleId: 11, name: 'Document & File Management', access: 'limited' },
-          { moduleId: 13, name: 'Chat / Real-Time Collaboration', access: 'full' }
+        if (role === 'Employee') return [
+          mk(2,'Dashboard','view'), mk(5,'Tasks','limited'), mk(9,'Notifications','limited'), mk(10,'Reports & Analytics','limited'),
+          mk(11,'Document & File Management','limited'), mk(13,'Chat / Real-Time Collaboration','full')
         ];
-
-        const client = [
-          { moduleId: 2, name: 'Dashboard', access: 'view' },
-          { moduleId: 6, name: 'Projects', access: 'view' },
-          { moduleId: 7, name: 'Team & Employees', access: 'view' },
-          { moduleId: 9, name: 'Notifications', access: 'limited' },
-          { moduleId: 10, name: 'Reports & Analytics', access: 'limited' },
-          { moduleId: 11, name: 'Document & File Management', access: 'limited' },
-          { moduleId: 13, name: 'Chat / Real-Time Collaboration', access: 'limited' }
+        if (role === 'Client') return [
+          mk(2,'Dashboard','view'), mk(6,'Projects','view'), mk(9,'Notifications','limited'), mk(10,'Reports & Analytics','limited'),
+          mk(11,'Document & File Management','limited'), mk(13,'Chat / Real-Time Collaboration','limited')
         ];
-
-        if (role === 'Admin') return admin;
-        if (role === 'Manager') return manager;
-        if (role === 'Employee') return employee;
-        if (role === 'Client') return client;
         return [];
       }
+
+      // Use stored modules if present and valid; otherwise fall back
+      const storedModules = normalizeModulesFromUser(user);
+      const modulesToReturn = storedModules && storedModules.length ? storedModules : getModulesForRole(user.role);
 
       // optional: log login history (best effort)
       try {
@@ -330,10 +339,47 @@ router.post('/verify-otp', (req, res) => {
         // ignore
       }
 
-      return res.json({ token, user: { id: user._id, email: user.email, name: user.name, role: user.role, modules: getModulesForRole(user.role) } });
+              // generate a refresh token (longer lived) and return it alongside access token
+              const refreshToken = jwt.sign({ id: tokenIdForJwt, type: 'refresh' }, process.env.SECRET || 'secret', { expiresIn: '30d' });
+              // return external id as `id` (public_id) for clients and return actual modules
+              return res.json({ token, refreshToken, user: { id: user.public_id || String(user._id), email: user.email, name: user.name, role: user.role, modules: modulesToReturn } });
     });
   } catch (e) {
     return res.status(401).json({ message: 'Invalid or expired temp token', error: e.message });
+  }
+});
+
+// Refresh access token using a refresh token. Accepts `refreshToken` in body
+// or as a Bearer token in `Authorization` header. Returns new access token
+// and a rotated refresh token (stateless rotation - no server-side storage).
+router.post('/refresh', (req, res) => {
+  const incoming = req.body && req.body.refreshToken
+    || (req.headers.authorization && req.headers.authorization.split(' ')[1]);
+  if (!incoming) return res.status(400).json({ message: 'refreshToken required' });
+
+  try {
+    const payload = jwt.verify(incoming, process.env.SECRET || 'secret');
+    if (!payload || payload.type !== 'refresh' || !payload.id) return res.status(401).json({ message: 'Invalid refresh token' });
+
+    const tokenIdForJwt = payload.id;
+    // issue a new access token (7 days)
+    const token = jwt.sign({ id: tokenIdForJwt }, process.env.SECRET || 'secret', { expiresIn: '7d' });
+    // rotate refresh token (30 days)
+    const refreshToken = jwt.sign({ id: tokenIdForJwt, type: 'refresh' }, process.env.SECRET || 'secret', { expiresIn: '30d' });
+
+    // attempt to return user info if we can resolve the id to a user row
+    const isNumeric = /^\d+$/.test(String(tokenIdForJwt));
+    const sqlFind = isNumeric ? 'SELECT * FROM users WHERE _id = ? LIMIT 1' : 'SELECT * FROM users WHERE public_id = ? LIMIT 1';
+    db.query(sqlFind, [tokenIdForJwt], (err, rows) => {
+      if (err) return res.status(500).json({ message: 'DB error', error: err.message });
+      if (!rows || rows.length === 0) return res.json({ token, refreshToken });
+      const user = rows[0];
+      const userResp = { id: user.public_id || String(user._id), email: user.email, name: user.name, role: user.role };
+      return res.json({ token, refreshToken, user: userResp });
+    });
+  } catch (e) {
+    if (e && e.name === 'TokenExpiredError') return res.status(401).json({ message: 'Refresh token expired' });
+    return res.status(401).json({ message: 'Invalid refresh token', error: e.message });
   }
 });
 
@@ -419,6 +465,9 @@ router.post('/reset-password', (req, res) => {
   if (!email || !otp || !newPassword) return res.status(400).json({ message: 'email, otp and newPassword required' });
 
   const handleResetForUser = async (user) => {
+    if (process.env.OTP_DEBUG === 'true') {
+      try { console.log(`[RESET-PW] verifyOtp called for user _id=${user._id} email=${user.email} otp=${otp}`); } catch (e) {}
+    }
     const ok = await otpService.verifyOtp(user._id || user.email, otp);
     if (!ok) return res.status(401).json({ message: 'Invalid or expired OTP' });
 
@@ -469,11 +518,58 @@ router.post('/logout', requireAuth, (req, res) => {
   return res.json({ message: 'Logged out' });
 });
 
+// Complete setup: accept setupToken issued at user creation and set initial password
+router.post('/complete-setup', async (req, res) => {
+  const { setupToken, newPassword, confirmPassword } = req.body;
+  if (!setupToken || !newPassword || !confirmPassword) return res.status(400).json({ message: 'setupToken, newPassword and confirmPassword required' });
+  if (newPassword !== confirmPassword) return res.status(400).json({ message: 'New and confirm passwords do not match' });
+
+  let payload;
+  try {
+    payload = jwt.verify(setupToken, process.env.SECRET || 'change_this_secret');
+  } catch (e) {
+    return res.status(401).json({ message: 'Invalid or expired setup token' });
+  }
+  if (!payload || payload.step !== 'setup' || !payload.id) return res.status(400).json({ message: 'Invalid setup token' });
+
+  try {
+    // find user by public_id or numeric id
+    const idVal = payload.id;
+    const isNumeric = /^\d+$/.test(String(idVal));
+    const sqlFind = isNumeric ? 'SELECT _id FROM users WHERE _id = ? LIMIT 1' : 'SELECT _id FROM users WHERE public_id = ? LIMIT 1';
+    db.query(sqlFind, [idVal], async (err, rows) => {
+      if (err) return res.status(500).json({ message: 'DB error', error: err.message });
+      if (!rows || rows.length === 0) return res.status(404).json({ message: 'User not found' });
+      const user = rows[0];
+
+      // validate policy
+      const check = passwordPolicy.validatePassword(newPassword);
+      if (!check.valid) return res.status(400).json({ message: check.reason });
+
+      const reused = await passwordPolicy.isPasswordReused(db, user._id, newPassword);
+      if (reused) return res.status(400).json({ message: 'Cannot reuse recent password' });
+
+      const hashed = await bcrypt.hash(newPassword, 10);
+      const upd = 'UPDATE users SET password = ?, password_changed_at = NOW() WHERE _id = ?';
+      db.query(upd, [hashed, user._id], (uErr) => {
+        if (uErr) return res.status(500).json({ message: 'Failed to update password' });
+        try {
+          const ih = 'INSERT INTO password_history (user_id, password_hash, changed_at) VALUES (?, ?, NOW())';
+          db.query(ih, [user._id, hashed], () => {});
+        } catch (e) {}
+        return res.json({ message: 'Password setup complete' });
+      });
+    });
+  } catch (e) {
+    return res.status(500).json({ message: 'Error completing setup', error: e.message });
+  }
+});
+
 // Profile endpoints
 router.get('/profile', requireAuth, (req, res) => {
   const user = req.user;
   const safe = {
-    id: user._id,
+    id: user.public_id || user._id,
     email: user.email,
     name: user.name,
     role: user.role,

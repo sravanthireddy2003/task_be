@@ -133,6 +133,21 @@
         }
       ]
     }
+    ,
+    {
+      "name": "Example Payloads",
+      "item": [
+        {
+          "name": "User Modules Example",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"token\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MjMsImlhdCI6MTc2NDgzMTQ3NiwiZXhwIjoxNzY0ODYwMjc2fQ.AGDM4_JaTm3TmwLTwx5qFtejfjlIhVQjVIHfjQ9Px88\",\n  \"user\": {\n    \"id\": \"ac510b2dd0e311f088c200155daedf50\",\n    \"email\": \"korapatiashwini@gmail.com\",\n    \"name\": \"Admin User\",\n    \"role\": \"Admin\",\n    \"modules\": [\n      { \"moduleId\": \"r8f3d6a1b2c4e5f7\", \"name\": \"User Management\", \"access\": \"full\" },\n      { \"moduleId\": \"d4a9b6c3e2f7a1b8\", \"name\": \"Dashboard\", \"access\": \"full\" },\n      { \"moduleId\": \"c7e2f1a9b3d6f4e5\", \"name\": \"Clients\", \"access\": \"full\" },\n      { \"moduleId\": \"p9q8w7e6r5t4y3u2\", \"name\": \"Departments\", \"access\": \"full\" },\n      { \"moduleId\": \"t6s5k4j3h2g1f0d9\", \"name\": \"Tasks\", \"access\": \"full\" },\n      { \"moduleId\": \"pr0j3c7s8x9z2b1n\", \"name\": \"Projects\", \"access\": \"full\" },\n      { \"moduleId\": \"w0r1k2f3l4o5w6q7\", \"name\": \"Workflow (Project & Task Flow)\", \"access\": \"full\" },\n      { \"moduleId\": \"n0t1f2c3a4t5i6v7\", \"name\": \"Notifications\", \"access\": \"full\" },\n      { \"moduleId\": \"r3p0a1n2l3y4t5c6\", \"name\": \"Reports & Analytics\", \"access\": \"full\" },\n      { \"moduleId\": \"d0f1m2g3n4v5b6x7\", \"name\": \"Document & File Management\", \"access\": \"full\" },\n      { \"moduleId\": \"s3t4m5c6o7n8f9g0\", \"name\": \"Settings & Master Configuration\", \"access\": \"full\" },\n      { \"moduleId\": \"c8h7t6r5e4a3l2c1\", \"name\": \"Chat / Real-Time Collaboration\", \"access\": \"full\" },\n      { \"moduleId\": \"a9p8r7o6w5f4l3k2\", \"name\": \"Approval Workflows\", \"access\": \"full\" }\n    ]\n  }\n} " },
+            "url": { "raw": "{{baseUrl}}/mock/user-modules-example", "host": ["{{baseUrl}}"], "path": ["mock","user-modules-example"] }
+          }
+        }
+      ]
+    }
   ],
   "variable": [
     { "key": "baseUrl", "value": "http://localhost:4000" },
