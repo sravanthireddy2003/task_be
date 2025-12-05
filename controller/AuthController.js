@@ -247,51 +247,45 @@ router.post('/verify-otp', (req, res) => {
     if (!payload || payload.step !== 'otp') return res.status(401).json({ message: 'Invalid temp token' });
 
     const userId = payload.id;
-    // fetch user by internal _id
     const sql = 'SELECT * FROM users WHERE _id = ? LIMIT 1';
     db.query(sql, [userId], async (err, results) => {
       if (err) return res.status(500).json({ message: 'DB error', error: err.message });
       if (!results || results.length === 0) return res.status(404).json({ message: 'User not found' });
-      const user = results[0];
 
+      const user = results[0];
       const ok = await otpService.verifyOtp(user._id || user.email, otp);
       if (!ok) return res.status(401).json({ message: 'Invalid or expired OTP' });
 
-          // generate full access token using public_id if available (external random id)
-          const tokenIdForJwt = user.public_id || String(user._id);
-          // Make access token valid for 7 days
-          const token = jwt.sign({ id: tokenIdForJwt }, process.env.SECRET || 'secret', { expiresIn: '7d' });
+      const tokenIdForJwt = user.public_id || String(user._id);
+      const token = jwt.sign({ id: tokenIdForJwt }, process.env.SECRET || 'secret', { expiresIn: '7d' });
 
-      // prefer modules stored on user record (JSON). If present, parse and normalize
       const crypto = require('crypto');
+
+      // Normalize stored modules
       function normalizeModulesFromUser(user) {
-        if (!user) return null;
-        const raw = user.modules;
-        if (!raw) return null;
-        let arr = null;
+        if (!user || !user.modules) return null;
+        let arr;
         try {
-          arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        } catch (e) {
+          arr = typeof user.modules === 'string' ? JSON.parse(user.modules) : user.modules;
+        } catch {
           return null;
         }
         if (!Array.isArray(arr) || arr.length === 0) return null;
 
-        // normalize each entry to have `moduleId` (string), `name`, `access`
-        const out = arr.map(m => {
-          const name = m.name || m.module || '';
-          const access = m.access || 'full';
-          // accept `moduleId` or `id` or numeric `moduleId`
-          let mid = m.moduleId || m.id || m.module_id || m.module || '';
-          if (typeof mid === 'number') mid = String(mid);
-          if (!mid) mid = crypto.randomBytes(8).toString('hex');
-          return { moduleId: mid, name, access };
-        }).filter(m => (m.name || '').toLowerCase() !== 'team & employees');
-
-        return out;
+        return arr
+          .map(m => {
+            const name = m.name || m.module || '';
+            const access = m.access || 'full';
+            let mid = m.moduleId || m.id || m.module_id || m.module || '';
+            if (typeof mid === 'number') mid = String(mid);
+            if (!mid) mid = crypto.randomBytes(8).toString('hex');
+            return { moduleId: mid, name, access };
+          })
+          .filter(m => (m.name || '').toLowerCase() !== 'team & employees');
       }
 
+      // Role-based default modules
       function getModulesForRole(role) {
-        // fallback role-based list — generate string moduleIds
         function mk(n, name, access) { return { moduleId: crypto.randomBytes(8).toString('hex'), name, access }; }
         if (role === 'Admin') return [
           mk(1,'User Management','full'),
@@ -300,14 +294,13 @@ router.post('/verify-otp', (req, res) => {
           mk(4,'Departments','full'),
           mk(5,'Tasks','full'),
           mk(6,'Projects','full'),
-          // Team & Employees intentionally omitted
           mk(8,'Workflow (Project & Task Flow)','full'),
           mk(9,'Notifications','full'),
           mk(10,'Reports & Analytics','full'),
           mk(11,'Document & File Management','full'),
-          mk(12,'Settings & Master Configuration','full'),
           mk(13,'Chat / Real-Time Collaboration','full'),
-          mk(14,'Approval Workflows','full')
+          mk(14,'Approval Workflows','full'),
+          mk(12,'Settings & Master Configuration','full')
         ];
         if (role === 'Manager') return [
           mk(2,'Dashboard','full'), mk(4,'Departments','full'), mk(5,'Tasks','full'), mk(6,'Projects','full'),
@@ -325,29 +318,66 @@ router.post('/verify-otp', (req, res) => {
         return [];
       }
 
-      // Use stored modules if present and valid; otherwise fall back
+      // Sidebar ordering
+      const SIDEBAR_ORDER = [
+        'Dashboard',
+        'User Management',
+        'Clients',
+        'Departments',
+        'Tasks',
+        'Projects',
+        'Workflow (Project & Task Flow)',
+        'Notifications',
+        'Reports & Analytics',
+        'Document & File Management',
+        'Chat / Real-Time Collaboration',
+        'Approval Workflows',
+        'Settings & Master Configuration'
+      ];
+
+      function reorderModulesForSidebar(modules) {
+        if (!modules || !modules.length) return [];
+        // Ensure all modules are in desired order, append any extra modules at the end
+        return [
+          ...SIDEBAR_ORDER.map(name => modules.find(m => m.name === name)).filter(Boolean),
+          ...modules.filter(m => !SIDEBAR_ORDER.includes(m.name))
+        ];
+      }
+
+      // Determine modules to return
       const storedModules = normalizeModulesFromUser(user);
       const modulesToReturn = storedModules && storedModules.length ? storedModules : getModulesForRole(user.role);
+      const orderedModules = reorderModulesForSidebar(modulesToReturn);
 
-      // optional: log login history (best effort)
+      // Optional: log login history
       try {
         const insert = 'INSERT INTO login_history (user_id, tenant_id, ip, user_agent, success, created_at) VALUES (?, ?, ?, ?, ?, NOW())';
         const ip = req.ip || (req.connection && req.connection.remoteAddress);
         const ua = req.headers['user-agent'] || '';
         db.query(insert, [user._id, user.tenant_id || null, ip, ua, 1], () => {});
-      } catch (e) {
-        // ignore
-      }
+      } catch {}
 
-              // generate a refresh token (longer lived) and return it alongside access token
-              const refreshToken = jwt.sign({ id: tokenIdForJwt, type: 'refresh' }, process.env.SECRET || 'secret', { expiresIn: '30d' });
-              // return external id as `id` (public_id) for clients and return actual modules
-              return res.json({ token, refreshToken, user: { id: user.public_id || String(user._id), email: user.email, name: user.name, role: user.role, modules: modulesToReturn } });
+      // Generate refresh token
+      const refreshToken = jwt.sign({ id: tokenIdForJwt, type: 'refresh' }, process.env.SECRET || 'secret', { expiresIn: '30d' });
+
+      // Return user with ordered modules
+      return res.json({
+        token,
+        refreshToken,
+        user: {
+          id: user.public_id || String(user._id),
+          email: user.email,
+          name: user.name,
+          role: user.role,
+          modules: orderedModules
+        }
+      });
     });
   } catch (e) {
     return res.status(401).json({ message: 'Invalid or expired temp token', error: e.message });
   }
 });
+
 
 // Refresh access token using a refresh token. Accepts `refreshToken` in body
 // or as a Bearer token in `Authorization` header. Returns new access token

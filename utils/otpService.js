@@ -1,5 +1,5 @@
-const nodemailer = require('nodemailer');
 const Redis = require('ioredis');
+const emailService = require('./emailService');
 require('dotenv').config();
 
 const REQUIRE_REDIS = process.env.REQUIRE_REDIS !== 'false';
@@ -19,29 +19,6 @@ if (REQUIRE_REDIS && process.env.REDIS_URL) {
     console.log('REQUIRE_REDIS is false — otpService skipping Redis client creation');
 }
 
-let transporter = null;
-const SMTP_HOST = process.env.SMTP_HOST;
-const SMTP_PORT = parseInt(process.env.SMTP_PORT || '587', 10);
-const SMTP_SECURE = process.env.SMTP_SECURE === 'true';
-const SMTP_USER = process.env.SMTP_USER;
-const SMTP_PASS = process.env.SMTP_PASS;
-const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER;
-
-const smtpConfigured = SMTP_HOST && SMTP_USER && SMTP_PASS;
-if (smtpConfigured) {
-  transporter = nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_SECURE,
-    auth: { user: SMTP_USER, pass: SMTP_PASS },
-  });
-
-  transporter.verify().then(() => {
-    console.log('SMTP transporter verified');
-  }).catch((e) => {
-    console.warn('SMTP transporter verify failed:', e && e.message);
-  });
-}
 
 function generateCode() {
   return Math.floor(100000 + Math.random() * 900000).toString();
@@ -83,22 +60,11 @@ async function sendOtp(email, userId) {
   const text = `Your one-time verification code is: ${code}. It expires in ${Math.floor(ttlSeconds / 60)} minute(s).`;
   const html = `<p>Your one-time verification code is: <strong>${code}</strong>.</p><p>It expires in ${Math.floor(ttlSeconds / 60)} minute(s).</p>`;
 
-  let sent = false;
-
-  if (transporter) {
-    try {
-      await transporter.sendMail({ from: SMTP_FROM, to: email, subject, text, html });
-      sent = true;
-      console.log(`OTP email sent to ${email}`);
-    } catch (e) {
-      console.error('Failed to send OTP email:', e.message);
-      console.log('OTP (fallback):', code);
-    }
-  } else {
-    console.log(`No SMTP configured — OTP for ${email}: ${code}`);
-  }
-
-  return { code, expiresAt: Date.now() + ttlSeconds * 1000, sent };
+  // send via centralized emailService
+  const tpl = emailService.otpTemplate(code, Math.floor(ttlSeconds / 60));
+  const sentRes = await emailService.sendEmail({ to: email, subject: tpl.subject, text: tpl.text, html: tpl.html });
+  if (!sentRes.sent) console.log('OTP (fallback):', code);
+  return { code, expiresAt: Date.now() + ttlSeconds * 1000, sent: !!sentRes.sent };
 }
 
 async function verifyOtp(userId, code) {
@@ -113,17 +79,8 @@ async function verifyOtp(userId, code) {
 }
 
 async function sendNotification({ to, subject, text, html }) {
-  if (transporter) {
-    try {
-      await transporter.sendMail({ from: SMTP_FROM, to, subject, text, html });
-      return true;
-    } catch (e) {
-      console.error('Notification send failed:', e.message);
-      return false;
-    }
-  }
-  console.log('Notification (no SMTP):', { to, subject, text });
-  return false;
+  const r = await emailService.sendEmail({ to, subject, text, html });
+  return !!r.sent;
 }
 
 async function resendOtp(email, userId) {
@@ -140,22 +97,10 @@ async function resendOtp(email, userId) {
   const text = `Your new verification code is: ${code}. It expires in ${Math.floor(ttlSeconds / 60)} minute(s).`;
   const html = `<p>Your new verification code is: <strong>${code}</strong>.</p><p>It expires in ${Math.floor(ttlSeconds / 60)} minute(s).</p>`;
 
-  let sent = false;
-
-  if (transporter) {
-    try {
-      await transporter.sendMail({ from: SMTP_FROM, to: email, subject, text, html });
-      sent = true;
-      console.log(`Resent OTP email to ${email}`);
-    } catch (e) {
-      console.error('Failed to resend OTP email:', e.message);
-      console.log('Resent OTP (fallback):', code);
-    }
-  } else {
-    console.log(`No SMTP configured — Resent OTP for ${email}: ${code}`);
-  }
-
-  return { code, expiresAt: Date.now() + ttlSeconds * 1000, sent };
+  const tpl = emailService.otpTemplate(code, Math.floor(ttlSeconds / 60));
+  const sentRes = await emailService.sendEmail({ to: email, subject: tpl.subject, text: tpl.text, html: tpl.html });
+  if (!sentRes.sent) console.log('Resent OTP (fallback):', code);
+  return { code, expiresAt: Date.now() + ttlSeconds * 1000, sent: !!sentRes.sent };
 }
 
 module.exports = {

@@ -10,7 +10,6 @@ const multer = require("multer");
 const { ref, uploadBytes, getDownloadURL } = require("firebase/storage");
 const CryptoJS = require("crypto-js");
 const cron = require("node-cron");
-const nodemailer = require("nodemailer");
 const logger = require("winston");
 const { google } = require("googleapis");
 require("dotenv").config();
@@ -254,55 +253,14 @@ function continueTaskCreation(
               const emails = userResults.map((user) => user.email);
               const userNames = userResults.map((user) => user.name);
 
-              const transporter = nodemailer.createTransport({
-                host: "smtp.gmail.com",
-                port: 465,
-                secure: true,
-                auth: {
-                  user: process.env.GMAIL_USER,
-                  pass: process.env.GMAIL_PASS,
-                },
-                tls: {
-                  rejectUnauthorized: false,
-                },
-              });
-
-              const mailOptions = {
-                from: process.env.GMAIL_USER,
-                to: emails,
-                subject: `New Task Assigned: ${title}`,
-                html: `
-                  <div style="font-family: Arial, sans-serif; color: #333;">
-                    <h1 style="color: #1a73e8;">New Task Assigned!</h1>
-                    <p style="font-size: 18px;">Dear ${userNames.join(", ")},</p>
-                    <p style="font-size: 16px;">
-                      You have been assigned a new task: <strong style="color: #1a73e8;">${title}</strong>.
-                      ${
-                        finalPriority !== body.priority
-                          ? `(Priority adjusted to ${finalPriority})`
-                          : ""
-                      }
-                      Please check your dashboard for more details.
-                    </p>
-                    ${
-                      description
-                        ? `<div style="background-color: #f0f0f0; padding: 15px; border-radius: 5px; margin: 10px 0;">
-                            <h3 style="color: #1a73e8;">Task Description:</h3>
-                            <p style="font-size: 16px;">${description}</p>
-                          </div>`
-                        : ""
-                    }
-                    <p style="font-size: 16px; color: #1a73e8;">
-                      Don't forget to complete the task on time!
-                    </p>
-                  </div>`,
-              };
-
               try {
-                await transporter.sendMail(mailOptions);
-                console.log("Emails sent successfully");
+                const assignedBy = (req.user && req.user.name) || 'System';
+                const link = `${process.env.FRONTEND_URL || process.env.BASE_URL || 'http://localhost:3000'}/tasks/${taskId}`;
+                const tpl = emailService.taskAssignedTemplate(title, assignedBy, link);
+                await emailService.sendEmail({ to: emails, subject: tpl.subject, text: tpl.text, html: tpl.html });
+                console.log('Emails (task assigned) sent (or logged)');
               } catch (mailError) {
-                console.error("Error sending emails:", mailError);
+                console.error('Error sending emails:', mailError);
               }
 
               connection.commit((err) => {
@@ -1228,39 +1186,10 @@ router.put('/updatetask/:id', requireRole(['Admin','Manager']), async (req, res)
 
           logger.info(`Sending email notifications for taskId=${taskId} to users: ${emails.join(', ')}`);
 
-          const transporter = nodemailer.createTransport({
-                host: "smtp.gmail.com",
-                port: 465,
-                secure: true,
-                auth: {
-                  user: process.env.GMAIL_USER,
-                  pass: process.env.GMAIL_PASS,
-                },
-                tls: {
-                  rejectUnauthorized: false,
-                },
-              });
-
-          const mailOptions = {
-            from: process.env.EMAIL_USER,
-            to: emails,
-            subject: `Task #${taskId} Status Updated`,
-            html: `
-              <div style="font-family: Arial, sans-serif; color: #333;">
-                <h1 style="color: #1a73e8;">Task Status Updated!</h1>
-                <p style="font-size: 18px;">Dear ${userNames.join(', ')},</p>
-                <p style="font-size: 16px;">
-                  The task with ID <strong style="color: #1a73e8;">${taskId}</strong> has been updated to: <strong>${stage}</strong>.
-                  Please check your dashboard for more details.
-                </p>
-                <p style="font-size: 16px; color: #1a73e8;">Stay on track with your task deadlines!</p>
-              </div>
-            `,
-          };
-
           try {
-            await transporter.sendMail(mailOptions);
-            logger.info(`Email notifications sent successfully for taskId=${taskId}`);
+            const tpl = emailService.taskStatusTemplate(taskId, stage, userNames);
+            await emailService.sendEmail({ to: emails, subject: tpl.subject, text: tpl.text, html: tpl.html });
+            logger.info(`Email notifications (status update) sent (or logged) for taskId=${taskId}`);
             res.status(200).json({
               success: true,
               message: 'Task status updated successfully and notifications sent',
@@ -1271,15 +1200,16 @@ router.put('/updatetask/:id', requireRole(['Admin','Manager']), async (req, res)
               },
             });
           } catch (mailError) {
-            logger.error(`Error sending email notifications: taskId=${taskId}, error=${mailError.message}`);
+            logger.error(`Error sending email notifications: taskId=${taskId}, error=${mailError && mailError.message}`);
             res.status(200).json({
               success: true,
               message: 'Task status updated, but email notifications failed',
               data: {
                 taskId,
                 newStage: stage,
+                notifiedUsers: userNames,
               },
-              error: mailError.message,
+              error: mailError && mailError.message,
             });
           }
         });
