@@ -10,6 +10,9 @@ const passwordPolicy = require(__root + 'utils/passwordPolicy');
 // tenantMiddleware available if endpoints need explicit tenant enforcement; most auth flows derive tenant from email/token
 const { requireAuth } = require(__root + 'middleware/roles');
 require('dotenv').config();
+const upload = require(__root + 'multer');
+const fs = require('fs');
+const path = require('path');
 
 // Ensure users table has 2FA columns. If missing, add them at runtime.
 async function ensureUsers2FAColumns() {
@@ -721,94 +724,192 @@ router.post('/complete-setup', async (req, res) => {
 // Profile endpoints
 router.get('/profile', requireAuth, async (req, res) => {
   const user = req.user;
+  
   try {
-    // Determine which optional columns exist on users table and select them if present
+    // ✅ Dynamic column detection
     const wanted = [
-      '_id','public_id','name','email','role','tenant_id','phone','isActive',
-      'created_at','createdAt','last_login','last_login_at',
-      'email_verified','is_email_verified','twofa_secret','is2fa_enabled'
+      '_id', 'public_id', 'name', 'email', 'role', 'tenant_id', 'phone', 
+      'isActive', 'created_at', 'createdAt', 'last_login', 'last_login_at',
+      'email_verified', 'is_email_verified', 'twofa_secret', 'is2fa_enabled',
+      'photo' // Profile photo
     ];
-    const infoSql = `SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME IN (${wanted.map(() => '?').join(',')})`;
-    const infoParams = wanted.slice();
-    db.query(infoSql, infoParams, (iErr, cols) => {
+    
+    const infoSql = `SELECT COLUMN_NAME FROM information_schema.COLUMNS 
+                     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' 
+                     AND COLUMN_NAME IN (${wanted.map(() => '?').join(',')})`;
+    
+    db.query(infoSql, wanted, (iErr, cols) => {
       if (iErr) {
-        // fallback: return normalized minimal profile from req.user
-        const safe = {
-          id: user.public_id || user._id,
-          email: user.email,
-          name: user.name,
-          role: user.role,
-          tenant_id: user.tenant_id
+        console.error('Column detection error:', iErr);
+        const safe = { 
+          id: user.public_id || user._id, 
+          email: user.email, 
+          name: user.name, 
+          role: user.role 
         };
         return res.json({ user: safe });
       }
+      
       const present = Array.isArray(cols) ? cols.map(r => r.COLUMN_NAME) : [];
-      const selectCols = ['_id','public_id','name','email','role','tenant_id'].concat(
-        ['phone','isActive','created_at','createdAt','last_login','last_login_at','email_verified','is_email_verified','twofa_secret','is2fa_enabled'].filter(c => present.includes(c))
-      );
+      const selectCols = ['_id', 'public_id', 'name', 'email', 'role', 'tenant_id']
+        .concat([
+          'phone', 'isActive', 'created_at', 'createdAt', 'last_login', 
+          'last_login_at', 'email_verified', 'is_email_verified', 
+          'twofa_secret', 'is2fa_enabled', 'photo'
+        ].filter(c => present.includes(c)));
+      
       const sql = `SELECT ${selectCols.join(', ')} FROM users WHERE _id = ? LIMIT 1`;
+      
       db.query(sql, [user._id], (uErr, rows) => {
-        if (uErr) return res.status(500).json({ message: 'DB error', error: uErr.message });
-        if (!rows || rows.length === 0) return res.status(404).json({ message: 'User not found' });
+        if (uErr) {
+          console.error('User query error:', uErr);
+          return res.status(500).json({ message: 'Database error' });
+        }
+        
+        if (!rows || rows.length === 0) {
+          return res.status(404).json({ message: 'User not found' });
+        }
+        
         const row = rows[0];
-
-        const createdAt = row.created_at || row.createdAt || null;
-        const lastLogin = row.last_login || row.last_login_at || null;
-        const emailVerified = typeof row.email_verified !== 'undefined' ? Boolean(row.email_verified) : (typeof row.is_email_verified !== 'undefined' ? Boolean(row.is_email_verified) : true);
-        const isActive = typeof row.isActive !== 'undefined' ? Boolean(row.isActive) : true;
-        const twofaEnabled = Boolean(row.is2fa_enabled === 1 || row.is2fa_enabled === '1');
-        const hasTwofaSecret = Boolean(row.twofa_secret);
-
+        
+        // ✅ FULL URL GENERATION - Your exact logic
+        let photoUrl = row.photo;
+        if (photoUrl && !photoUrl.startsWith('http')) {
+          photoUrl = `${req.protocol}://${req.get('host')}${photoUrl.startsWith('/') ? '' : '/'}${photoUrl}`;
+        }
+        
         const safe = {
           id: row.public_id || row._id,
           email: row.email,
-          name: row.name,
-          role: row.role,
-          tenant_id: row.tenant_id,
+          name: row.name || '',
+          role: row.role || 'user',
+          tenant_id: row.tenant_id || null,
           phone: row.phone || null,
-          accountStatus: isActive ? 'Active' : 'Inactive',
-          memberSince: createdAt ? new Date(createdAt).toISOString() : null,
-          lastLogin: lastLogin ? new Date(lastLogin).toISOString() : null,
-          emailVerified: emailVerified,
+          photo: photoUrl, // ✅ Full URL: http://localhost:3000/uploads/profiles/...
+          accountStatus: Boolean(row.isActive) ? 'Active' : 'Inactive',
+          memberSince: (row.created_at || row.createdAt) 
+            ? new Date(row.created_at || row.createdAt).toISOString() 
+            : null,
+          lastLogin: (row.last_login || row.last_login_at) 
+            ? new Date(row.last_login || row.last_login_at).toISOString() 
+            : null,
+          emailVerified: Boolean(row.email_verified ?? row.is_email_verified ?? true),
           twoFactor: {
-            enabled: twofaEnabled,
-            status: twofaEnabled ? 'Enabled' : 'Disabled',
-            hasSecret: hasTwofaSecret
+            enabled: Boolean(row.is2fa_enabled === 1 || row.is2fa_enabled === true),
+            hasSecret: Boolean(row.twofa_secret && row.twofa_secret !== null && row.twofa_secret !== ''),
+            status: Boolean(row.is2fa_enabled === 1 || row.is2fa_enabled === true) ? 'Enabled' : 'Disabled'
           }
         };
-
-        return res.json({ user: safe });
+        
+        console.log('✅ Profile served:', { id: safe.id, hasPhoto: !!safe.photo });
+        res.json({ user: safe });
       });
     });
   } catch (e) {
-    const safe = {
-      id: user.public_id || user._id,
-      email: user.email,
-      name: user.name,
-      role: user.role,
-      tenant_id: user.tenant_id
-    };
-    return res.json({ user: safe });
+    console.error('Profile GET error:', e);
+    res.status(500).json({ 
+      user: { 
+        id: user.public_id || user._id, 
+        email: user.email, 
+        name: user.name, 
+        role: user.role 
+      } 
+    });
   }
 });
 
-router.put('/profile', requireAuth, (req, res) => {
+// PUT /api/profile
+router.put("/profile", requireAuth, upload.single("photo"), async (req, res) => {
   const user = req.user;
-  const { name, title, phone } = req.body;
-  // Try to update phone if column exists; if not, provide helpful error
-  const sql = 'UPDATE users SET name = ?, title = ?, phone = ? WHERE _id = ?';
-  const params = [name || user.name, title || user.title, (typeof phone !== 'undefined' ? phone : (user.phone || null)), user._id];
-  db.query(sql, params, (err) => {
-    if (err) {
-      // If the DB doesn't have a `phone` column, return actionable message
-      if (err && err.code === 'ER_BAD_FIELD_ERROR' && /phone/.test(err.message)) {
-        return res.status(500).json({ message: 'DB schema missing `phone` column. Run scripts/add_phone_column.js or run: ALTER TABLE `users` ADD COLUMN `phone` VARCHAR(20) DEFAULT NULL' });
-      }
-      return res.status(500).json({ message: 'DB error', error: err && err.message });
+  const { name, email, phone, title } = req.body;
+
+  try {
+    // Ensure upload directory exists
+    await upload.ensureUploadsDir();
+
+    // Correct directory path
+    const uploadDir = path.join(process.cwd(), "uploads/profiles");
+
+    let photoPath = user.photo || null;
+
+    // If new file uploaded
+    if (req.file) {
+      const allFiles = fs.readdirSync(uploadDir);
+
+      // Delete old photos
+      allFiles.forEach((file) => {
+        if (file.startsWith(String(user._id))) {
+          try { fs.unlinkSync(path.join(uploadDir, file)); } catch {}
+        }
+      });
+
+      // Create new filename
+      const newFileName = `${user._id}-${Date.now()}.png`;
+      const fullPath = path.join(uploadDir, newFileName);
+
+      fs.writeFileSync(fullPath, req.file.buffer);
+
+      photoPath = `/uploads/profiles/${newFileName}`;
     }
-    return res.json({ message: 'Profile updated' });
-  });
+
+    const newEmail = email || user.email;
+    const newName = name || user.name;
+    const newPhone = phone ?? user.phone;
+    const newTitle = title ?? user.title;
+
+    const sql = `
+      UPDATE users 
+      SET name = ?, email = ?, phone = ?, title = ?, photo = ?
+      WHERE _id = ?
+    `;
+
+    const values = [newName, newEmail, newPhone, newTitle, photoPath, user._id];
+
+    db.query(sql, values, (err) => {
+      if (err) {
+        if (err.code === "ER_DUP_ENTRY")
+          return res.status(409).json({ message: "Email already exists" });
+
+        return res.status(500).json({ message: "DB error", error: err });
+      }
+
+      db.query(
+        `SELECT _id, public_id, email, name, phone, title, photo, role, tenant_id 
+         FROM users 
+         WHERE _id = ? LIMIT 1`,
+        [user._id],
+        (qErr, rows) => {
+          if (qErr) return res.status(500).json({ message: "DB error", error: qErr });
+          if (!rows.length) return res.status(404).json({ message: "User not found" });
+
+          const updated = rows[0];
+
+          const fullPhotoURL = updated.photo
+            ? `${req.protocol}://${req.get("host")}${updated.photo}`
+            : null;
+
+          return res.json({
+            message: "Profile updated successfully",
+            user: {
+              id: updated.public_id || updated._id,
+              email: updated.email,
+              name: updated.name,
+              phone: updated.phone,
+              title: updated.title,
+              role: updated.role,
+              tenant_id: updated.tenant_id,
+              photo: fullPhotoURL,
+            },
+          });
+        }
+      );
+    });
+  } catch (e) {
+    console.error("PROFILE ERROR:", e);
+    return res.status(500).json({ message: "Upload failed", error: e.message });
+  }
 });
+
 
 // Change password for authenticated user
 router.post('/change-password', requireAuth, async (req, res) => {
