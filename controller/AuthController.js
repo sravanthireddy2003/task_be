@@ -3,11 +3,40 @@ const router = express.Router();
 const db = require(__root + 'db');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const speakeasy = require('speakeasy');
+const qrcode = require('qrcode');
 const otpService = require(__root + 'utils/otpService');
 const passwordPolicy = require(__root + 'utils/passwordPolicy');
 // tenantMiddleware available if endpoints need explicit tenant enforcement; most auth flows derive tenant from email/token
 const { requireAuth } = require(__root + 'middleware/roles');
 require('dotenv').config();
+
+// Ensure users table has 2FA columns. If missing, add them at runtime.
+async function ensureUsers2FAColumns() {
+  return new Promise((resolve) => {
+    const checkSql = `SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME IN ('twofa_secret','is2fa_enabled')`;
+    db.query(checkSql, [], (err, rows) => {
+      if (err) return resolve(false);
+      const found = Array.isArray(rows) ? rows.map(r => r.COLUMN_NAME) : [];
+      const toAdd = [];
+      if (!found.includes('twofa_secret')) toAdd.push("ALTER TABLE `users` ADD COLUMN `twofa_secret` VARCHAR(255) DEFAULT NULL");
+      if (!found.includes('is2fa_enabled')) toAdd.push("ALTER TABLE `users` ADD COLUMN `is2fa_enabled` TINYINT DEFAULT 0");
+      if (toAdd.length === 0) return resolve(true);
+      // run sequentially
+      (async () => {
+        for (const s of toAdd) {
+          try {
+            await new Promise((res, rej) => db.query(s, [], (e) => e ? rej(e) : res()));
+          } catch (e) {
+            // If altering fails (permissions etc), stop and resolve false
+            return resolve(false);
+          }
+        }
+        return resolve(true);
+      })();
+    });
+  });
+}
 
 const Redis = require('ioredis');
 const requireRedis = process.env.REQUIRE_REDIS !== 'false';
@@ -168,20 +197,42 @@ router.post('/login', async (req, res) => {
           if (ageDays > maxDays) return res.status(403).json({ message: 'Password expired. Please reset your password.' });
         }
 
-        try {
-          const otpRes = await otpService.sendOtp(user.email, user._id || user.email);
-          const tempToken = jwt.sign({ id: user._id, step: 'otp' }, process.env.SECRET || 'secret', { expiresIn: '10m' });
+        // If user has TOTP-based 2FA enabled, require OTP in this login call and verify
+        // Consider 2FA enabled only when the explicit flag is set. Presence of a stored
+        // secret alone (setup in progress) should NOT force OTP at login.
+        const is2faEnabled = Boolean(user.is2fa_enabled === 1 || user.is2fa_enabled === '1' || user.is_2fa_enabled === 1 || user.is_2fa_enabled === '1' || user.is2FAEnabled === 1 || user.is2FAEnabled === '1');
+        if (is2faEnabled) {
+          const otp = req.body && req.body.otp;
+          if (!otp) {
+            // Send an email OTP as a fallback/UX convenience while TOTP is enabled.
+            try {
+              const otpRes = await otpService.sendOtp(user.email, user._id || user.email);
+              const tempToken = jwt.sign({ id: user._id, step: 'otp' }, process.env.SECRET || 'secret', { expiresIn: '10m' });
+              const includeOtp = process.env.DEV_INCLUDE_OTP === 'true' || otpRes.sent === false;
+              const resp = { requires2fa: true, message: 'OTP required', totp: true, emailOtp: true, tempToken, userId: user.public_id || String(user._id), sent: !!otpRes.sent };
+              if (includeOtp) resp.otp = otpRes.code;
+              return res.json(resp);
+            } catch (e) {
+              // If email sending fails, still inform client that TOTP is required
+              const tempToken = jwt.sign({ id: user._id, step: 'totp' }, process.env.SECRET || 'secret', { expiresIn: '5m' });
+              return res.json({ requires2fa: true, message: 'OTP required', totp: true, tempToken, userId: user.public_id || String(user._id) });
+            }
+          }
+          const secret = user.twofa_secret || user.twofaSecret || user.totp_secret || null;
+          if (!secret) return res.status(500).json({ message: '2FA misconfigured for user' });
+          const verified = speakeasy.totp.verify({ secret: String(secret), encoding: 'base32', token: String(otp), window: 1 });
+          if (!verified) {
+            await recordFailedAttempt(`${tenantId}::${email}`);
+            return res.status(401).json({ message: 'Invalid OTP' });
+          }
+          // OTP valid — complete login
           await resetAttempts(`${tenantId}::${email}`);
-          const includeOtp = process.env.DEV_INCLUDE_OTP === 'true' || otpRes.sent === false;
-          const resp = { message: 'OTP sent', tempToken, sent: !!otpRes.sent };
-          if (includeOtp) resp.otp = otpRes.code;
-          return res.json(resp);
-        } catch (e) {
-          console.warn('OTP send failed', e && e.message);
-          const tempToken = jwt.sign({ id: user._id, step: 'otp' }, process.env.SECRET || 'secret', { expiresIn: '10m' });
-          await resetAttempts(`${tenantId}::${email}`);
-          return res.json({ message: 'OTP send attempted', tempToken, sent: false });
+          return completeLoginForUser(user, req, res);
         }
+
+        // No 2FA required — complete login and return tokens
+        await resetAttempts(`${tenantId}::${email}`);
+        return completeLoginForUser(user, req, res);
       } catch (e) {
         return res.status(500).json({ message: 'Auth error', error: e.message });
       }
@@ -217,25 +268,97 @@ router.post('/login', async (req, res) => {
       if (ageDays > maxDays) return res.status(403).json({ message: 'Password expired. Please reset your password.' });
     }
 
-    // Passed password check: generate OTP and send via email
-    try {
-      const otpRes = await otpService.sendOtp(user.email, user._id || user.email);
-      // issue a short-lived temp token for verifying OTP
-      const tempToken = jwt.sign({ id: user._id, step: 'otp' }, process.env.SECRET || 'secret', { expiresIn: '10m' });
-      // record login attempt success (reset failures)
+    // If user has TOTP-based 2FA enabled, require OTP in this login call and verify
+    // Consider 2FA enabled only when the explicit flag is set. Presence of a stored
+    // secret alone (setup in progress) should NOT force OTP at login.
+    const is2faEnabled = Boolean(user.is2fa_enabled === 1 || user.is2fa_enabled === '1' || user.is_2fa_enabled === 1 || user.is_2fa_enabled === '1' || user.is2FAEnabled === 1 || user.is2FAEnabled === '1');
+    if (is2faEnabled) {
+      const otp = req.body && req.body.otp;
+      if (!otp) {
+        try {
+          const otpRes = await otpService.sendOtp(user.email, user._id || user.email);
+          const tempToken = jwt.sign({ id: user._id, step: 'otp' }, process.env.SECRET || 'secret', { expiresIn: '10m' });
+          const includeOtp = process.env.DEV_INCLUDE_OTP === 'true' || otpRes.sent === false;
+          const resp = { requires2fa: true, message: 'OTP required', totp: true, emailOtp: true, tempToken, userId: user.public_id || String(user._id), sent: !!otpRes.sent };
+          if (includeOtp) resp.otp = otpRes.code;
+          return res.json(resp);
+        } catch (e) {
+          const tempToken = jwt.sign({ id: user._id, step: 'totp' }, process.env.SECRET || 'secret', { expiresIn: '5m' });
+          return res.json({ requires2fa: true, message: 'OTP required', totp: true, tempToken, userId: user.public_id || String(user._id) });
+        }
+      }
+      const secret = user.twofa_secret || user.twofaSecret || user.totp_secret || null;
+      if (!secret) return res.status(500).json({ message: '2FA misconfigured for user' });
+      const verified = speakeasy.totp.verify({ secret: String(secret), encoding: 'base32', token: String(otp), window: 1 });
+      if (!verified) {
+        await recordFailedAttempt(lockKey);
+        return res.status(401).json({ message: 'Invalid OTP' });
+      }
       await resetAttempts(lockKey);
-      const includeOtp = process.env.DEV_INCLUDE_OTP === 'true' || otpRes.sent === false;
-      const resp = { message: 'OTP sent', tempToken, sent: !!otpRes.sent };
-      if (includeOtp) resp.otp = otpRes.code;
-      return res.json(resp);
-    } catch (e) {
-      console.warn('OTP send failed', e && e.message);
-      const tempToken = jwt.sign({ id: user._id, step: 'otp' }, process.env.SECRET || 'secret', { expiresIn: '10m' });
-      await resetAttempts(lockKey);
-      return res.json({ message: 'OTP send attempted', tempToken, sent: false });
+      return completeLoginForUser(user, req, res);
     }
+
+    // No 2FA required — complete login and return tokens
+    await resetAttempts(lockKey);
+    return completeLoginForUser(user, req, res);
   });
 });
+
+// Helper to complete login: generate tokens, modules and return standard response
+async function completeLoginForUser(user, req, res) {
+  try {
+    const tokenIdForJwt = user.public_id || String(user._id);
+    const token = jwt.sign({ id: tokenIdForJwt }, process.env.SECRET || 'secret', { expiresIn: '7d' });
+    const refreshToken = jwt.sign({ id: tokenIdForJwt, type: 'refresh' }, process.env.SECRET || 'secret', { expiresIn: '30d' });
+
+    const crypto = require('crypto');
+    function normalizeModulesFromUser(user) {
+      if (!user || !user.modules) return null;
+      let arr;
+      try { arr = typeof user.modules === 'string' ? JSON.parse(user.modules) : user.modules; } catch { return null; }
+      if (!Array.isArray(arr) || arr.length === 0) return null;
+      return arr.map(m => {
+        const name = m.name || m.module || '';
+        const access = m.access || 'full';
+        let mid = m.moduleId || m.id || m.module_id || m.module || '';
+        if (typeof mid === 'number') mid = String(mid);
+        if (!mid) mid = crypto.randomBytes(8).toString('hex');
+        return { moduleId: mid, name, access };
+      }).filter(m => (m.name || '').toLowerCase() !== 'team & employees');
+    }
+
+    function getModulesForRole(role) {
+      function mk(n, name, access) { return { moduleId: crypto.randomBytes(8).toString('hex'), name, access }; }
+      if (role === 'Admin') return [ mk(1,'User Management','full'), mk(2,'Dashboard','full'), mk(3,'Clients','full'), mk(4,'Departments','full'), mk(5,'Tasks','full'), mk(6,'Projects','full'), mk(8,'Workflow (Project & Task Flow)','full'), mk(9,'Notifications','full'), mk(10,'Reports & Analytics','full'), mk(11,'Document & File Management','full'), mk(13,'Chat / Real-Time Collaboration','full'), mk(14,'Approval Workflows','full'), mk(12,'Settings & Master Configuration','full') ];
+      if (role === 'Manager') return [ mk(2,'Dashboard','full'), mk(4,'Departments','full'), mk(5,'Tasks','full'), mk(6,'Projects','full'), mk(8,'Workflow (Project & Task Flow)','full'), mk(9,'Notifications','limited'), mk(10,'Reports & Analytics','full'), mk(11,'Document & File Management','limited'), mk(13,'Chat / Real-Time Collaboration','full'), mk(14,'Approval Workflows','limited') ];
+      if (role === 'Employee') return [ mk(2,'Dashboard','view'), mk(5,'Tasks','limited'), mk(9,'Notifications','limited'), mk(10,'Reports & Analytics','limited'), mk(11,'Document & File Management','limited'), mk(13,'Chat / Real-Time Collaboration','full') ];
+      if (role === 'Client') return [ mk(2,'Dashboard','view'), mk(6,'Projects','view'), mk(9,'Notifications','limited'), mk(10,'Reports & Analytics','limited'), mk(11,'Document & File Management','limited'), mk(13,'Chat / Real-Time Collaboration','limited') ];
+      return [];
+    }
+
+    const SIDEBAR_ORDER = ['Dashboard','User Management','Clients','Departments','Tasks','Projects','Workflow (Project & Task Flow)','Notifications','Reports & Analytics','Document & File Management','Chat / Real-Time Collaboration','Approval Workflows','Settings & Master Configuration'];
+    function reorderModulesForSidebar(modules) {
+      if (!modules || !modules.length) return [];
+      return [ ...SIDEBAR_ORDER.map(name => modules.find(m => m.name === name)).filter(Boolean), ...modules.filter(m => !SIDEBAR_ORDER.includes(m.name)) ];
+    }
+
+    const storedModules = normalizeModulesFromUser(user);
+    const modulesToReturn = storedModules && storedModules.length ? storedModules : getModulesForRole(user.role);
+    const orderedModules = reorderModulesForSidebar(modulesToReturn);
+
+    // Optional: log login history
+    try {
+      const insert = 'INSERT INTO login_history (user_id, tenant_id, ip, user_agent, success, created_at) VALUES (?, ?, ?, ?, ?, NOW())';
+      const ip = req.ip || (req.connection && req.connection.remoteAddress);
+      const ua = req.headers['user-agent'] || '';
+      db.query(insert, [user._id, user.tenant_id || null, ip, ua, 1], () => {});
+    } catch (e) {}
+
+    return res.json({ token, refreshToken, user: { id: user.public_id || String(user._id), email: user.email, name: user.name, role: user.role, modules: orderedModules } });
+  } catch (e) {
+    return res.status(500).json({ message: 'Login error', error: e.message });
+  }
+}
 
 // Verify OTP and return full auth token
 router.post('/verify-otp', (req, res) => {
@@ -596,24 +719,93 @@ router.post('/complete-setup', async (req, res) => {
 });
 
 // Profile endpoints
-router.get('/profile', requireAuth, (req, res) => {
+router.get('/profile', requireAuth, async (req, res) => {
   const user = req.user;
-  const safe = {
-    id: user.public_id || user._id,
-    email: user.email,
-    name: user.name,
-    role: user.role,
-    tenant_id: user.tenant_id
-  };
-  res.json({ user: safe });
+  try {
+    // Determine which optional columns exist on users table and select them if present
+    const wanted = [
+      '_id','public_id','name','email','role','tenant_id','phone','isActive',
+      'created_at','createdAt','last_login','last_login_at',
+      'email_verified','is_email_verified','twofa_secret','is2fa_enabled'
+    ];
+    const infoSql = `SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME IN (${wanted.map(() => '?').join(',')})`;
+    const infoParams = wanted.slice();
+    db.query(infoSql, infoParams, (iErr, cols) => {
+      if (iErr) {
+        // fallback: return normalized minimal profile from req.user
+        const safe = {
+          id: user.public_id || user._id,
+          email: user.email,
+          name: user.name,
+          role: user.role,
+          tenant_id: user.tenant_id
+        };
+        return res.json({ user: safe });
+      }
+      const present = Array.isArray(cols) ? cols.map(r => r.COLUMN_NAME) : [];
+      const selectCols = ['_id','public_id','name','email','role','tenant_id'].concat(
+        ['phone','isActive','created_at','createdAt','last_login','last_login_at','email_verified','is_email_verified','twofa_secret','is2fa_enabled'].filter(c => present.includes(c))
+      );
+      const sql = `SELECT ${selectCols.join(', ')} FROM users WHERE _id = ? LIMIT 1`;
+      db.query(sql, [user._id], (uErr, rows) => {
+        if (uErr) return res.status(500).json({ message: 'DB error', error: uErr.message });
+        if (!rows || rows.length === 0) return res.status(404).json({ message: 'User not found' });
+        const row = rows[0];
+
+        const createdAt = row.created_at || row.createdAt || null;
+        const lastLogin = row.last_login || row.last_login_at || null;
+        const emailVerified = typeof row.email_verified !== 'undefined' ? Boolean(row.email_verified) : (typeof row.is_email_verified !== 'undefined' ? Boolean(row.is_email_verified) : true);
+        const isActive = typeof row.isActive !== 'undefined' ? Boolean(row.isActive) : true;
+        const twofaEnabled = Boolean(row.is2fa_enabled === 1 || row.is2fa_enabled === '1');
+        const hasTwofaSecret = Boolean(row.twofa_secret);
+
+        const safe = {
+          id: row.public_id || row._id,
+          email: row.email,
+          name: row.name,
+          role: row.role,
+          tenant_id: row.tenant_id,
+          phone: row.phone || null,
+          accountStatus: isActive ? 'Active' : 'Inactive',
+          memberSince: createdAt ? new Date(createdAt).toISOString() : null,
+          lastLogin: lastLogin ? new Date(lastLogin).toISOString() : null,
+          emailVerified: emailVerified,
+          twoFactor: {
+            enabled: twofaEnabled,
+            status: twofaEnabled ? 'Enabled' : 'Disabled',
+            hasSecret: hasTwofaSecret
+          }
+        };
+
+        return res.json({ user: safe });
+      });
+    });
+  } catch (e) {
+    const safe = {
+      id: user.public_id || user._id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      tenant_id: user.tenant_id
+    };
+    return res.json({ user: safe });
+  }
 });
 
 router.put('/profile', requireAuth, (req, res) => {
   const user = req.user;
-  const { name, title } = req.body;
-  const sql = 'UPDATE users SET name = ?, title = ? WHERE _id = ?';
-  db.query(sql, [name || user.name, title || user.title, user._id], (err) => {
-    if (err) return res.status(500).json({ message: 'DB error' });
+  const { name, title, phone } = req.body;
+  // Try to update phone if column exists; if not, provide helpful error
+  const sql = 'UPDATE users SET name = ?, title = ?, phone = ? WHERE _id = ?';
+  const params = [name || user.name, title || user.title, (typeof phone !== 'undefined' ? phone : (user.phone || null)), user._id];
+  db.query(sql, params, (err) => {
+    if (err) {
+      // If the DB doesn't have a `phone` column, return actionable message
+      if (err && err.code === 'ER_BAD_FIELD_ERROR' && /phone/.test(err.message)) {
+        return res.status(500).json({ message: 'DB schema missing `phone` column. Run scripts/add_phone_column.js or run: ALTER TABLE `users` ADD COLUMN `phone` VARCHAR(20) DEFAULT NULL' });
+      }
+      return res.status(500).json({ message: 'DB error', error: err && err.message });
+    }
     return res.json({ message: 'Profile updated' });
   });
 });
@@ -654,6 +846,132 @@ router.post('/change-password', requireAuth, async (req, res) => {
       return res.json({ message: 'Password changed' });
     });
   });
+});
+
+// 2FA endpoints
+// Enable 2FA for authenticated user: returns secret (base32) and QR code data URL
+router.post('/2fa/enable', requireAuth, async (req, res) => {
+  const userId = req.user && req.user._id;
+  if (!userId) return res.status(401).json({ message: 'Not authenticated' });
+  try {
+    const okCols = await ensureUsers2FAColumns();
+    if (!okCols) return res.status(500).json({ message: 'Failed to ensure 2FA columns on users table' });
+    const sqlFind = 'SELECT email, twofa_secret, is2fa_enabled FROM users WHERE _id = ? LIMIT 1';
+    db.query(sqlFind, [userId], async (err, rows) => {
+      if (err) return res.status(500).json({ message: 'DB error', error: err.message });
+      if (!rows || rows.length === 0) return res.status(404).json({ message: 'User not found' });
+      const row = rows[0];
+      const email = row.email || 'user@example.com';
+
+      const alreadyEnabled = Boolean(row.is2fa_enabled === 1 || row.is2fa_enabled === '1');
+      if (alreadyEnabled) {
+        return res.json({ success: true, enabled: true, message: '2FA already enabled. Call /api/auth/2fa/disable to turn it off.' });
+      }
+
+      // If a secret is already stored (user started setup but didn't verify), return it again
+      if (row.twofa_secret) {
+        const otpauth = `otpauth://totp/TaskManager:${encodeURIComponent(email)}?secret=${row.twofa_secret}&issuer=TaskManager`;
+        let qr = null;
+        try { qr = await qrcode.toDataURL(otpauth); } catch (e) { qr = null; }
+        return res.json({ success: true, enabled: false, secret: row.twofa_secret, qr, message: 'Existing secret stored; verify to enable' });
+      }
+
+      // create new secret and store it (do not enable until /2fa/verify)
+      const secretObj = speakeasy.generateSecret({ length: 20, name: `TaskManager (${email})` });
+      const secretBase32 = secretObj.base32;
+      const upd = 'UPDATE users SET twofa_secret = ? WHERE _id = ?';
+      db.query(upd, [secretBase32, userId], async (uErr) => {
+        if (uErr) return res.status(500).json({ message: 'Failed to store 2FA secret', error: uErr.message });
+        try {
+          const otpauth = secretObj.otpauth_url || `otpauth://totp/TaskManager:${encodeURIComponent(email)}?secret=${secretBase32}&issuer=TaskManager`;
+          const qr = await qrcode.toDataURL(otpauth);
+          return res.json({ success: true, enabled: false, secret: secretBase32, qr, message: 'Secret stored; verify with /api/auth/2fa/verify to enable' });
+        } catch (e) {
+          return res.json({ success: true, enabled: false, secret: secretBase32, qr: null, message: 'Secret stored; verify with /api/auth/2fa/verify to enable' });
+        }
+      });
+    });
+  } catch (e) {
+    return res.status(500).json({ message: '2FA enable error', error: e.message });
+  }
+});
+
+// Disable 2FA for authenticated user
+router.post('/2fa/disable', requireAuth, (req, res) => {
+  const userId = req.user && req.user._id;
+  if (!userId) return res.status(401).json({ message: 'Not authenticated' });
+  (async () => {
+    const okCols = await ensureUsers2FAColumns();
+    if (!okCols) return res.status(500).json({ message: 'Failed to ensure 2FA columns on users table' });
+    const upd = 'UPDATE users SET twofa_secret = NULL, is2fa_enabled = 0 WHERE _id = ?';
+    db.query(upd, [userId], (err) => {
+      if (err) return res.status(500).json({ message: 'Failed to disable 2FA', error: err.message });
+      return res.json({ success: true, enabled: false, message: '2FA disabled' });
+    });
+  })();
+});
+
+// Verify a given TOTP token for the authenticated user (useful for setup confirmation)
+router.post('/2fa/verify', requireAuth, (req, res) => {
+  const userId = req.user && req.user._id;
+  const { token } = req.body;
+  if (!userId) return res.status(401).json({ message: 'Not authenticated' });
+  if (!token) return res.status(400).json({ message: 'token required' });
+  (async () => {
+    const okCols = await ensureUsers2FAColumns();
+    if (!okCols) return res.status(500).json({ message: 'Failed to ensure 2FA columns on users table' });
+    db.query('SELECT twofa_secret FROM users WHERE _id = ? LIMIT 1', [userId], (err, rows) => {
+    if (err) return res.status(500).json({ message: 'DB error', error: err.message });
+    if (!rows || rows.length === 0) return res.status(404).json({ message: 'User not found' });
+    const secret = rows[0].twofa_secret || rows[0].twofaSecret || null;
+    if (!secret) return res.status(400).json({ message: '2FA not configured for user' });
+    const verified = speakeasy.totp.verify({ secret: String(secret), encoding: 'base32', token: String(token), window: 1 });
+    if (!verified) {
+      // Helpful debug info when enabled in dev environment only
+      if (process.env.DEV_INCLUDE_OTP === 'true') {
+        try {
+          const current = speakeasy.totp({ secret: String(secret), encoding: 'base32' });
+          const serverTime = new Date().toISOString();
+          return res.status(401).json({ success: false, message: 'Invalid token', expected: current, serverTime });
+        } catch (e) {
+          return res.status(401).json({ success: false, message: 'Invalid token' });
+        }
+      }
+      return res.status(401).json({ success: false, message: 'Invalid token' });
+    }
+    // mark 2FA enabled now that user has confirmed the token
+      const upd = 'UPDATE users SET is2fa_enabled = 1 WHERE _id = ?';
+      db.query(upd, [userId], (uErr) => {
+        if (uErr) return res.status(500).json({ message: 'Failed to enable 2FA', error: uErr.message });
+        // Return fresh auth tokens so frontend doesn't need to call refresh immediately
+        try {
+          return completeLoginForUser(req.user || { _id: userId }, req, res);
+        } catch (e) {
+          return res.json({ success: true, enabled: true, message: '2FA verified and enabled' });
+        }
+      });
+  });
+  })();
+});
+
+// Get current 2FA status for authenticated user
+router.get('/2fa/status', requireAuth, async (req, res) => {
+  const userId = req.user && req.user._id;
+  if (!userId) return res.status(401).json({ message: 'Not authenticated' });
+  try {
+    const okCols = await ensureUsers2FAColumns();
+    if (!okCols) return res.status(500).json({ message: 'Failed to ensure 2FA columns on users table' });
+    db.query('SELECT twofa_secret, is2fa_enabled FROM users WHERE _id = ? LIMIT 1', [userId], (err, rows) => {
+      if (err) return res.status(500).json({ message: 'DB error', error: err.message });
+      if (!rows || rows.length === 0) return res.status(404).json({ message: 'User not found' });
+      const r = rows[0];
+      const enabled = Boolean(r.is2fa_enabled === 1 || r.is2fa_enabled === '1');
+      const hasSecret = !!r.twofa_secret;
+      return res.json({ success: true, enabled, hasSecret });
+    });
+  } catch (e) {
+    return res.status(500).json({ message: 'Error fetching 2FA status', error: e.message });
+  }
 });
 
 module.exports = router;
