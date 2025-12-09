@@ -4,13 +4,15 @@ const bodyParser = require('body-parser');
 require('dotenv').config()
 const app = express();
 const db = require('./db');
+const path = require('path');
+const fs = require('fs');
 
 global.__root = __dirname + '/';
 
 app.use(bodyParser.urlencoded({ extended: false }))
 app.use(bodyParser.json())
 app.use(cors());
-
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 // Global response logger: logs outgoing response bodies for each request
 app.use((req, res, next) => {
   const oldJson = res.json;
