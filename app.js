@@ -13,6 +13,15 @@ app.use(bodyParser.urlencoded({ extended: false }))
 app.use(bodyParser.json())
 app.use(cors());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Ensure uploads directory exists so static serving won't 404 for newly saved files
+try {
+  const uploadsDir = path.join(__dirname, 'uploads');
+  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+  const profilesDir = path.join(uploadsDir, 'profiles');
+  if (!fs.existsSync(profilesDir)) fs.mkdirSync(profilesDir, { recursive: true });
+} catch (e) {
+  console.warn('Failed to ensure uploads directory exists:', e && e.message);
+}
 // Global response logger: logs outgoing response bodies for each request
 app.use((req, res, next) => {
   const oldJson = res.json;

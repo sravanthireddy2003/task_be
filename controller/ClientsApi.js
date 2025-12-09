@@ -3,11 +3,82 @@ const express = require('express');
 const router = express.Router();
 const logger = require('../logger');
 const crypto = require('crypto');
+const path = require('path');
+const fs = require('fs');
+const multer = require('multer');
+const mime = require('mime-types');
+
+// configure multer to save files into uploads/ directory
+const uploadsRoot = path.join(__dirname, '..', 'uploads');
+if (!fs.existsSync(uploadsRoot)) fs.mkdirSync(uploadsRoot, { recursive: true });
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadsRoot);
+  },
+  filename: function (req, file, cb) {
+    const ext = path.extname(file.originalname) || '';
+    const base = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9-_\.]/g, '_');
+    const name = `${base}_${Date.now()}${ext}`;
+    cb(null, name);
+  }
+});
+const upload = multer({ storage });
+
+function saveBase64ToUploads(base64data, filename) {
+  try {
+    if (!base64data || !filename) return null;
+    const uploadsDir = path.join(__dirname, '..', 'uploads');
+    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+    // Avoid overwriting: if file exists, append timestamp
+    let targetName = filename;
+    const targetPath = () => path.join(uploadsDir, targetName);
+    if (fs.existsSync(targetPath())) {
+      const ts = Date.now();
+      const ext = path.extname(filename);
+      const base = path.basename(filename, ext);
+      targetName = `${base}_${ts}${ext}`;
+    }
+    // base64 may include data:<mime>;base64, prefix — strip if present
+    const matched = base64data.match(/^data:(.*);base64,(.*)$/);
+    const b64 = matched ? matched[2] : base64data;
+    const buffer = Buffer.from(b64, 'base64');
+    fs.writeFileSync(targetPath(), buffer);
+    return `${process.env.BASE_URL || process.env.FRONTEND_URL || 'http://localhost:4000'}/uploads/${encodeURIComponent(targetName)}`;
+  } catch (e) {
+    logger.debug('Failed to save base64 file: ' + (e && e.message));
+    return null;
+  }
+}
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const emailService = require(__root + 'utils/emailService');
 require('dotenv').config();
 
 router.use(requireAuth);
+
+function guessMimeType(filename) {
+  if (!filename) return null;
+  // prefer mime-types lookup, fall back to extension map
+  const m = mime.lookup(filename);
+  if (m) return m;
+  const ext = (path.extname(filename) || '').toLowerCase().replace('.', '');
+  const map = {
+    pdf: 'application/pdf',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    txt: 'text/plain',
+    csv: 'text/csv',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    zip: 'application/zip',
+    ppt: 'application/vnd.ms-powerpoint',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  };
+  return map[ext] || null;
+}
 
 function q(sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -118,10 +189,15 @@ router.post('/', requireRole('Admin'), async (req, res) => {
     const attachedDocuments = [];
     if (Array.isArray(documents) && documents.length > 0) {
       for (const d of documents) {
-        if (!d || !d.file_url || !d.file_name) continue; // skip invalid entries
+        if (!d) continue;
+        // allow payloads that include only file_name (frontend may upload file separately)
+        const fileName = d.file_name || d.fileName || null;
+        if (!fileName) continue;
+        const fileUrl = d.file_url || d.fileUrl || (`${req.protocol}://${req.get('host')}/uploads/${encodeURIComponent(fileName)}`);
         try {
-          const r = await q('INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active) VALUES (?, ?, ?, ?, ?, NOW(), 1)', [clientId, d.file_url, d.file_name, d.file_type || null, d.uploaded_by || (req.user && req.user._id ? req.user._id : null)]);
-          attachedDocuments.push({ id: r.insertId, file_url: d.file_url, file_name: d.file_name, file_type: d.file_type || null });
+          const fileType = d.file_type || d.fileType || guessMimeType(fileName) || null;
+          const r = await q('INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active) VALUES (?, ?, ?, ?, ?, NOW(), 1)', [clientId, fileUrl, fileName, fileType, d.uploaded_by || d.uploadedBy || (req.user && req.user._id ? req.user._id : null)]);
+          attachedDocuments.push({ id: r.insertId, file_url: fileUrl, file_name: fileName, file_type: fileType });
         } catch (e) {
           logger.debug('Failed to attach document for client ' + clientId + ': ' + (e && e.message));
         }
@@ -175,9 +251,9 @@ router.get('/', requireRole(['Admin','Manager','Client-Viewer']), async (req, re
     if (hasStatus) selectCols.push('clientss.status');
     if (hasManager) {
       selectCols.push('clientss.manager_id');
-      // include manager public id and name when available
-      selectCols.push('mu.public_id AS manager_public_id');
-      selectCols.push('mu.name AS manager_name');
+      // use scalar subqueries to fetch manager public_id and name to avoid duplicate rows
+      selectCols.push('(SELECT public_id FROM users WHERE _id = clientss.manager_id OR public_id = clientss.manager_id LIMIT 1) AS manager_public_id');
+      selectCols.push('(SELECT name FROM users WHERE _id = clientss.manager_id OR public_id = clientss.manager_id LIMIT 1) AS manager_name');
     }
     if (hasCreatedAt) selectCols.push('clientss.created_at');
 
@@ -197,22 +273,49 @@ router.get('/', requireRole(['Admin','Manager','Client-Viewer']), async (req, re
       if (hasPhoneCol) selectCols.push('clientss.phone');
     }
 
-    // If manager column exists, left join users table (alias mu) to expose manager's public_id and name
-    if (hasManager) {
-      joinClause += ' LEFT JOIN users mu ON (mu._id = clientss.manager_id OR mu.public_id = clientss.manager_id) ';
-    }
+    // No extra join for manager — scalar subqueries are used above to fetch manager info
 
     const listSql = `SELECT ${selectCols.join(', ')} FROM clientss ${joinClause} ${whereSql} ${hasCreatedAt ? 'ORDER BY clientss.created_at DESC' : 'ORDER BY clientss.id DESC'} LIMIT ? OFFSET ?`;
     const rows = await q(listSql, params.concat([perPage, offset]));
-    return res.json({ success: true, data: rows, meta: { total, page, perPage } });
+
+    // Attach documents and ensure manager name/public_id are present per row
+    const enhancedRows = await Promise.all(rows.map(async (r) => {
+      try {
+        const docs = await q('SELECT id, file_url, file_name, file_type, uploaded_at FROM client_documents WHERE client_id = ? AND is_active = 1 ORDER BY uploaded_at DESC', [r.id]).catch(() => []);
+        r.documents = Array.isArray(docs) ? docs : [];
+      } catch (e) {
+        r.documents = [];
+      }
+
+      // If manager_name not present but manager_id exists, try to resolve
+      if ((!r.manager_name || r.manager_name === null) && r.manager_id) {
+        try {
+          const mgr = await q('SELECT public_id, name FROM users WHERE _id = ? OR public_id = ? LIMIT 1', [r.manager_id, String(r.manager_id)]).catch(() => []);
+          if (Array.isArray(mgr) && mgr.length > 0) {
+            r.manager_public_id = mgr[0].public_id || r.manager_public_id || null;
+            r.manager_name = mgr[0].name || r.manager_name || null;
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      return r;
+    }));
+
+    return res.json({ success: true, data: enhancedRows, meta: { total, page, perPage } });
   } catch (e) { logger.error('Error listing clients: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
 });
 
 router.get('/:id', requireRole(['Admin','Manager','Client-Viewer']), async (req, res) => {
   try {
-    const id = req.params.id; const clientRow = (await q('SELECT * FROM clientss WHERE id = ? LIMIT 1', [id]));
+    const id = req.params.id;
+    const clientRow = (await q('SELECT * FROM clientss WHERE id = ? LIMIT 1', [id]));
     if (!clientRow || clientRow.length === 0) return res.status(404).json({ success: false, error: 'Client not found' });
     const client = clientRow[0];
+
+    // normalize createdAt/created_at
+    if ((!client.createdAt || client.createdAt === null) && client.created_at) client.createdAt = client.created_at;
     const contacts = await q('SELECT id, name, email, phone, designation, is_primary FROM client_contacts WHERE client_id = ? ORDER BY is_primary DESC, id ASC', [id]).catch(() => []);
     // If client row doesn't contain email/phone, prefer the primary contact's values
     if ((!client.email || client.email === null) && contacts && contacts.length > 0 && contacts[0].email) {
@@ -220,6 +323,27 @@ router.get('/:id', requireRole(['Admin','Manager','Client-Viewer']), async (req,
     }
     if ((!client.phone || client.phone === null) && contacts && contacts.length > 0 && contacts[0].phone) {
       client.phone = contacts[0].phone;
+    }
+
+    // Resolve manager public id and name if manager_id present and not already populated
+    try {
+      if (client.manager_id !== undefined && client.manager_id !== null && client.manager_id !== 0) {
+        const mgrRows = await q('SELECT public_id, name FROM users WHERE _id = ? OR public_id = ? LIMIT 1', [client.manager_id, String(client.manager_id)]).catch(() => []);
+        if (Array.isArray(mgrRows) && mgrRows.length > 0) {
+          client.manager_public_id = mgrRows[0].public_id || client.manager_public_id || null;
+          client.manager_name = mgrRows[0].name || client.manager_name || null;
+        } else {
+          // ensure keys exist even if not found
+          client.manager_public_id = client.manager_public_id || null;
+          client.manager_name = client.manager_name || null;
+        }
+      } else {
+        client.manager_public_id = client.manager_public_id || null;
+        client.manager_name = client.manager_name || null;
+      }
+    } catch (e) {
+      client.manager_public_id = client.manager_public_id || null;
+      client.manager_name = client.manager_name || null;
     }
     const documents = await q('SELECT id, file_url, file_name, file_type, uploaded_at FROM client_documents WHERE client_id = ? AND is_active = 1 ORDER BY uploaded_at DESC', [id]).catch(() => []);
     const activities = await q('SELECT id, actor_id, action, details, created_at FROM client_activity_logs WHERE client_id = ? ORDER BY created_at DESC LIMIT 50', [id]).catch(() => []);
@@ -275,15 +399,19 @@ router.post('/:id/documents', requireRole(['Admin','Manager']), async (req, res)
   try {
     const id = req.params.id;
     // Support both single document (file_url+file_name) or an array `documents: [{file_url, file_name, file_type, uploaded_by}, ...]`
-    const docs = Array.isArray(req.body.documents) ? req.body.documents : (req.body.file_url && req.body.file_name ? [req.body] : []);
-    if (!docs || docs.length === 0) return res.status(400).json({ success: false, error: 'file_url and file_name required' });
+    const docs = Array.isArray(req.body.documents) ? req.body.documents : (req.body.file_name ? [req.body] : []);
+    if (!docs || docs.length === 0) return res.status(400).json({ success: false, error: 'file_name (or file_url + file_name) required' });
 
     const inserted = [];
     for (const d of docs) {
-      if (!d || !d.file_url || !d.file_name) continue;
+      if (!d) continue;
+      const fileName = d.file_name || d.fileName || null;
+      if (!fileName) continue;
+      const fileUrl = d.file_url || d.fileUrl || (`${req.protocol}://${req.get('host')}/uploads/${encodeURIComponent(fileName)}`);
       try {
-        const r = await q('INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active) VALUES (?, ?, ?, ?, ?, NOW(), 1)', [id, d.file_url, d.file_name, d.file_type || null, d.uploaded_by || (req.user && req.user._id ? req.user._id : null)]);
-        const docRec = { id: r.insertId, file_url: d.file_url, file_name: d.file_name, file_type: d.file_type || null };
+        const fileType = d.file_type || d.fileType || guessMimeType(fileName) || null;
+        const r = await q('INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active) VALUES (?, ?, ?, ?, ?, NOW(), 1)', [id, fileUrl, fileName, fileType, d.uploaded_by || d.uploadedBy || (req.user && req.user._id ? req.user._id : null)]);
+        const docRec = { id: r.insertId, file_url: fileUrl, file_name: fileName, file_type: fileType };
         inserted.push(docRec);
         // log activity per document
         await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'attach-document', JSON.stringify(docRec)]).catch(()=>{});
@@ -300,4 +428,32 @@ router.post('/:id/documents', requireRole(['Admin','Manager']), async (req, res)
   }
 });
 
+// Multipart file upload endpoint: accept files as form-data `files[]`
+router.post('/:id/upload', requireRole(['Admin','Manager']), upload.array('files', 20), async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!req.files || req.files.length === 0) return res.status(400).json({ success: false, error: 'No files uploaded' });
+    const inserted = [];
+    for (const f of req.files) {
+      try {
+        const fileName = f.originalname || f.filename;
+        const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${encodeURIComponent(f.filename)}`;
+        const fileType = f.mimetype || guessMimeType(fileName) || null;
+        const r = await q('INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active) VALUES (?, ?, ?, ?, ?, NOW(), 1)', [id, fileUrl, fileName, fileType, req.user && req.user._id ? req.user._id : null]);
+        const docRec = { id: r.insertId, file_url: fileUrl, file_name: fileName, file_type: fileType };
+        inserted.push(docRec);
+        await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'attach-document', JSON.stringify(docRec)]).catch(()=>{});
+      } catch (e) {
+        logger.debug('Failed inserting uploaded file for client ' + id + ': ' + (e && e.message));
+      }
+    }
+    if (inserted.length === 0) return res.status(500).json({ success: false, error: 'Failed to save uploaded files' });
+    return res.status(201).json({ success: true, data: inserted });
+  } catch (e) {
+    logger.error('Error in file upload: ' + e.message);
+    return res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 module.exports = router;
+
