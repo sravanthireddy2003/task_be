@@ -28,11 +28,14 @@ module.exports = async function tenantMiddleware(req, res, next) {
     const userId = payload && payload.id;
     if (!userId) return res.status(400).json({ message: 'Missing tenant id and token did not contain user id.' });
 
-    // lookup tenant_id from users table by loginId or _id
-    const q = 'SELECT tenant_id FROM users WHERE _id = ? LIMIT 1';
-    db.query(q, [userId], (err, results) => {
+    // lookup tenant_id from users table. Tokens may contain either internal `_id` (number)
+    // or `public_id` (string). Try both to resolve tenant reliably.
+    const q = 'SELECT tenant_id FROM users WHERE _id = ? OR public_id = ? LIMIT 1';
+    db.query(q, [userId, String(userId)], (err, results) => {
       if (err) return res.status(500).json({ message: 'DB error while resolving tenant id', error: err.message });
-      if (!results || results.length === 0) return res.status(400).json({ message: 'Unable to resolve tenant id for user in token' });
+      if (!results || results.length === 0) {
+        return res.status(400).json({ message: 'Unable to resolve tenant id for user in token' });
+      }
       req.tenantId = results[0].tenant_id;
       return next();
     });
