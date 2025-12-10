@@ -36,15 +36,14 @@ router.get("/getusers", requireRole('Admin'), (req, res) => {
 });
 
 // Create user
-// Create user - FIXED EMAIL SENDING
 router.post('/create', requireRole('Admin'), async (req, res) => {
   try {
     const { name, email, phone, role, departmentId, title, isActive, isGuest } = req.body;
-    
+
     if (!name || !email || !role) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Name, email and role required' 
+      return res.status(400).json({
+        success: false,
+        message: 'Name, email and role required'
       });
     }
 
@@ -55,11 +54,11 @@ router.post('/create', requireRole('Admin'), async (req, res) => {
         else resolve(results);
       });
     });
-    
+
     if (exists && exists.length > 0) {
-      return res.status(409).json({ 
-        success: false, 
-        message: 'User already exists with this email' 
+      return res.status(409).json({
+        success: false,
+        message: 'User already exists with this email'
       });
     }
 
@@ -74,17 +73,17 @@ router.post('/create', requireRole('Admin'), async (req, res) => {
     const params = [publicId, name, email, hashed, phone || null, role];
 
     if (title) {
-      fields.push('title'); 
-      placeholders.push('?'); 
+      fields.push('title');
+      placeholders.push('?');
       params.push(title);
     }
-    fields.push('isActive'); 
-    placeholders.push('?'); 
+    fields.push('isActive');
+    placeholders.push('?');
     params.push(typeof isActive === 'undefined' ? true : Boolean(isActive));
-    
+
     if (isGuest !== undefined) {
-      fields.push('isGuest'); 
-      placeholders.push('?'); 
+      fields.push('isGuest');
+      placeholders.push('?');
       params.push(Boolean(isGuest));
     }
 
@@ -94,7 +93,7 @@ router.post('/create', requireRole('Admin'), async (req, res) => {
         [], (err, rows) => resolve(!err && Array.isArray(rows) && rows.length > 0)
       );
     });
-    
+
     const insertCols = hasCreatedAt ? `${fields.join(', ')}, created_at` : fields.join(', ');
     const insertVals = hasCreatedAt ? `${placeholders.join(', ')}, NOW()` : placeholders.join(', ');
 
@@ -102,22 +101,38 @@ router.post('/create', requireRole('Admin'), async (req, res) => {
     const result = await new Promise((resolve, reject) => {
       db.query(sql, params, (err, res) => err ? reject(err) : resolve(res));
     });
-    
+
     const insertId = result.insertId;
 
     // 🔥 FIXED: Send email with proper error handling & logging
     const setupToken = jwt.sign(
-      { id: publicId, step: 'setup' }, 
-      process.env.JWT_SECRET || process.env.SECRET || 'change_this_secret', 
+      { id: publicId, step: 'setup' },
+      process.env.JWT_SECRET || process.env.SECRET || 'change_this_secret',
       { expiresIn: '7d' }
     );
 
     const setupUrlBase = process.env.FRONTEND_URL || process.env.BASE_URL || 'http://localhost:3000';
     const setupLink = `${setupUrlBase.replace(/\/$/, '')}/setup-password?token=${encodeURIComponent(setupToken)}`;
 
-    const tpl = emailService.welcomeTemplate(name, email, tempPassword, setupLink);
+    // Correct welcomeTemplate usage (object input)
+    const tpl = emailService.welcomeTemplate({
+      name,
+      email,
+      role,
+      title: title || "Employee",
+      tempPassword,
+      createdBy: req.user?.name || "System Admin",
+      createdAt: new Date(),
+      setupLink
+    });
+
     // fire-and-forget send
-    emailService.sendEmail({ to: email, subject: tpl.subject, text: tpl.text, html: tpl.html })
+    emailService.sendEmail({
+      to: email,
+      subject: tpl.subject,
+      text: tpl.text,
+      html: tpl.html
+    })
       .then(r => {
         if (r.sent) logger.info(`✅ Welcome email sent to ${email}`);
         else logger.warn(`⚠️ Welcome email not sent to ${email} (logged): ${r.error || 'no transporter configured'}`);
@@ -128,43 +143,43 @@ router.post('/create', requireRole('Admin'), async (req, res) => {
     const selSql = 'SELECT _id, public_id, name, email, role, title, isActive, phone, isGuest FROM users WHERE _id = ? LIMIT 1';
     db.query(selSql, [insertId], (err, saved) => {
       if (err || !saved || !saved[0]) {
-        return res.status(201).json({ 
-          success: true, 
-          data: { 
-            id: publicId, 
-            name, email, role, title: title || null, 
-            isActive: Boolean(isActive), 
-            phone: phone || null, 
+        return res.status(201).json({
+          success: true,
+          data: {
+            id: publicId,
+            name, email, role, title: title || null,
+            isActive: Boolean(isActive),
+            phone: phone || null,
             tempPassword,
-            setupToken 
-          } 
+            setupToken
+          }
         });
       }
-      
+
       const user = saved[0];
-      res.status(201).json({ 
-        success: true, 
-        data: { 
+      res.status(201).json({
+        success: true,
+        data: {
           id: user.public_id || user._id,
-          name: user.name, 
-          email: user.email, 
-          role: user.role, 
-          title: user.title, 
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          title: user.title,
           isActive: user.isActive,
           phone: user.phone,
           isGuest: user.isGuest || false,
           tempPassword,
-          setupToken 
-        } 
+          setupToken
+        }
       });
     });
 
   } catch (error) {
     logger.error('Create user error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Failed to create user',
-      error: error.message 
+      error: error.message
     });
   }
 });
@@ -194,10 +209,10 @@ router.put("/update/:id", requireRole('Admin'), (req, res) => {
     db.query(selectSql, [id], (err, user) => {
       if (err || !user || user.length === 0) return res.status(200).json({ success: true, message: "User updated but could not fetch updated data" });
       const u = user[0]; u.id = u.public_id || u._id; delete u.public_id;
-      res.status(200).json({ 
-        success: true, 
-        message: "User updated successfully", 
-        user: u 
+      res.status(200).json({
+        success: true,
+        message: "User updated successfully",
+        user: u
       });
     });
   });
@@ -228,9 +243,9 @@ router.delete("/delete/:user_id", requireRole('Admin'), (req, res) => {
   db.query(sqlDelete, [user_id], (err, result) => {
     if (err) return res.status(500).json({ success: false, message: "Database error", error: err.message });
     if (result.affectedRows === 0) return res.status(404).json({ success: false, message: "User not found" });
-    return res.status(200).json({ 
-      success: true, 
-      message: "User deleted successfully" 
+    return res.status(200).json({
+      success: true,
+      message: "User deleted successfully"
     });
   });
 });
