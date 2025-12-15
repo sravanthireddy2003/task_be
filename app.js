@@ -69,14 +69,18 @@ app.get('/api', function (req, res) {
 const AuthController = require(__root + 'controller/AuthController');
 app.use('/api/auth', AuthController);
 
+// Client-Viewer Access Control Middleware
+// Enforces read-only access and endpoint restrictions for Client-Viewer users
+const clientViewerAccessControl = require(__root + 'middleware/clientViewerAccess');
+
 const StaffUser = require(__root + 'controller/User');
-app.use('/api/users', StaffUser);
+app.use('/api/users', clientViewerAccessControl, StaffUser);
 
 const tasksCRUD=require(__root + 'controller/Tasks');
-app.use('/api/tasks',tasksCRUD);
+app.use('/api/tasks', clientViewerAccessControl, tasksCRUD);
 
 const clientsCRUD=require(__root + 'controller/ClientsApi');
-app.use('/api/clients',clientsCRUD);
+app.use('/api/clients', clientViewerAccessControl, clientsCRUD);
 
 
 const uploadCRUD=require(__root + 'controller/Uploads');

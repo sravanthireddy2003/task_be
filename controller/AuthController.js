@@ -7,6 +7,7 @@ const speakeasy = require('speakeasy');
 const qrcode = require('qrcode');
 const otpService = require(__root + 'utils/otpService');
 const passwordPolicy = require(__root + 'utils/passwordPolicy');
+const emailService = require(__root + 'utils/emailService');
 // tenantMiddleware available if endpoints need explicit tenant enforcement; most auth flows derive tenant from email/token
 const { requireAuth } = require(__root + 'middleware/roles');
 require('dotenv').config();
@@ -335,7 +336,7 @@ async function completeLoginForUser(user, req, res) {
       if (role === 'Admin') return [ mk(1,'User Management','full'), mk(2,'Dashboard','full'), mk(3,'Clients','full'), mk(4,'Departments','full'), mk(5,'Tasks','full'), mk(6,'Projects','full'), mk(8,'Workflow (Project & Task Flow)','full'), mk(9,'Notifications','full'), mk(10,'Reports & Analytics','full'), mk(11,'Document & File Management','full'), mk(13,'Chat / Real-Time Collaboration','full'), mk(14,'Approval Workflows','full'), mk(12,'Settings & Master Configuration','full') ];
       if (role === 'Manager') return [ mk(2,'Dashboard','full'), mk(4,'Departments','full'), mk(5,'Tasks','full'), mk(6,'Projects','full'), mk(8,'Workflow (Project & Task Flow)','full'), mk(9,'Notifications','limited'), mk(10,'Reports & Analytics','full'), mk(11,'Document & File Management','limited'), mk(13,'Chat / Real-Time Collaboration','full'), mk(14,'Approval Workflows','limited') ];
       if (role === 'Employee') return [ mk(2,'Dashboard','view'), mk(5,'Tasks','limited'), mk(9,'Notifications','limited'), mk(10,'Reports & Analytics','limited'), mk(11,'Document & File Management','limited'), mk(13,'Chat / Real-Time Collaboration','full') ];
-      if (role === 'Client') return [ mk(2,'Dashboard','view'), mk(6,'Projects','view'), mk(9,'Notifications','limited'), mk(10,'Reports & Analytics','limited'), mk(11,'Document & File Management','limited'), mk(13,'Chat / Real-Time Collaboration','limited') ];
+      if (role === 'Client-Viewer') return [ mk(2,'Dashboard','view'), mk(5,'Assigned Tasks','view'), mk(11,'Document & File Management','view') ];
       return [];
     }
 
@@ -349,6 +350,19 @@ async function completeLoginForUser(user, req, res) {
     const modulesToReturn = storedModules && storedModules.length ? storedModules : getModulesForRole(user.role);
     const orderedModules = reorderModulesForSidebar(modulesToReturn);
 
+    // Get role-based login response with dashboard metrics and accessible resources
+    let roleBasedData = {};
+    try {
+      const RoleBasedLoginResponse = require('./utils/RoleBasedLoginResponse');
+      const metrics = await RoleBasedLoginResponse.getDashboardMetrics(user._id, user.role, user.tenant_id);
+      const resources = await RoleBasedLoginResponse.getAccessibleResources(user._id, user.role, user.tenant_id);
+      const sidebar = RoleBasedLoginResponse.getSidebarForRole(user.role);
+      roleBasedData = { metrics, resources, sidebar };
+    } catch (e) {
+      console.warn('Could not load role-based login response:', e.message);
+      roleBasedData = {};
+    }
+
     // Optional: log login history
     try {
       const insert = 'INSERT INTO login_history (user_id, tenant_id, ip, user_agent, success, created_at) VALUES (?, ?, ?, ?, ?, NOW())';
@@ -357,7 +371,22 @@ async function completeLoginForUser(user, req, res) {
       db.query(insert, [user._id, user.tenant_id || null, ip, ua, 1], () => {});
     } catch (e) {}
 
-    return res.json({ token, refreshToken, user: { id: user.public_id || String(user._id), email: user.email, name: user.name, role: user.role, modules: orderedModules } });
+    return res.json({ 
+      token, 
+      refreshToken, 
+      user: { 
+        id: user.public_id || String(user._id), 
+        email: user.email, 
+        name: user.name, 
+        role: user.role,
+        // Include modules for all roles (Client-Viewer gets restricted modules with view-only access)
+        modules: orderedModules,
+        phone: user.phone || null,
+        title: user.title || null,
+        department: user.department || null
+      },
+      ...roleBasedData
+    });
   } catch (e) {
     return res.status(500).json({ message: 'Login error', error: e.message });
   }

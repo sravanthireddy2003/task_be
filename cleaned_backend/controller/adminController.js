@@ -1,0 +1,470 @@
+const db = require(__root + 'db');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+const MODULES_FILE = path.join(__root, 'data', 'modules.json');
+
+function readModules() {
+  try {
+    if (!fs.existsSync(MODULES_FILE)) return [];
+    const raw = fs.readFileSync(MODULES_FILE, 'utf8');
+    return JSON.parse(raw || '[]');
+  } catch (e) { console.error('readModules error', e && e.message); return []; }
+}
+
+function writeModules(arr) {
+  try {
+    fs.mkdirSync(path.dirname(MODULES_FILE), { recursive: true });
+    fs.writeFileSync(MODULES_FILE, JSON.stringify(arr, null, 2), 'utf8');
+    return true;
+  } catch (e) { console.error('writeModules error', e && e.message); return false; }
+}
+
+// Helper to build SELECT column list including optional columns only if present in table
+function buildSelect(table, baseCols, optionalCols=[]) {
+  return new Promise((resolve) => {
+    db.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", [table], (err, cols) => {
+      try {
+        if (err || !Array.isArray(cols) || cols.length === 0) return resolve(baseCols.join(', '));
+        const present = new Set(cols.map(c => c.COLUMN_NAME));
+        const colsToSelect = baseCols.concat(optionalCols.filter(c => present.has(c)));
+        return resolve(colsToSelect.join(', '));
+      } catch (e) {
+        return resolve(baseCols.join(', '));
+      }
+    });
+  });
+}
+
+function tableHasColumn(table, column) {
+  return new Promise((resolve) => {
+    db.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?", [table, column], (err, rows) => {
+      if (err || !Array.isArray(rows)) return resolve(false);
+      return resolve(rows.length > 0);
+    });
+  });
+}
+
+// helper to get column data type (e.g. 'int','varchar') at file scope
+function getColumnType(table, column) {
+  return new Promise((resolve) => {
+    db.query("SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?", [table, column], (err, rows) => {
+      if (err || !Array.isArray(rows) || rows.length === 0) return resolve(null);
+      return resolve(rows[0].DATA_TYPE);
+    });
+  });
+}
+
+// Safe select: attempts to SELECT columns (including optionalCols) and if MySQL returns ER_BAD_FIELD_ERROR
+// retries with only columns that actually exist in the table. Calls callback(err, rows).
+function safeSelect(table, baseCols, optionalCols=[], whereClause='', params=[], cb) {
+  (async () => {
+    try {
+      const selectCols = await buildSelect(table, baseCols, optionalCols).catch(() => baseCols.join(', '));
+      const sql = `SELECT ${selectCols} FROM ${table} ${whereClause || ''}`;
+      return db.query(sql, params, (err, rows) => {
+        if (!err) return cb(null, rows);
+        // if column missing, try to compute present columns and retry
+        if (err && err.code === 'ER_BAD_FIELD_ERROR') {
+          db.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", [table], (colErr, cols) => {
+            if (colErr || !Array.isArray(cols) || cols.length === 0) return cb(err);
+            const present = new Set(cols.map(c => c.COLUMN_NAME));
+            const colsToSelect = baseCols.concat(optionalCols.filter(c => present.has(c))).filter(c => present.has(c));
+            if (colsToSelect.length === 0) return cb(err);
+            const sql2 = `SELECT ${colsToSelect.join(', ')} FROM ${table} ${whereClause || ''}`;
+            return db.query(sql2, params, (err2, rows2) => cb(err2, rows2));
+          });
+        } else return cb(err);
+      });
+    } catch (e) { return cb(e); }
+  })();
+}
+
+module.exports = {
+  getDashboard: async (req, res) => {
+    try {
+      const q = (sql, params=[]) => new Promise((r, rej) => db.query(sql, params, (e, rows) => e ? rej(e) : r(rows)));
+      const users = (await q('SELECT COUNT(*) as c FROM users'))[0].c || 0;
+      const projects = (await q('SELECT COUNT(*) as c FROM projects')).length ? (await q('SELECT COUNT(*) as c FROM projects'))[0].c : 0;
+      const tasks = (await q('SELECT COUNT(*) as c FROM tasks')).length ? (await q('SELECT COUNT(*) as c FROM tasks'))[0].c : 0;
+      return res.json({ success: true, data: { users, projects, tasks } });
+    } catch (e) {
+      return res.status(500).json({ success: false, error: e.message });
+    }
+  },
+
+  manageUsers: async (req, res) => {
+    const cols = await buildSelect('users', ['_id','public_id','name','email','role','isActive'], ['tenant_id']).catch(() => '_id, public_id, name, email, role, isActive');
+    db.query(`SELECT ${cols} FROM users`, [], (err, rows) => {
+      if (err) return res.status(500).json({ success: false, error: err.message });
+      const out = rows.map(r => { r.id = r.public_id || r._id; delete r.public_id; return r; });
+      res.json({ success: true, data: out });
+    });
+  },
+
+  manageClients: async (req, res) => {
+
+    // optional ?userId filter (public_id or numeric id)
+    const filterUserParam = req.query.userId;
+
+    const runQuery = async (resolvedUserId) => {
+      safeSelect('clientss', ['id','name','email','company'], ['tenant_id'], '', [], (err, rows) => {
+        if (err) return res.status(500).json({ success: false, error: err.message });
+        // try to map clients to public_id (if column exists in clientss table)
+        db.query('SELECT id, public_id FROM clientss', [], (mapErr, mapRows) => {
+          if (mapErr || !Array.isArray(mapRows) || mapRows.length === 0) return res.json({ success: true, data: rows });
+          const map = {};
+          mapRows.forEach(r => { map[r.id] = r.public_id || r.id; });
+          let out = rows.map(r => ({ ...r, id: map[r.id] || r.id }));
+          // if a user filter was provided, try to limit clients that match created_by/user_id if such column exists
+          if (resolvedUserId) {
+            // check if clientss table has user-related columns
+            db.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'clientss' AND TABLE_SCHEMA = DATABASE() AND COLUMN_NAME IN ('created_by','user_id')", [], (colErr, cols) => {
+              if (colErr || !Array.isArray(cols) || cols.length === 0) return res.json({ success: true, data: out });
+              const colNames = cols.map(c => c.COLUMN_NAME);
+              // fetch clients where any of these columns equals resolvedUserId
+              const whereParts = colNames.map(n => `${n} = ?`).join(' OR ');
+              const params = colNames.map(() => resolvedUserId);
+              safeSelect('clientss', ['id','name','email','company'], ['tenant_id'], `WHERE ${whereParts}`, params, (fErr, fRows) => {
+                if (fErr) return res.json({ success: true, data: out });
+                const filtered = fRows.map(r => ({ ...r, id: map[r.id] || r.id }));
+                return res.json({ success: true, data: filtered });
+              });
+            });
+            return;
+          }
+          res.json({ success: true, data: out });
+        });
+      });
+    };
+
+    if (filterUserParam) {
+      const isNumeric = /^\d+$/.test(String(filterUserParam));
+      if (isNumeric) { runQuery(filterUserParam); return; }
+      db.query('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [filterUserParam], (err, rows) => {
+        if (err) return res.status(500).json({ success: false, error: err.message });
+        if (!rows || rows.length === 0) return res.status(404).json({ success: false, message: 'User not found for provided userId' });
+        runQuery(rows[0]._id);
+      });
+      return;
+    }
+
+    runQuery(null);
+  },
+
+  manageDepartments: async (req, res) => {
+    const filterUserParam = req.query.userId;
+
+    const runQuery = async (resolvedUserId) => {
+    // prefer selecting public_id when available; include created_at in responses
+    const hasPublic = await tableHasColumn('departments', 'public_id');
+    const optional = [].concat(hasPublic ? ['public_id'] : []).concat(['manager_id','head_id']);
+    safeSelect('departments', ['id','name','created_at'], optional, '', [], (err, rows) => {
+        if (err) return res.status(500).json({ success: false, error: err.message });
+        const finishWith = (outRows) => {
+          try {
+            const userIds = Array.from(new Set((outRows || []).map(r => r.manager_id).concat((outRows || []).map(r => r.head_id)).filter(Boolean)));
+            if (userIds.length === 0) return res.json({ success: true, data: outRows });
+
+            // split numeric internal ids and public_ids for more accurate lookups
+            const numericIds = userIds.filter(id => /^\d+$/.test(String(id))).map(String);
+            const publicIds = userIds.filter(id => !/^\d+$/.test(String(id))).map(String);
+
+            let query = '';
+            let params = [];
+            if (numericIds.length > 0 && publicIds.length > 0) {
+              query = 'SELECT _id, public_id, name FROM users WHERE _id IN (?) OR public_id IN (?)';
+              params = [numericIds, publicIds];
+            } else if (numericIds.length > 0) {
+              query = 'SELECT _id, public_id, name FROM users WHERE _id IN (?)';
+              params = [numericIds];
+            } else {
+              query = 'SELECT _id, public_id, name FROM users WHERE public_id IN (?)';
+              params = [publicIds];
+            }
+
+            db.query(query, params, (uErr, uRows) => {
+              if (uErr || !Array.isArray(uRows)) return res.json({ success: true, data: outRows });
+              const mapId = {};
+              const mapName = {};
+              uRows.forEach(u => {
+                if (u._id) mapId[String(u._id)] = u.public_id || String(u._id);
+                if (u.public_id) mapId[String(u.public_id)] = u.public_id || String(u._id);
+                if (u._id) mapName[String(u._id)] = u.name || null;
+                if (u.public_id) mapName[String(u.public_id)] = u.name || null;
+              });
+
+              // find any ids that still lack a name mapping and attempt per-id lookup
+              const missing = [];
+              userIds.forEach(id => {
+                if (!mapName[String(id)]) missing.push(id);
+              });
+
+              if (missing.length > 0) {
+                // perform another lookup to try to fetch names (handles odd types)
+                const mNumeric = missing.filter(id => /^\d+$/.test(String(id))).map(String);
+                const mPublic = missing.filter(id => !/^\d+$/.test(String(id))).map(String);
+                let mQuery = '';
+                let mParams = [];
+                if (mNumeric.length > 0 && mPublic.length > 0) { mQuery = 'SELECT _id, public_id, name FROM users WHERE _id IN (?) OR public_id IN (?)'; mParams = [mNumeric, mPublic]; }
+                else if (mNumeric.length > 0) { mQuery = 'SELECT _id, public_id, name FROM users WHERE _id IN (?)'; mParams = [mNumeric]; }
+                else { mQuery = 'SELECT _id, public_id, name FROM users WHERE public_id IN (?)'; mParams = [mPublic]; }
+                try {
+                  db.query(mQuery, mParams, (mErr, mRows) => {
+                    if (!mErr && Array.isArray(mRows)) {
+                      mRows.forEach(u => {
+                        if (u._id) mapName[String(u._id)] = u.name || null;
+                        if (u.public_id) mapName[String(u.public_id)] = u.name || null;
+                        if (u._id) mapId[String(u._id)] = u.public_id || String(u._id);
+                        if (u.public_id) mapId[String(u.public_id)] = u.public_id || String(u._id);
+                      });
+                    }
+                    const out = outRows.map(r => ({
+                      ...r,
+                      id: r.public_id || r.id,
+                      manager_id: r.manager_id ? (mapId[String(r.manager_id)] || r.manager_id) : null,
+                      manager_name: r.manager_name ? r.manager_name : (r.manager_id ? (mapName[String(r.manager_id)] || null) : null),
+                      head_id: r.head_id ? (mapId[String(r.head_id)] || r.head_id) : null,
+                      head_name: r.head_name ? r.head_name : (r.head_id ? (mapName[String(r.head_id)] || null) : null)
+                    }));
+                    return res.json({ success: true, data: out });
+                  });
+                } catch (e) {
+                  const out = outRows.map(r => ({
+                    ...r,
+                    id: r.public_id || r.id,
+                    manager_id: r.manager_id ? (mapId[String(r.manager_id)] || r.manager_id) : null,
+                    manager_name: r.manager_name ? r.manager_name : (r.manager_id ? (mapName[String(r.manager_id)] || null) : null),
+                    head_id: r.head_id ? (mapId[String(r.head_id)] || r.head_id) : null,
+                    head_name: r.head_name ? r.head_name : (r.head_id ? (mapName[String(r.head_id)] || null) : null)
+                  }));
+                  return res.json({ success: true, data: out });
+                }
+              } else {
+                const out = outRows.map(r => ({
+                  ...r,
+                  id: r.public_id || r.id,
+                  manager_id: r.manager_id ? (mapId[String(r.manager_id)] || r.manager_id) : null,
+                  manager_name: r.manager_name ? r.manager_name : (r.manager_id ? (mapName[String(r.manager_id)] || null) : null),
+                  head_id: r.head_id ? (mapId[String(r.head_id)] || r.head_id) : null,
+                  head_name: r.head_name ? r.head_name : (r.head_id ? (mapName[String(r.head_id)] || null) : null)
+                }));
+                return res.json({ success: true, data: out });
+              }
+            });
+          } catch (e) {
+            return res.json({ success: true, data: outRows });
+          }
+        };
+
+        if (!resolvedUserId) return finishWith(rows);
+        // detect user-related columns on departments and filter if present
+        db.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'departments' AND TABLE_SCHEMA = DATABASE() AND COLUMN_NAME IN ('head_id','manager_id','created_by','user_id')", [], (colErr, cols) => {
+          if (colErr || !Array.isArray(cols) || cols.length === 0) return finishWith(rows);
+          const colNames = cols.map(c => c.COLUMN_NAME);
+          const whereParts = colNames.map(n => `${n} = ?`).join(' OR ');
+          const params = colNames.map(() => resolvedUserId);
+          const hasPublic2 = colNames.includes('public_id');
+          const optional2 = [].concat(hasPublic2 ? ['public_id'] : []).concat(['manager_id','head_id']);
+          // include created_at when selecting filtered rows as well
+          safeSelect('departments', ['id','name','created_at'], optional2, `WHERE ${whereParts}`, params, (fErr, fRows) => {
+            if (fErr) return finishWith(rows);
+            return finishWith(fRows);
+          });
+        });
+      });
+    };
+
+    if (filterUserParam) {
+      const isNumeric = /^\d+$/.test(String(filterUserParam));
+      if (isNumeric) { runQuery(filterUserParam); return; }
+      db.query('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [filterUserParam], (err, rows) => {
+        if (err) return res.status(500).json({ success: false, error: err.message });
+        if (!rows || rows.length === 0) return res.status(404).json({ success: false, message: 'User not found for provided userId' });
+        runQuery(rows[0]._id);
+      });
+      return;
+    }
+
+    runQuery(null);
+  },
+
+  // Create a new department (Admin)
+  createDepartment: async (req, res) => {
+    try {
+      const { name, managerId, headId } = req.body;
+      if (!name) return res.status(400).json({ success: false, message: 'Department name required' });
+      // managerId is required
+      if (!managerId) return res.status(400).json({ success: false, message: 'managerId is required' });
+
+      const resolveUser = (rawId) => new Promise((resolve, reject) => {
+        if (!rawId) return resolve(null);
+        if (/^\d+$/.test(String(rawId))) return resolve(rawId);
+        db.query('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [rawId], (e, rows) => {
+          if (e) return reject(e);
+          if (!rows || rows.length === 0) return resolve(null);
+          return resolve(rows[0]._id);
+        });
+      });
+
+      // helper to get column data type (e.g. 'int','varchar')
+      const getColumnType = (table, column) => new Promise((resolve) => {
+        db.query("SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?", [table, column], (err, rows) => {
+          if (err || !Array.isArray(rows) || rows.length === 0) return resolve(null);
+          return resolve(rows[0].DATA_TYPE);
+        });
+      });
+
+      // detect which optional columns exist before building INSERT
+      const hasManager = await tableHasColumn('departments', 'manager_id');
+      const hasHead = await tableHasColumn('departments', 'head_id');
+      const hasCreatedBy = await tableHasColumn('departments', 'created_by');
+      const hasPublic = await tableHasColumn('departments', 'public_id');
+      // optional name columns for manager/head (store snapshot)
+      const hasManagerNameCol = await tableHasColumn('departments', 'manager_name');
+      const hasHeadNameCol = await tableHasColumn('departments', 'head_name');
+
+      let manager_id = null;
+      let head_id = null;
+      let manager_name_val = null;
+      let head_name_val = null;
+      if (hasManager) {
+        manager_id = await resolveUser(managerId).catch(() => null);
+        if (req.body) {
+          if (req.body.managerName) manager_name_val = String(req.body.managerName).trim();
+          else if (req.body.manager_name) manager_name_val = String(req.body.manager_name).trim();
+        }
+        if ((manager_id === null || manager_id === undefined) && managerId) {
+          const colType = await getColumnType('departments', 'manager_id').catch(() => null);
+          if (colType && ['varchar','char','text'].includes(String(colType).toLowerCase())) {
+            manager_id = managerId;
+          } else {
+            return res.status(400).json({ success: false, message: 'managerId could not be resolved to a user' });
+          }
+        }
+      }
+      if (hasHead) {
+        head_id = await resolveUser(headId).catch(() => null);
+        if (req.body) {
+          if (req.body.headName) head_name_val = String(req.body.headName).trim();
+          else if (req.body.head_name) head_name_val = String(req.body.head_name).trim();
+        }
+        if ((head_id === null || head_id === undefined) && headId) {
+          const colType = await getColumnType('departments', 'head_id').catch(() => null);
+          if (colType && ['varchar','char','text'].includes(String(colType).toLowerCase())) head_id = headId;
+        }
+      }
+      const created_by = hasCreatedBy ? (req.user && req.user._id ? req.user._id : null) : null;
+
+      const publicId = hasPublic ? crypto.randomBytes(8).toString('hex') : null;
+      const fields = ['name'];
+      const placeholders = ['?'];
+      const params = [name];
+      if (hasManager) { fields.push('manager_id'); placeholders.push('?'); params.push(manager_id); }
+      if (hasManagerNameCol) { fields.push('manager_name'); placeholders.push('?'); params.push(manager_name_val); }
+      if (hasHead) { fields.push('head_id'); placeholders.push('?'); params.push(head_id); }
+      if (hasHeadNameCol) { fields.push('head_name'); placeholders.push('?'); params.push(head_name_val); }
+      if (hasCreatedBy) { fields.push('created_by'); placeholders.push('?'); params.push(created_by); }
+      if (hasPublic) { fields.unshift('public_id'); placeholders.unshift('?'); params.unshift(publicId); }
+      const sql = `INSERT INTO departments (${fields.join(', ')}, created_at) VALUES (${placeholders.join(', ')}, NOW())`;
+      console.log('createDepartment insert:', sql, params);
+      db.query(sql, params, (err, result) => {
+        if (err) {
+          console.error('createDepartment error', err && err.message);
+          return res.status(500).json({ success: false, error: err.message });
+        }
+        const insertId = result && result.insertId ? result.insertId : null;
+        if (!insertId) return res.status(201).json({ success: true, data: { id: insertId, name, manager_id, head_id } });
+        (async () => {
+          const selOptional = [].concat(hasPublic ? ['public_id'] : [])
+            .concat(['manager_id','head_id'])
+            .concat(hasManagerNameCol ? ['manager_name'] : [])
+            .concat(hasHeadNameCol ? ['head_name'] : []);
+          safeSelect('departments', ['id','name'], selOptional, 'WHERE id = ? LIMIT 1', [insertId], (sErr, rows) => {
+            if (sErr) return res.status(201).json({ success: true, data: { id: hasPublic ? publicId : insertId, name, manager_id, head_id } });
+          const row = (rows && rows[0]) || { id: insertId, name, manager_id, head_id, public_id: publicId, manager_name: manager_name_val, head_name: head_name_val };
+          // prefer stored manager_name/head_name if present
+          if ((row.manager_name || row.head_name) && (row.manager_name || row.head_name).length >= 0) {
+            const outRow = {
+              id: row.public_id || row.id,
+              name: row.name,
+              manager_id: row.manager_id ? String(row.manager_id) : null,
+              manager_name: row.manager_name || null,
+              head_id: row.head_id ? String(row.head_id) : null,
+              head_name: row.head_name || null
+            };
+            // if names are present, attempt to map ids to external ids as before
+            const uids = [];
+            if (row.manager_id) uids.push(row.manager_id);
+            if (row.head_id) uids.push(row.head_id);
+            if (uids.length === 0) return res.status(201).json({ success: true, data: outRow });
+            db.query('SELECT _id, public_id, name FROM users WHERE _id IN (?) OR public_id IN (?)', [uids, uids], (uErr, uRows) => {
+              if (uErr || !Array.isArray(uRows)) return res.status(201).json({ success: true, data: outRow });
+              const mapId = {};
+              uRows.forEach(u => {
+                if (u._id) mapId[String(u._id)] = u.public_id || String(u._id);
+                if (u.public_id) mapId[String(u.public_id)] = u.public_id || String(u._id);
+              });
+              outRow.manager_id = row.manager_id ? (mapId[String(row.manager_id)] || String(row.manager_id)) : null;
+              outRow.head_id = row.head_id ? (mapId[String(row.head_id)] || String(row.head_id)) : null;
+              return res.status(201).json({ success: true, data: outRow });
+            });
+          } else {
+            // fallback to resolving names from users
+            const uids = [];
+            if (row.manager_id) uids.push(row.manager_id);
+            if (row.head_id) uids.push(row.head_id);
+            if (uids.length === 0) return res.status(201).json({ success: true, data: { id: row.public_id || row.id, name: row.name, manager_id: row.manager_id, manager_name: null, head_id: row.head_id, head_name: null } });
+            db.query('SELECT _id, public_id, name FROM users WHERE _id IN (?) OR public_id IN (?)', [uids, uids], (uErr, uRows) => {
+              if (uErr || !Array.isArray(uRows)) return res.status(201).json({ success: true, data: { id: row.public_id || row.id, name: row.name, manager_id: row.manager_id, manager_name: null, head_id: row.head_id, head_name: null } });
+              const mapId = {};
+              const mapName = {};
+              uRows.forEach(u => {
+                if (u._id) mapId[String(u._id)] = u.public_id || String(u._id);
+                if (u.public_id) mapId[String(u.public_id)] = u.public_id || String(u._id);
+                if (u._id) mapName[String(u._id)] = u.name || null;
+                if (u.public_id) mapName[String(u.public_id)] = u.name || null;
+              });
+              const outRow = {
+                id: row.public_id || row.id,
+                name: row.name,
+                manager_id: row.manager_id ? (mapId[String(row.manager_id)] || row.manager_id) : null,
+                manager_name: row.manager_name ? row.manager_name : (row.manager_id ? (mapName[String(row.manager_id)] || null) : null),
+                head_id: row.head_id ? (mapId[String(row.head_id)] || row.head_id) : null,
+                head_name: row.head_name ? row.head_name : (row.head_id ? (mapName[String(row.head_id)] || null) : null)
+              };
+              return res.status(201).json({ success: true, data: outRow });
+            });
+          }
+        });
+          })();
+      });
+    } catch (e) {
+      console.error('createDepartment catch', e && e.message);
+      return res.status(500).json({ success: false, error: e.message });
+    }
+  },
+
+  // Update an existing department
+  updateDepartment: async (req, res) => {
+    try {
+      let { id } = req.params;
+      if (!id) return res.status(400).json({ success: false, message: 'Department id required' });
+      // if id is a public_id (non-numeric), resolve to internal id
+      if (!/^\d+$/.test(String(id))) {
+        const rows = await new Promise((resolve) => db.query('SELECT id FROM departments WHERE public_id = ? LIMIT 1', [id], (e, r) => e ? resolve([]) : resolve(r)));
+        if (!rows || !rows[0]) return res.status(404).json({ success: false, message: 'Department not found' });
+        id = rows[0].id;
+      }
+      const { name, managerId, headId } = req.body;
+
+      const resolveUser = (rawId) => new Promise((resolve, reject) => {
+        if (!rawId) return resolve(null);
+        if (/^\d+$/.test(String(rawId))) return resolve(rawId);
+        db.query('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [rawId], (e, rows) => {
+          if (e) return reject(e);
+          if (!rows || rows.length === 0) return resolve(null);
+          return resolve(rows[0]._id);
+        });
+      });
