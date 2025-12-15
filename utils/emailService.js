@@ -235,3 +235,19 @@ module.exports = {
   taskAssignedTemplate,
   taskStatusTemplate
 };
+
+// Convenience: send credentials/welcome email to newly created users
+async function sendCredentials(to, name, publicId, tempPassword, setupLink) {
+  try {
+    const link = setupLink || `${process.env.BASE_URL || process.env.FRONTEND_URL || 'http://localhost:4000'}/auth/setup?uid=${encodeURIComponent(publicId)}`;
+    const tpl = welcomeTemplate(name || '', to || '', tempPassword || '', link);
+    const r = await sendEmail({ to, subject: tpl.subject, text: tpl.text, html: tpl.html });
+    return r;
+  } catch (e) {
+    console.error('emailService.sendCredentials error', e && e.message);
+    return { sent: false, error: e && e.message };
+  }
+}
+
+// attach convenience function to exports
+module.exports.sendCredentials = sendCredentials;
