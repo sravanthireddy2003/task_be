@@ -14,37 +14,44 @@ router.use(requireAuth);
 
 // Get all users
 router.get("/getusers", requireRole('Admin'), (req, res) => {
-  const query = "SELECT _id, name, title, email, role, isActive, phone, createdAt FROM users";
+  const query = `
+    SELECT 
+      u._id, u.public_id, u.name, u.title, u.email, u.role, u.isActive, u.phone, u.isGuest,
+      u.department_public_id, d.name AS department_name
+    FROM users u
+    LEFT JOIN departments d ON d.public_id = u.department_public_id
+  `;
+
   db.query(query, [], (err, results) => {
     if (err) {
       logger.error(`Error fetching users: ${err.message}`);
       return res.status(500).json({ error: "Failed to fetch users" });
     }
-    const query2 = 'SELECT _id, public_id FROM users';
-    db.query(query2, [], (err2, ids) => {
-      const map = {};
-      if (!err2 && Array.isArray(ids)) ids.forEach(row => map[row._id] = row.public_id);
-      const out = (results || []).map(r => {
-        const pub = map[r._id];
-        r.id = pub || r._id;
-        delete r._id;
-        return r;
-      });
-      res.status(200).json(out);
-    });
+
+    const out = (results || []).map(r => ({
+      id: r.public_id || r._id,
+      name: r.name,
+      title: r.title,
+      email: r.email,
+      role: r.role,
+      isActive: Boolean(r.isActive),
+      isGuest: Boolean(r.isGuest),
+      phone: r.phone,
+      departmentPublicId: r.department_public_id,
+      departmentName: r.department_name
+    }));
+
+    res.status(200).json(out);
   });
 });
 
-// Create user
+// ✅ FIXED: Create user - Supports BOTH departmentId AND departmentName
 router.post('/create', requireRole('Admin'), async (req, res) => {
   try {
-    const { name, email, phone, role, departmentId, title, isActive, isGuest } = req.body;
+    const { name, email, phone, role, departmentId, departmentName, title, isActive, isGuest } = req.body;
 
     if (!name || !email || !role) {
-      return res.status(400).json({
-        success: false,
-        message: 'Name, email and role required'
-      });
+      return res.status(400).json({ success: false, message: 'Name, email and role required' });
     }
 
     // Check if user exists
@@ -56,10 +63,40 @@ router.post('/create', requireRole('Admin'), async (req, res) => {
     });
 
     if (exists && exists.length > 0) {
-      return res.status(409).json({
-        success: false,
-        message: 'User already exists with this email'
+      return res.status(409).json({ success: false, message: 'User already exists with this email' });
+    }
+
+    // ✅ FIXED: Resolve department public_id - PRIORITIZE departmentId first
+    let departmentPublicId = null;
+    let resolvedDepartmentName = null;
+    
+    if (departmentId) {
+      // Direct departmentId from frontend
+      const dept = await new Promise((resolve, reject) => {
+        db.query('SELECT public_id, name FROM departments WHERE public_id = ? LIMIT 1', [departmentId], (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows);
+        });
       });
+      if (dept && dept.length > 0) {
+        departmentPublicId = dept[0].public_id;
+        resolvedDepartmentName = dept[0].name;
+      } else {
+        return res.status(400).json({ success: false, message: 'Invalid department ID' });
+      }
+    } else if (departmentName) {
+      // Fallback: departmentName lookup
+      const dept = await new Promise((resolve, reject) => {
+        db.query('SELECT public_id, name FROM departments WHERE name = ? LIMIT 1', [departmentName], (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows);
+        });
+      });
+      if (dept && dept.length === 0) {
+        return res.status(400).json({ success: false, message: 'Invalid department name' });
+      }
+      departmentPublicId = dept[0].public_id;
+      resolvedDepartmentName = dept[0].name;
     }
 
     // Generate credentials
@@ -72,20 +109,10 @@ router.post('/create', requireRole('Admin'), async (req, res) => {
     const placeholders = ['?', '?', '?', '?', '?', '?'];
     const params = [publicId, name, email, hashed, phone || null, role];
 
-    if (title) {
-      fields.push('title');
-      placeholders.push('?');
-      params.push(title);
-    }
-    fields.push('isActive');
-    placeholders.push('?');
-    params.push(typeof isActive === 'undefined' ? true : Boolean(isActive));
-
-    if (isGuest !== undefined) {
-      fields.push('isGuest');
-      placeholders.push('?');
-      params.push(Boolean(isGuest));
-    }
+    if (title) { fields.push('title'); placeholders.push('?'); params.push(title); }
+    if (departmentPublicId) { fields.push('department_public_id'); placeholders.push('?'); params.push(departmentPublicId); }
+    fields.push('isActive'); placeholders.push('?'); params.push(typeof isActive === 'undefined' ? true : Boolean(isActive));
+    if (isGuest !== undefined) { fields.push('isGuest'); placeholders.push('?'); params.push(Boolean(isGuest)); }
 
     const hasCreatedAt = await new Promise(resolve => {
       db.query(
@@ -104,17 +131,11 @@ router.post('/create', requireRole('Admin'), async (req, res) => {
 
     const insertId = result.insertId;
 
-    // 🔥 FIXED: Send email with proper error handling & logging
-    const setupToken = jwt.sign(
-      { id: publicId, step: 'setup' },
-      process.env.JWT_SECRET || process.env.SECRET || 'change_this_secret',
-      { expiresIn: '7d' }
-    );
-
+    // Send welcome/setup email
+    const setupToken = jwt.sign({ id: publicId, step: 'setup' }, process.env.JWT_SECRET || process.env.SECRET || 'change_this_secret', { expiresIn: '7d' });
     const setupUrlBase = process.env.FRONTEND_URL || process.env.BASE_URL || 'http://localhost:3000';
     const setupLink = `${setupUrlBase.replace(/\/$/, '')}/setup-password?token=${encodeURIComponent(setupToken)}`;
 
-    // Correct welcomeTemplate usage (object input)
     const tpl = emailService.welcomeTemplate({
       name,
       email,
@@ -123,35 +144,33 @@ router.post('/create', requireRole('Admin'), async (req, res) => {
       tempPassword,
       createdBy: req.user?.name || "System Admin",
       createdAt: new Date(),
-      setupLink
+      setupLink,
+      department: resolvedDepartmentName || "General"
     });
 
-    // fire-and-forget send
-    emailService.sendEmail({
-      to: email,
-      subject: tpl.subject,
-      text: tpl.text,
-      html: tpl.html
-    })
-      .then(r => {
-        if (r.sent) logger.info(`✅ Welcome email sent to ${email}`);
-        else logger.warn(`⚠️ Welcome email not sent to ${email} (logged): ${r.error || 'no transporter configured'}`);
+    emailService.sendEmail({ to: email, subject: tpl.subject, text: tpl.text, html: tpl.html })
+      .then(r => { 
+        if (r.sent) logger.info(`✅ Welcome email sent to ${email}`); 
+        else logger.warn(`⚠️ Welcome email not sent to ${email}`); 
       })
-      .catch(err => logger.error(`❌ Failed to send welcome email to ${email}:`, err && err.message));
+      .catch(err => logger.error(`❌ Failed to send welcome email to ${email}:`, err?.message));
 
-    // Return created user
-    const selSql = 'SELECT _id, public_id, name, email, role, title, isActive, phone, isGuest FROM users WHERE _id = ? LIMIT 1';
+    // Fetch created user with department info
+    const selSql = `
+      SELECT u._id, u.public_id, u.name, u.email, u.role, u.title, u.isActive, u.phone, u.isGuest,
+             u.department_public_id, d.name AS department_name
+      FROM users u
+      LEFT JOIN departments d ON d.public_id = u.department_public_id
+      WHERE u._id = ? LIMIT 1
+    `;
     db.query(selSql, [insertId], (err, saved) => {
       if (err || !saved || !saved[0]) {
         return res.status(201).json({
           success: true,
           data: {
-            id: publicId,
-            name, email, role, title: title || null,
-            isActive: Boolean(isActive),
-            phone: phone || null,
-            tempPassword,
-            setupToken
+            id: publicId, name, email, role, title: title || null,
+            isActive: Boolean(isActive), phone: phone || null, tempPassword, setupToken,
+            departmentPublicId, departmentName: resolvedDepartmentName
           }
         });
       }
@@ -168,6 +187,8 @@ router.post('/create', requireRole('Admin'), async (req, res) => {
           isActive: user.isActive,
           phone: user.phone,
           isGuest: user.isGuest || false,
+          departmentPublicId: user.department_public_id,
+          departmentName: user.department_name || resolvedDepartmentName,
           tempPassword,
           setupToken
         }
@@ -176,62 +197,126 @@ router.post('/create', requireRole('Admin'), async (req, res) => {
 
   } catch (error) {
     logger.error('Create user error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to create user',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Failed to create user', error: error.message });
   }
 });
 
-// Update user
-router.put("/update/:id", requireRole('Admin'), (req, res) => {
+// ✅ FIXED: Update user - Supports departmentId AND departmentName
+router.put("/update/:id", requireRole('Admin'), async (req, res) => {
   const { id } = req.params;
-  const { name, title, email, role, isActive, phone } = req.body;
+  const { name, title, email, role, isActive, phone, departmentId, departmentName } = req.body;
 
   if (!name || !email || !role) return res.status(400).json({ success: false, message: "Name, email and role required" });
 
-  const isNumeric = /^\d+$/.test(String(id));
-  const sql = isNumeric ?
-    `UPDATE users SET name=?, title=?, email=?, role=?, isActive=?, phone=? WHERE _id=?` :
-    `UPDATE users SET name=?, title=?, email=?, role=?, isActive=?, phone=? WHERE public_id=?`;
-
-  const values = [name, title, email, role, Boolean(isActive), phone || null, id];
-
-  db.query(sql, values, (err, result) => {
-    if (err) {
-      logger.error(`Database error updating user ${id}: ${err.message}`);
-      return res.status(500).json({ success: false, message: "Database error", error: err.message });
+  try {
+    // Resolve department public_id
+    let departmentPublicId = null;
+    let resolvedDepartmentName = null;
+    
+    if (departmentId) {
+      const dept = await new Promise((resolve, reject) => {
+        db.query('SELECT public_id, name FROM departments WHERE public_id = ? LIMIT 1', [departmentId], (err, rows) => err ? reject(err) : resolve(rows));
+      });
+      if (dept && dept.length > 0) {
+        departmentPublicId = dept[0].public_id;
+        resolvedDepartmentName = dept[0].name;
+      }
+    } else if (departmentName) {
+      const dept = await new Promise((resolve, reject) => {
+        db.query('SELECT public_id, name FROM departments WHERE name = ? LIMIT 1', [departmentName], (err, rows) => err ? reject(err) : resolve(rows));
+      });
+      if (dept && dept.length > 0) {
+        departmentPublicId = dept[0].public_id;
+        resolvedDepartmentName = dept[0].name;
+      }
     }
-    if (result.affectedRows === 0) return res.status(404).json({ success: false, message: "User not found" });
 
-    const selectSql = isNumeric ? 'SELECT * FROM users WHERE _id = ? LIMIT 1' : 'SELECT * FROM users WHERE public_id = ? LIMIT 1';
-    db.query(selectSql, [id], (err, user) => {
-      if (err || !user || user.length === 0) return res.status(200).json({ success: true, message: "User updated but could not fetch updated data" });
-      const u = user[0]; u.id = u.public_id || u._id; delete u.public_id;
-      res.status(200).json({
-        success: true,
-        message: "User updated successfully",
-        user: u
+    const isNumeric = /^\d+$/.test(String(id));
+    const sql = isNumeric ?
+      `UPDATE users SET name=?, title=?, email=?, role=?, isActive=?, phone=?, department_public_id=? WHERE _id=?` :
+      `UPDATE users SET name=?, title=?, email=?, role=?, isActive=?, phone=?, department_public_id=? WHERE public_id=?`;
+
+    const values = [name, title || null, email, role, Boolean(isActive), phone || null, departmentPublicId, id];
+
+    db.query(sql, values, (err, result) => {
+      if (err) {
+        logger.error(`Database error updating user ${id}: ${err.message}`);
+        return res.status(500).json({ success: false, message: "Database error", error: err.message });
+      }
+      if (result.affectedRows === 0) return res.status(404).json({ success: false, message: "User not found" });
+
+      // Fetch updated user
+      const selectSql = `
+        SELECT u._id, u.public_id, u.name, u.title, u.email, u.role, u.isActive, u.phone, u.isGuest,
+               u.department_public_id, d.name AS department_name
+        FROM users u
+        LEFT JOIN departments d ON d.public_id = u.department_public_id
+        WHERE ${isNumeric ? 'u._id' : 'u.public_id'} = ? LIMIT 1
+      `;
+      db.query(selectSql, [id], (err, user) => {
+        if (err || !user || user.length === 0) {
+          return res.status(200).json({ 
+            success: true, 
+            message: "User updated but could not fetch updated data",
+            user: { id, name, email, role, title, isActive: Boolean(isActive), phone: phone || null, departmentPublicId, departmentName: resolvedDepartmentName }
+          });
+        }
+
+        const u = user[0];
+        res.status(200).json({
+          success: true,
+          message: "User updated successfully",
+          user: {
+            id: u.public_id || u._id,
+            name: u.name,
+            email: u.email,
+            role: u.role,
+            title: u.title,
+            isActive: u.isActive,
+            phone: u.phone,
+            isGuest: u.isGuest || false,
+            departmentPublicId: u.department_public_id,
+            departmentName: u.department_name || resolvedDepartmentName
+          }
+        });
       });
     });
-  });
+
+  } catch (error) {
+    logger.error('Update user error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to update user', error: error.message });
+  }
 });
 
 // Get user by ID
 router.get("/getuserbyid/:id", requireRole('Admin'), (req, res) => {
   const { id } = req.params;
   const isNumeric = /^\d+$/.test(String(id));
-  const query = isNumeric ?
-    `SELECT name, title, email, role, isActive, phone, _id, public_id FROM users WHERE _id = ? LIMIT 1` :
-    `SELECT name, title, email, role, isActive, phone, _id, public_id FROM users WHERE public_id = ? LIMIT 1`;
+  const query = `
+    SELECT u.name, u.title, u.email, u.role, u.isActive, u.phone, u.public_id, u.isGuest,
+           u.department_public_id, d.name AS department_name
+    FROM users u
+    LEFT JOIN departments d ON d.public_id = u.department_public_id
+    WHERE ${isNumeric ? 'u._id' : 'u.public_id'} = ?
+    LIMIT 1
+  `;
   db.query(query, [id], (err, results) => {
     if (err) return res.status(500).json({ error: "Failed to fetch user" });
     if (!results || results.length === 0) return res.status(404).json({ error: 'User not found' });
+
     const out = results[0];
-    out.id = out.public_id || out._id;
-    delete out.public_id;
-    res.status(200).json(out);
+    res.status(200).json({
+      id: out.public_id,
+      name: out.name,
+      title: out.title,
+      email: out.email,
+      role: out.role,
+      isActive: out.isActive,
+      isGuest: out.isGuest || false,
+      phone: out.phone,
+      departmentPublicId: out.department_public_id,
+      departmentName: out.department_name
+    });
   });
 });
 
@@ -243,10 +328,7 @@ router.delete("/delete/:user_id", requireRole('Admin'), (req, res) => {
   db.query(sqlDelete, [user_id], (err, result) => {
     if (err) return res.status(500).json({ success: false, message: "Database error", error: err.message });
     if (result.affectedRows === 0) return res.status(404).json({ success: false, message: "User not found" });
-    return res.status(200).json({
-      success: true,
-      message: "User deleted successfully"
-    });
+    return res.status(200).json({ success: true, message: "User deleted successfully" });
   });
 });
 
