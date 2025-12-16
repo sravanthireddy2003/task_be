@@ -23,6 +23,7 @@ Authorization: Bearer <jwt_token>
 | GET | `/` | List projects | All |
 | GET | `/:id` | Get project details | All |
 | PUT | `/:id` | Update project | Admin, Manager |
+| DELETE | `/:id` | Delete project | Admin, Manager |
 | POST | `/:id/departments` | Add departments | Admin, Manager |
 | DELETE | `/:id/departments/:deptId` | Remove department | Admin, Manager |
 
@@ -54,10 +55,29 @@ POST /api/projects
 {
   "clientId": 1,
   "name": "Project Name",
-  "departmentIds": [1, 2, 3],
-  "priority": "High"
+  "department_ids": ["dept_public_id_1", "dept_public_id_2"],
+  "priority": "High",
+  "start_date": "2025-01-01",
+  "end_date": "2025-12-31",
+  "budget": 100000
 }
-→ Returns created project with id (public_id)
+→ Returns created project with id (public_id) and departments
+```
+
+### Update Project
+```
+PUT /api/projects/:id
+{
+  "name": "Updated Project Name",
+  "description": "Updated description",
+  "priority": "High",
+  "start_date": "2025-01-01",
+  "end_date": "2025-12-31",
+  "budget": 100000,
+  "status": "Active",
+  "department_ids": ["dept_public_id_1", "dept_public_id_2"]
+}
+→ Returns updated project with departments
 ```
 
 ### List Tasks

@@ -6,6 +6,7 @@ let dbConfig = {
     user     : 'root',
     password : '',    
     database :'market_task_db',
+    multipleStatements: true,
 };
 
 const pool = mysql.createPool(dbConfig);
