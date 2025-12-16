@@ -132,13 +132,27 @@ async function ensureClientTables() {
 router.post('/', requireRole('Admin'), async (req, res) => {
   try {
     await ensureClientTables();
-    const { name, company, billingAddress, officeAddress, gstNumber, taxId, industry, notes, status = 'Active', managerId, contacts = [], enableClientPortal = false, createViewer = false, email, phone, district, pincode, state, documents = [] } = req.body;
-    if (!name || !company) return res.status(400).json({ success: false, error: 'name and company required' });
-    // check for isDeleted column before using it in WHERE
+    const { 
+      name, company, billingAddress, officeAddress, gstNumber, taxId, industry, 
+      notes, status = 'Active', managerId, contacts = [], enableClientPortal = false, 
+      createViewer = false, email, phone, district, pincode, state, documents = [] 
+    } = req.body;
+
+    if (!name || !company) {
+      return res.status(400).json({ success: false, error: 'name and company required' });
+    }
+
+    // Check duplicate client
     const hasIsDeleted = await hasColumn('clientss', 'isDeleted');
-    const dupSql = hasIsDeleted ? 'SELECT id FROM clientss WHERE name = ? AND isDeleted != 1 LIMIT 1' : 'SELECT id FROM clientss WHERE name = ? LIMIT 1';
+    const dupSql = hasIsDeleted 
+      ? 'SELECT id FROM clientss WHERE name = ? AND isDeleted != 1 LIMIT 1' 
+      : 'SELECT id FROM clientss WHERE name = ? LIMIT 1';
     const dup = await q(dupSql, [name]);
-    if (Array.isArray(dup) && dup.length > 0) return res.status(409).json({ success: false, error: 'Client with that name already exists' });
+    if (Array.isArray(dup) && dup.length > 0) {
+      return res.status(409).json({ success: false, error: 'Client with that name already exists' });
+    }
+
+    // Generate reference number
     const compInit = (company || '').substring(0, 3).toUpperCase() || name.substring(0, 3).toUpperCase();
     const last = await q('SELECT ref FROM clientss WHERE ref LIKE ? ORDER BY ref DESC LIMIT 1', [`${compInit}%`]);
     let seq = '0001';
@@ -147,42 +161,64 @@ router.post('/', requireRole('Admin'), async (req, res) => {
       seq = (lastn + 1).toString().padStart(4, '0');
     }
     const ref = `${compInit}${seq}`;
-    // Attempt full insert, but fall back gracefully if DB schema lacks some columns
-    // include email/phone in full insert (if table has these columns this will succeed)
-    const fullInsertSql = 'INSERT INTO clientss (ref, name, company, billing_address, office_address, gst_number, tax_id, industry, notes, status, manager_id, email, phone, created_at, isDeleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), 0)';
-    const fullParams = [ref, name, company, billingAddress || null, officeAddress || null, gstNumber || null, taxId || null, industry || null, notes || null, status, managerId || null, email || null, phone || null];
+
+    // Insert client with fallback for missing columns
+    const fullInsertSql = `
+      INSERT INTO clientss (ref, name, company, billing_address, office_address, gst_number, 
+      tax_id, industry, notes, status, manager_id, email, phone, created_at, isDeleted) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), 0)
+    `;
+    const fullParams = [
+      ref, name, company, billingAddress || null, officeAddress || null, 
+      gstNumber || null, taxId || null, industry || null, notes || null, 
+      status, managerId || null, email || null, phone || null
+    ];
+
     let clientId;
     try {
       const result = await q(fullInsertSql, fullParams);
       clientId = result.insertId;
     } catch (e) {
-      // If columns are missing, fall back to a minimal insert and try to update optional fields
       if (e && e.code === 'ER_BAD_FIELD_ERROR') {
         const fallback = await q('INSERT INTO clientss (ref, name, company) VALUES (?, ?, ?)', [ref, name, company]);
         clientId = fallback.insertId;
         logger.debug('Full client insert failed; used minimal fallback insert.');
         try {
-          await q('UPDATE clientss SET billing_address = ?, office_address = ?, gst_number = ?, tax_id = ?, industry = ?, notes = ?, manager_id = ?, email = ?, phone = ? WHERE id = ?', [billingAddress || null, officeAddress || null, gstNumber || null, taxId || null, industry || null, notes || null, managerId || null, email || null, phone || null, clientId]);
+          await q(`
+            UPDATE clientss SET billing_address = ?, office_address = ?, gst_number = ?, 
+            tax_id = ?, industry = ?, notes = ?, manager_id = ?, email = ?, phone = ? 
+            WHERE id = ?
+          `, [billingAddress || null, officeAddress || null, gstNumber || null, taxId || null, 
+              industry || null, notes || null, managerId || null, email || null, phone || null, clientId]);
         } catch (u) { /* ignore update failures for optional columns */ }
       } else {
         throw e;
       }
     }
+
+    // Insert contacts
     if (Array.isArray(contacts) && contacts.length > 0) {
       for (const c of contacts) {
-        await q('INSERT INTO client_contacts (client_id, name, email, phone, designation, is_primary, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())', [clientId, c.name, c.email || null, c.phone || null, c.designation || null, c.is_primary ? 1 : 0]);
+        await q(`
+          INSERT INTO client_contacts (client_id, name, email, phone, designation, is_primary, created_at) 
+          VALUES (?, ?, ?, ?, ?, ?, NOW())
+        `, [clientId, c.name, c.email || null, c.phone || null, c.designation || null, c.is_primary ? 1 : 0]);
       }
     }
 
-    // Apply additional optional fields (district, pincode, state, phone, email) if columns exist
+    // Update optional fields (district, pincode, state)
     try {
       const optionalCols = [];
       const optionalParams = [];
-      if (district && await hasColumn('clientss', 'district')) { optionalCols.push('district = ?'); optionalParams.push(district); }
-      if (pincode && await hasColumn('clientss', 'pincode')) { optionalCols.push('pincode = ?'); optionalParams.push(pincode); }
-      if (state && await hasColumn('clientss', 'state')) { optionalCols.push('state = ?'); optionalParams.push(state); }
-      if (phone && await hasColumn('clientss', 'phone')) { optionalCols.push('phone = ?'); optionalParams.push(phone); }
-      if (email && await hasColumn('clientss', 'email')) { optionalCols.push('email = ?'); optionalParams.push(email); }
+      if (district && await hasColumn('clientss', 'district')) { 
+        optionalCols.push('district = ?'); optionalParams.push(district); 
+      }
+      if (pincode && await hasColumn('clientss', 'pincode')) { 
+        optionalCols.push('pincode = ?'); optionalParams.push(pincode); 
+      }
+      if (state && await hasColumn('clientss', 'state')) { 
+        optionalCols.push('state = ?'); optionalParams.push(state); 
+      }
       if (optionalCols.length > 0) {
         optionalParams.push(clientId);
         await q(`UPDATE clientss SET ${optionalCols.join(', ')} WHERE id = ?`, optionalParams);
@@ -191,54 +227,146 @@ router.post('/', requireRole('Admin'), async (req, res) => {
       logger.debug('Optional client fields update skipped: ' + e.message);
     }
 
-    // Insert attached documents in one go (if provided). Each document should have file_url and file_name.
+    // Insert documents
     const attachedDocuments = [];
     if (Array.isArray(documents) && documents.length > 0) {
       for (const d of documents) {
         if (!d) continue;
-        // allow payloads that include only file_name (frontend may upload file separately)
         const fileName = d.file_name || d.fileName || null;
         if (!fileName) continue;
         const fileUrl = d.file_url || d.fileUrl || (`${req.protocol}://${req.get('host')}/uploads/${encodeURIComponent(fileName)}`);
         try {
           const fileType = d.file_type || d.fileType || guessMimeType(fileName) || null;
-          const r = await q('INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active) VALUES (?, ?, ?, ?, ?, NOW(), 1)', [clientId, fileUrl, fileName, fileType, d.uploaded_by || d.uploadedBy || (req.user && req.user._id ? req.user._id : null)]);
+          const r = await q(`
+            INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active) 
+            VALUES (?, ?, ?, ?, ?, NOW(), 1)
+          `, [clientId, fileUrl, fileName, fileType, d.uploaded_by || d.uploadedBy || (req.user && req.user._id ? req.user._id : null)]);
           attachedDocuments.push({ id: r.insertId, file_url: fileUrl, file_name: fileName, file_type: fileType });
         } catch (e) {
           logger.debug('Failed to attach document for client ' + clientId + ': ' + (e && e.message));
         }
       }
     }
-    if (managerId) {
-      const onboardingTasks = [{ title: 'KYC Verification', desc: 'Verify client KYC documents and identity' },{ title: 'Contract Signing', desc: 'Obtain signed contract from client' },{ title: 'Project Setup', desc: 'Create initial project skeleton and workspace' },{ title: 'Access Provision', desc: 'Provision access for client viewers and internal users' }];
-      for (const t of onboardingTasks) {
-        try { await q('INSERT INTO tasks (title, description, assigned_to, created_at, status, client_id) VALUES (?, ?, ?, NOW(), ?, ?)', [t.title, t.desc, managerId, 'Open', clientId]); } catch (e) { logger.debug('Skipping task insert (tasks table missing?): ' + e.message); }
-      }
+
+// Find primary contact email FIRST
+let primaryContactEmail = null;
+let primaryContactName = null;
+if (Array.isArray(contacts) && contacts.length > 0) {
+  for (const c of contacts) {
+    if (c && c.is_primary && c.email) {
+      primaryContactEmail = c.email;
+      primaryContactName = c.name || null;
+      break;
     }
-    await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [clientId, req.user && req.user._id ? req.user._id : null, 'create', JSON.stringify({ createdBy: req.user ? req.user.id : null })]);
-    let viewerInfo = null;
-    if (createViewer || enableClientPortal) {
-      const tempPassword = crypto.randomBytes(6).toString('hex');
-      try {
-        const hashed = await new Promise((resH, rejH) => require('bcryptjs').hash(tempPassword, 10, (e, h) => e ? rejH(e) : resH(h)));
-        const publicId = crypto.randomBytes(8).toString('hex');
-        // prefer contact email if provided
-        const viewerEmail = (Array.isArray(contacts) && contacts[0] && contacts[0].email) ? contacts[0].email : (email || null);
-        const insertUserSql = 'INSERT INTO users (public_id, name, email, password, role, isActive, createdAt) VALUES (?, ?, ?, ?, ?, ?, NOW())';
-        const userRes = await q(insertUserSql, [publicId, `${name} (Viewer)`, viewerEmail, hashed, 'Client-Viewer', 1]);
-        const newUserId = userRes && userRes.insertId ? userRes.insertId : null;
-        if (newUserId) {
-          // create mapping
-          try { await q('INSERT INTO client_viewers (client_id, user_id, created_at) VALUES (?, ?, NOW())', [clientId, newUserId]); } catch (e) { logger.debug('Failed to create client_viewers mapping: ' + e.message); }
-        }
-        if (viewerEmail) {
-          try { emailService.sendCredentials(viewerEmail, contacts && contacts[0] && contacts[0].name ? contacts[0].name : `${name} (Viewer)`, publicId, tempPassword); } catch (e) { logger.warn('Failed sending client viewer credentials: ' + e.message); }
-        }
-        viewerInfo = { publicId, userId: newUserId };
-      } catch (e) { logger.warn('Failed to create client-viewer: ' + e.message); }
-    }
-    return res.status(201).json({ success: true, data: { id: clientId, ref, name, company, documents: attachedDocuments }, viewer: viewerInfo });
-  } catch (e) { logger.error('Error creating client: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
+  }
+}
+if (!primaryContactEmail && email) primaryContactEmail = email;
+
+// ✅ DUAL EMAIL SYSTEM: Client Welcome + Viewer Credentials
+let viewerInfo = null;
+
+// 1. CREATE VIEWER (if requested)
+if ((createViewer || enableClientPortal) && (primaryContactEmail || email)) {
+  const viewerEmail = primaryContactEmail || email;
+  logger.info('Creating viewer for client', clientId, 'email:', viewerEmail);
+  
+  const tempPassword = crypto.randomBytes(6).toString('hex');
+  const publicId = crypto.randomBytes(8).toString('hex');
+  
+  try {
+    const bcrypt = require('bcryptjs');
+    const hashed = await new Promise((resolve, reject) => {
+      bcrypt.hash(tempPassword, 10, (err, hash) => {
+        if (err) reject(err);
+        else resolve(hash);
+      });
+    });
+    
+    const insertUserSql = `
+      INSERT INTO users (public_id, name, email, password, role, isActive, createdAt) 
+      VALUES (?, ?, ?, ?, ?, ?, NOW())
+    `;
+    const userRes = await q(insertUserSql, [
+      publicId, `${name} (Viewer)`, viewerEmail, hashed, 'Client-Viewer', 1
+    ]);
+    const newUserId = userRes.insertId;
+    
+    await q('INSERT INTO client_viewers (client_id, user_id, created_at) VALUES (?, ?, NOW())', 
+      [clientId, newUserId]);
+    
+    // ✅ VIEWER CREDENTIALS EMAIL (Different role/title)
+    const viewerSetupLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/auth/setup?uid=${publicId}`;
+    const viewerTemplate = emailService.welcomeTemplate({
+      name: `${name} (Viewer)`,
+      email: viewerEmail,
+      role: 'Client-Viewer',
+      title: 'Client Portal Access',
+      tempPassword,
+      createdBy: 'System Admin',
+      createdAt: new Date(),
+      setupLink: viewerSetupLink
+    });
+    
+    await emailService.sendEmail({
+      to: viewerEmail,
+      subject: viewerTemplate.subject,
+      text: viewerTemplate.text,
+      html: viewerTemplate.html
+    });
+    
+    viewerInfo = { publicId, userId: newUserId };
+    logger.info('✅ Viewer credentials sent:', publicId);
+  } catch (e) {
+    logger.error('Viewer creation failed:', e.message);
+  }
+}
+
+// 2. CLIENT WELCOME EMAIL (Always sent if email exists)
+if (primaryContactEmail || email) {
+  const clientEmail = primaryContactEmail || email;
+  const clientPortalLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/client-portal/${ref}`;
+  
+  // ✅ CLIENT WELCOME EMAIL (Different role/title)
+  const clientTemplate = emailService.welcomeTemplate({
+    name: primaryContactName || name,
+    email: clientEmail,
+    role: 'Client',
+    title: `Client - ${company}`,
+    tempPassword: '', // No temp password for client (portal only)
+    createdBy: 'System Admin',
+    createdAt: new Date(),
+    setupLink: clientPortalLink
+  });
+  
+  try {
+    await emailService.sendEmail({
+      to: clientEmail,
+      subject: clientTemplate.subject,
+      text: clientTemplate.text,
+      html: clientTemplate.html
+    });
+    logger.info('✅ Client welcome sent:', clientEmail);
+  } catch (e) {
+    logger.warn('Client welcome failed:', e.message);
+  }
+}
+    // Log activity
+    await q(`
+      INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) 
+      VALUES (?, ?, ?, ?, NOW())
+    `, [clientId, req.user && req.user._id ? req.user._id : null, 'create', 
+        JSON.stringify({ createdBy: req.user ? req.user.id : null })]);
+
+    return res.status(201).json({ 
+      success: true, 
+      data: { id: clientId, ref, name, company, documents: attachedDocuments }, 
+      viewer: viewerInfo 
+    });
+
+  } catch (e) {
+    logger.error('Error creating client: ' + e.message);
+    return res.status(500).json({ success: false, error: e.message });
+  }
 });
 
 router.get('/', requireRole(['Admin','Manager','Client-Viewer']), async (req, res) => {
