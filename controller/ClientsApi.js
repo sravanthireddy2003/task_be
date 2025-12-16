@@ -7,7 +7,7 @@ const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
 const mime = require('mime-types');
-
+ 
 // configure multer to save files into uploads/ directory
 const uploadsRoot = path.join(__dirname, '..', 'uploads');
 if (!fs.existsSync(uploadsRoot)) fs.mkdirSync(uploadsRoot, { recursive: true });
@@ -23,7 +23,7 @@ const storage = multer.diskStorage({
   }
 });
 const upload = multer({ storage });
-
+ 
 function saveBase64ToUploads(base64data, filename) {
   try {
     if (!base64data || !filename) return null;
@@ -52,12 +52,12 @@ function saveBase64ToUploads(base64data, filename) {
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const emailService = require(__root + 'utils/emailService');
 require('dotenv').config();
-
+ 
 router.use(requireAuth);
 const clientViewer = require(__root + 'middleware/clientViewer');
 // attach viewer mapping when present
 router.use(clientViewer);
-
+ 
 function guessMimeType(filename) {
   if (!filename) return null;
   // prefer mime-types lookup, fall back to extension map
@@ -82,13 +82,13 @@ function guessMimeType(filename) {
   };
   return map[ext] || null;
 }
-
+ 
 function q(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
   });
 }
-
+ 
 // Cache and helper to check for column existence (prevents ER_BAD_FIELD_ERROR)
 const columnCache = {};
 async function hasColumn(table, column) {
@@ -104,12 +104,12 @@ async function hasColumn(table, column) {
     return false;
   }
 }
-
+ 
 async function tableExists(tableName) {
   const rows = await q("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", [tableName]);
   return Array.isArray(rows) && rows.length > 0;
 }
-
+ 
 async function ensureClientTables() {
   try {
     if (!await tableExists('client_contacts')) {
@@ -128,30 +128,30 @@ async function ensureClientTables() {
     logger.warn('Failed to ensure client supporting tables: ' + e.message);
   }
 }
-
+ 
 router.post('/', requireRole('Admin'), async (req, res) => {
   try {
     await ensureClientTables();
-    const { 
-      name, company, billingAddress, officeAddress, gstNumber, taxId, industry, 
-      notes, status = 'Active', managerId, contacts = [], enableClientPortal = false, 
-      createViewer = false, email, phone, district, pincode, state, documents = [] 
+    const {
+      name, company, billingAddress, officeAddress, gstNumber, taxId, industry,
+      notes, status = 'Active', managerId, contacts = [], enableClientPortal = false,
+      createViewer = false, email, phone, district, pincode, state, documents = []
     } = req.body;
-
+ 
     if (!name || !company) {
       return res.status(400).json({ success: false, error: 'name and company required' });
     }
-
+ 
     // Check duplicate client
     const hasIsDeleted = await hasColumn('clientss', 'isDeleted');
-    const dupSql = hasIsDeleted 
-      ? 'SELECT id FROM clientss WHERE name = ? AND isDeleted != 1 LIMIT 1' 
+    const dupSql = hasIsDeleted
+      ? 'SELECT id FROM clientss WHERE name = ? AND isDeleted != 1 LIMIT 1'
       : 'SELECT id FROM clientss WHERE name = ? LIMIT 1';
     const dup = await q(dupSql, [name]);
     if (Array.isArray(dup) && dup.length > 0) {
       return res.status(409).json({ success: false, error: 'Client with that name already exists' });
     }
-
+ 
     // Generate reference number
     const compInit = (company || '').substring(0, 3).toUpperCase() || name.substring(0, 3).toUpperCase();
     const last = await q('SELECT ref FROM clientss WHERE ref LIKE ? ORDER BY ref DESC LIMIT 1', [`${compInit}%`]);
@@ -161,19 +161,19 @@ router.post('/', requireRole('Admin'), async (req, res) => {
       seq = (lastn + 1).toString().padStart(4, '0');
     }
     const ref = `${compInit}${seq}`;
-
+ 
     // Insert client with fallback for missing columns
     const fullInsertSql = `
-      INSERT INTO clientss (ref, name, company, billing_address, office_address, gst_number, 
-      tax_id, industry, notes, status, manager_id, email, phone, created_at, isDeleted) 
+      INSERT INTO clientss (ref, name, company, billing_address, office_address, gst_number,
+      tax_id, industry, notes, status, manager_id, email, phone, created_at, isDeleted)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), 0)
     `;
     const fullParams = [
-      ref, name, company, billingAddress || null, officeAddress || null, 
-      gstNumber || null, taxId || null, industry || null, notes || null, 
+      ref, name, company, billingAddress || null, officeAddress || null,
+      gstNumber || null, taxId || null, industry || null, notes || null,
       status, managerId || null, email || null, phone || null
     ];
-
+ 
     let clientId;
     try {
       const result = await q(fullInsertSql, fullParams);
@@ -185,39 +185,82 @@ router.post('/', requireRole('Admin'), async (req, res) => {
         logger.debug('Full client insert failed; used minimal fallback insert.');
         try {
           await q(`
-            UPDATE clientss SET billing_address = ?, office_address = ?, gst_number = ?, 
-            tax_id = ?, industry = ?, notes = ?, manager_id = ?, email = ?, phone = ? 
+            UPDATE clientss SET billing_address = ?, office_address = ?, gst_number = ?,
+            tax_id = ?, industry = ?, notes = ?, manager_id = ?, email = ?, phone = ?
             WHERE id = ?
-          `, [billingAddress || null, officeAddress || null, gstNumber || null, taxId || null, 
+          `, [billingAddress || null, officeAddress || null, gstNumber || null, taxId || null,
               industry || null, notes || null, managerId || null, email || null, phone || null, clientId]);
         } catch (u) { /* ignore update failures for optional columns */ }
       } else {
         throw e;
       }
     }
-
+ 
     // Insert contacts
     if (Array.isArray(contacts) && contacts.length > 0) {
       for (const c of contacts) {
         await q(`
-          INSERT INTO client_contacts (client_id, name, email, phone, designation, is_primary, created_at) 
+          INSERT INTO client_contacts (client_id, name, email, phone, designation, is_primary, created_at)
           VALUES (?, ?, ?, ?, ?, ?, NOW())
         `, [clientId, c.name, c.email || null, c.phone || null, c.designation || null, c.is_primary ? 1 : 0]);
       }
     }
 
+    // Create user accounts for each contact that has an email (store in users table and map to client_viewers)
+    if (Array.isArray(contacts) && contacts.length > 0) {
+      const bcrypt = require('bcryptjs');
+      for (const c of contacts) {
+        try {
+          if (!c || !c.email) continue;
+          const emailAddr = String(c.email).trim();
+
+          // skip if user already exists
+          const exists = await q('SELECT _id FROM users WHERE email = ? LIMIT 1', [emailAddr]).catch(() => []);
+          if (Array.isArray(exists) && exists.length > 0) {
+            const existingId = exists[0]._id;
+            // ensure client_viewers mapping exists
+            try { await q('INSERT IGNORE INTO client_viewers (client_id, user_id, created_at) VALUES (?, ?, NOW())', [clientId, existingId]); } catch (e) {}
+            continue;
+          }
+
+          const tempPassword = crypto.randomBytes(6).toString('hex');
+          const hashed = await bcrypt.hash(tempPassword, 10);
+          const publicId = crypto.randomBytes(8).toString('hex');
+          const displayName = c.name || `${company} Contact`;
+
+          const insertSql = `INSERT INTO users (public_id, name, email, password, role, isActive, createdAt) VALUES (?, ?, ?, ?, ?, ?, NOW())`;
+          const r = await q(insertSql, [publicId, displayName, emailAddr, hashed, 'Client-Viewer', 1]);
+          const newUserId = r && r.insertId ? r.insertId : null;
+          if (newUserId) {
+            try { await q('INSERT INTO client_viewers (client_id, user_id, created_at) VALUES (?, ?, NOW())', [clientId, newUserId]); } catch (e) {}
+
+            // send credentials email
+            try {
+              const setupLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/auth/setup?uid=${publicId}`;
+              const tpl = emailService.welcomeTemplate({ name: displayName, email: emailAddr, role: 'Client-Viewer', title: 'Client Portal Access', tempPassword, createdBy: 'System Admin', createdAt: new Date(), setupLink });
+              await emailService.sendEmail({ to: emailAddr, subject: tpl.subject, text: tpl.text, html: tpl.html });
+            } catch (e) {
+              logger.warn('Failed sending credentials to contact ' + emailAddr + ': ' + (e && e.message));
+            }
+          }
+        } catch (e) {
+          logger.debug('Failed creating user for contact: ' + (e && e.message));
+        }
+      }
+    }
+ 
     // Update optional fields (district, pincode, state)
     try {
       const optionalCols = [];
       const optionalParams = [];
-      if (district && await hasColumn('clientss', 'district')) { 
-        optionalCols.push('district = ?'); optionalParams.push(district); 
+      if (district && await hasColumn('clientss', 'district')) {
+        optionalCols.push('district = ?'); optionalParams.push(district);
       }
-      if (pincode && await hasColumn('clientss', 'pincode')) { 
-        optionalCols.push('pincode = ?'); optionalParams.push(pincode); 
+      if (pincode && await hasColumn('clientss', 'pincode')) {
+        optionalCols.push('pincode = ?'); optionalParams.push(pincode);
       }
-      if (state && await hasColumn('clientss', 'state')) { 
-        optionalCols.push('state = ?'); optionalParams.push(state); 
+      if (state && await hasColumn('clientss', 'state')) {
+        optionalCols.push('state = ?'); optionalParams.push(state);
       }
       if (optionalCols.length > 0) {
         optionalParams.push(clientId);
@@ -226,7 +269,7 @@ router.post('/', requireRole('Admin'), async (req, res) => {
     } catch (e) {
       logger.debug('Optional client fields update skipped: ' + e.message);
     }
-
+ 
     // Insert documents
     const attachedDocuments = [];
     if (Array.isArray(documents) && documents.length > 0) {
@@ -238,7 +281,7 @@ router.post('/', requireRole('Admin'), async (req, res) => {
         try {
           const fileType = d.file_type || d.fileType || guessMimeType(fileName) || null;
           const r = await q(`
-            INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active) 
+            INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active)
             VALUES (?, ?, ?, ?, ?, NOW(), 1)
           `, [clientId, fileUrl, fileName, fileType, d.uploaded_by || d.uploadedBy || (req.user && req.user._id ? req.user._id : null)]);
           attachedDocuments.push({ id: r.insertId, file_url: fileUrl, file_name: fileName, file_type: fileType });
@@ -247,7 +290,7 @@ router.post('/', requireRole('Admin'), async (req, res) => {
         }
       }
     }
-
+ 
 // Find primary contact email FIRST
 let primaryContactEmail = null;
 let primaryContactName = null;
@@ -261,83 +304,82 @@ if (Array.isArray(contacts) && contacts.length > 0) {
   }
 }
 if (!primaryContactEmail && email) primaryContactEmail = email;
-
+ 
 // ✅ DUAL EMAIL SYSTEM: Client Welcome + Viewer Credentials
 let viewerInfo = null;
-
-// 1. CREATE VIEWER (if requested)
+ 
+// 1. CREATE VIEWER or CLIENT PORTAL USER (if requested)
 if ((createViewer || enableClientPortal) && (primaryContactEmail || email)) {
-  const viewerEmail = primaryContactEmail || email;
-  logger.info('Creating viewer for client', clientId, 'email:', viewerEmail);
-  
+  const userEmail = primaryContactEmail || email;
+  logger.info('Creating user for client', clientId, 'email:', userEmail);
+
   const tempPassword = crypto.randomBytes(6).toString('hex');
   const publicId = crypto.randomBytes(8).toString('hex');
-  
+
   try {
     const bcrypt = require('bcryptjs');
     const hashed = await new Promise((resolve, reject) => {
-      bcrypt.hash(tempPassword, 10, (err, hash) => {
-        if (err) reject(err);
-        else resolve(hash);
-      });
+      bcrypt.hash(tempPassword, 10, (err, hash) => (err ? reject(err) : resolve(hash)));
     });
-    
+
+    const roleToInsert = enableClientPortal ? 'Client' : 'Client-Viewer';
+    const displayName = enableClientPortal ? (primaryContactName || name) : `${name} (Viewer)`;
+
     const insertUserSql = `
-      INSERT INTO users (public_id, name, email, password, role, isActive, createdAt) 
+      INSERT INTO users (public_id, name, email, password, role, isActive, createdAt)
       VALUES (?, ?, ?, ?, ?, ?, NOW())
     `;
-    const userRes = await q(insertUserSql, [
-      publicId, `${name} (Viewer)`, viewerEmail, hashed, 'Client-Viewer', 1
-    ]);
+    const userRes = await q(insertUserSql, [publicId, displayName, userEmail, hashed, roleToInsert, 1]);
     const newUserId = userRes.insertId;
-    
-    await q('INSERT INTO client_viewers (client_id, user_id, created_at) VALUES (?, ?, NOW())', 
-      [clientId, newUserId]);
-    
-    // ✅ VIEWER CREDENTIALS EMAIL (Different role/title)
-    const viewerSetupLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/auth/setup?uid=${publicId}`;
-    const viewerTemplate = emailService.welcomeTemplate({
-      name: `${name} (Viewer)`,
-      email: viewerEmail,
-      role: 'Client-Viewer',
-      title: 'Client Portal Access',
+
+    // map to client_viewers so client-scoped access works
+    try {
+      await q('INSERT INTO client_viewers (client_id, user_id, created_at) VALUES (?, ?, NOW())', [clientId, newUserId]);
+    } catch (e) {
+      // ignore mapping errors
+    }
+
+    // send credentials email using welcomeTemplate
+    const setupLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/auth/setup?uid=${publicId}`;
+    const userTemplate = emailService.welcomeTemplate({
+      name: displayName,
+      email: userEmail,
+      role: roleToInsert,
+      title: enableClientPortal ? `Client - ${company}` : 'Client Portal Access',
       tempPassword,
       createdBy: 'System Admin',
       createdAt: new Date(),
-      setupLink: viewerSetupLink
+      setupLink
     });
-    
-    await emailService.sendEmail({
-      to: viewerEmail,
-      subject: viewerTemplate.subject,
-      text: viewerTemplate.text,
-      html: viewerTemplate.html
-    });
-    
-    viewerInfo = { publicId, userId: newUserId };
-    logger.info('✅ Viewer credentials sent:', publicId);
+
+    await emailService.sendEmail({ to: userEmail, subject: userTemplate.subject, text: userTemplate.text, html: userTemplate.html });
+
+    viewerInfo = { publicId, userId: newUserId, role: roleToInsert };
+    logger.info('✅ Client/user credentials sent:', publicId);
   } catch (e) {
-    logger.error('Viewer creation failed:', e.message);
+    logger.error('User creation failed:', e && e.message);
   }
 }
-
+ 
 // 2. CLIENT WELCOME EMAIL (Always sent if email exists)
 if (primaryContactEmail || email) {
   const clientEmail = primaryContactEmail || email;
   const clientPortalLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/client-portal/${ref}`;
-  
+ 
   // ✅ CLIENT WELCOME EMAIL (Different role/title)
+  // generate a temporary password for the client portal and include it in the welcome email
+  const clientTempPassword = crypto.randomBytes(6).toString('hex');
   const clientTemplate = emailService.welcomeTemplate({
     name: primaryContactName || name,
     email: clientEmail,
     role: 'Client',
     title: `Client - ${company}`,
-    tempPassword: '', // No temp password for client (portal only)
+    tempPassword: clientTempPassword,
     createdBy: 'System Admin',
     createdAt: new Date(),
     setupLink: clientPortalLink
   });
-  
+ 
   try {
     await emailService.sendEmail({
       to: clientEmail,
@@ -352,23 +394,23 @@ if (primaryContactEmail || email) {
 }
     // Log activity
     await q(`
-      INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) 
+      INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at)
       VALUES (?, ?, ?, ?, NOW())
-    `, [clientId, req.user && req.user._id ? req.user._id : null, 'create', 
+    `, [clientId, req.user && req.user._id ? req.user._id : null, 'create',
         JSON.stringify({ createdBy: req.user ? req.user.id : null })]);
-
-    return res.status(201).json({ 
-      success: true, 
-      data: { id: clientId, ref, name, company, documents: attachedDocuments }, 
-      viewer: viewerInfo 
+ 
+    return res.status(201).json({
+      success: true,
+      data: { id: clientId, ref, name, company, documents: attachedDocuments },
+      viewer: viewerInfo
     });
-
+ 
   } catch (e) {
     logger.error('Error creating client: ' + e.message);
     return res.status(500).json({ success: false, error: e.message });
   }
 });
-
+ 
 router.get('/', requireRole(['Admin','Manager','Client-Viewer']), async (req, res) => {
   try {
     const page = parseInt(req.query.page || '1', 10); const perPage = Math.min(parseInt(req.query.perPage || '25', 10), 200);
@@ -383,16 +425,16 @@ router.get('/', requireRole(['Admin','Manager','Client-Viewer']), async (req, re
     const hasStatus = await hasColumn('clientss', 'status');
     const hasManager = await hasColumn('clientss', 'manager_id');
     const hasCreatedAt = await hasColumn('clientss', 'created_at');
-
+ 
     if (!includeDeleted && hasIsDeletedList) { where.push('isDeleted != 1'); }
     if (status && hasStatus) { where.push('status = ?'); params.push(status); }
     if (search) { where.push('(name LIKE ? OR company LIKE ? OR ref LIKE ?)'); params.push('%' + search + '%', '%'+search+'%', '%'+search+'%'); }
-
+ 
     const whereSql = where.length ? ('WHERE ' + where.join(' AND ')) : '';
     const countSql = `SELECT COUNT(*) as c FROM clientss ${whereSql}`;
     const total = (await q(countSql, params))[0].c || 0;
     const offset = (page - 1) * perPage;
-
+ 
     const selectCols = ['clientss.id','clientss.ref','clientss.name','clientss.company'];
     if (hasStatus) selectCols.push('clientss.status');
     if (hasManager) {
@@ -402,7 +444,7 @@ router.get('/', requireRole(['Admin','Manager','Client-Viewer']), async (req, re
       selectCols.push('(SELECT name FROM users WHERE _id = clientss.manager_id OR public_id = clientss.manager_id LIMIT 1) AS manager_name');
     }
     if (hasCreatedAt) selectCols.push('clientss.created_at');
-
+ 
     // If client_contacts table exists, left join the primary contact to surface email/phone
     let joinClause = '';
     const hasClientContacts = await tableExists('client_contacts');
@@ -418,12 +460,12 @@ router.get('/', requireRole(['Admin','Manager','Client-Viewer']), async (req, re
       if (hasEmailCol) selectCols.push('clientss.email');
       if (hasPhoneCol) selectCols.push('clientss.phone');
     }
-
+ 
     // No extra join for manager — scalar subqueries are used above to fetch manager info
-
+ 
     const listSql = `SELECT ${selectCols.join(', ')} FROM clientss ${joinClause} ${whereSql} ${hasCreatedAt ? 'ORDER BY clientss.created_at DESC' : 'ORDER BY clientss.id DESC'} LIMIT ? OFFSET ?`;
     const rows = await q(listSql, params.concat([perPage, offset]));
-
+ 
     // Attach documents and ensure manager name/public_id are present per row
     const enhancedRows = await Promise.all(rows.map(async (r) => {
       try {
@@ -432,7 +474,7 @@ router.get('/', requireRole(['Admin','Manager','Client-Viewer']), async (req, re
       } catch (e) {
         r.documents = [];
       }
-
+ 
       // If manager_name not present but manager_id exists, try to resolve
       if ((!r.manager_name || r.manager_name === null) && r.manager_id) {
         try {
@@ -445,14 +487,14 @@ router.get('/', requireRole(['Admin','Manager','Client-Viewer']), async (req, re
           // ignore
         }
       }
-
+ 
       return r;
     }));
-
+ 
     return res.json({ success: true, data: enhancedRows, meta: { total, page, perPage } });
   } catch (e) { logger.error('Error listing clients: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
 });
-
+ 
 router.get('/:id', requireRole(['Admin','Manager','Client-Viewer']), async (req, res) => {
   try {
     const id = req.params.id;
@@ -464,7 +506,7 @@ router.get('/:id', requireRole(['Admin','Manager','Client-Viewer']), async (req,
     const clientRow = (await q('SELECT * FROM clientss WHERE id = ? LIMIT 1', [id]));
     if (!clientRow || clientRow.length === 0) return res.status(404).json({ success: false, error: 'Client not found' });
     const client = clientRow[0];
-
+ 
     // normalize createdAt/created_at
     if ((!client.createdAt || client.createdAt === null) && client.created_at) client.createdAt = client.created_at;
     let contacts = await q('SELECT id, name, email, phone, designation, is_primary FROM client_contacts WHERE client_id = ? ORDER BY is_primary DESC, id ASC', [id]).catch(() => []);
@@ -472,12 +514,12 @@ router.get('/:id', requireRole(['Admin','Manager','Client-Viewer']), async (req,
     if ((!contacts || contacts.length === 0) && (client.email || client.phone)) {
       contacts = [{ id: null, name: null, email: client.email || null, phone: client.phone || null, designation: null, is_primary: 1 }];
     }
-
+ 
     // Resolve manager internal id, public id and name robustly. Accept numeric _id or public_id strings.
     try {
       // Normalize zero to null
       if (client.manager_id === 0) client.manager_id = null;
-
+ 
       // If manager_id present, try to resolve by internal id first, then by public_id
       if (client.manager_id) {
         let mgr = await q('SELECT _id, public_id, name FROM users WHERE _id = ? LIMIT 1', [client.manager_id]).catch(() => []);
@@ -536,26 +578,26 @@ router.get('/:id', requireRole(['Admin','Manager','Client-Viewer']), async (req,
     return res.json({ success: true, data: { client, contacts, documents, activities, dashboard: { projectCount, taskCount, completedTasks, pendingTasks, billableHours, assignedManager } } });
   } catch (e) { logger.error('Error fetching client details: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
 });
-
+ 
 router.put('/:id', requireRole(['Admin','Manager']), async (req, res) => {
   try { const id = req.params.id; const payload = req.body || {}; delete payload.id; delete payload.ref; const allowed = ['name','company','billing_address','office_address','gst_number','tax_id','industry','notes','status','manager_id']; const setCols = []; const params = []; for (const k of allowed) if (payload[k] !== undefined) { setCols.push(`${k} = ?`); params.push(payload[k]); } if (setCols.length === 0) return res.status(400).json({ success: false, error: 'No updatable fields provided' }); params.push(id); await q(`UPDATE clientss SET ${setCols.join(', ')} WHERE id = ?`, params); await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'update', JSON.stringify(payload)]).catch(()=>{}); return res.json({ success: true, message: 'Client updated' }); } catch (e) { logger.error('Error updating client: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
-
+ 
 });
-
+ 
 router.delete('/:id', requireRole('Admin'), async (req, res) => {
   try { const id = req.params.id; await q('UPDATE clientss SET isDeleted = 1, deleted_at = NOW() WHERE id = ?', [id]); await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'soft-delete', 'soft deleted']).catch(()=>{}); return res.json({ success: true, message: 'Client soft-deleted' }); } catch (e) { logger.error('Error soft deleting client: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
 });
-
+ 
 router.post('/:id/restore', requireRole('Admin'), async (req, res) => {
   try { const id = req.params.id; await q('UPDATE clientss SET isDeleted = 0, deleted_at = NULL WHERE id = ?', [id]); await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'restore', 'restored']).catch(()=>{}); return res.json({ success: true, message: 'Client restored' }); } catch (e) { logger.error('Error restoring client: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
 });
-
+ 
 router.delete('/:id/permanent', requireRole('Admin'), async (req, res) => {
   try { const id = req.params.id; await q('DELETE FROM client_documents WHERE client_id = ?', [id]).catch(()=>{}); await q('DELETE FROM client_contacts WHERE client_id = ?', [id]).catch(()=>{}); await q('DELETE FROM client_activity_logs WHERE client_id = ?', [id]).catch(()=>{}); await q('DELETE FROM clientss WHERE id = ?', [id]); return res.json({ success: true, message: 'Client permanently deleted' }); } catch (e) { logger.error('Error permanently deleting client: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
 });
-
+ 
 router.post('/:id/assign-manager', requireRole('Admin'), async (req, res) => { try { const id = req.params.id; const { managerId } = req.body; if (!managerId) return res.status(400).json({ success: false, error: 'managerId required' }); await q('UPDATE clientss SET manager_id = ? WHERE id = ?', [managerId, id]); await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'assign-manager', JSON.stringify({ managerId })]).catch(()=>{}); return res.json({ success: true, message: 'Manager assigned' }); } catch (e) { logger.error('Error assigning manager: ' + e.message); return res.status(500).json({ success: false, error: e.message }); } });
-
+ 
 // Create a client-viewer account and map it to this client
 router.post('/:id/create-viewer', requireRole('Admin'), async (req, res) => {
   try {
@@ -580,7 +622,7 @@ router.post('/:id/create-viewer', requireRole('Admin'), async (req, res) => {
     return res.status(500).json({ success: false, error: e.message });
   }
 });
-
+ 
 // Get viewer info (including modules) for a specific mapped viewer
 router.get('/:id/viewers/:userId', requireRole(['Admin','Manager']), async (req, res) => {
   try {
@@ -597,7 +639,7 @@ router.get('/:id/viewers/:userId', requireRole(['Admin','Manager']), async (req,
     return res.json({ success: true, data: { id: u._id, publicId: u.public_id, name: u.name, email: u.email, role: u.role, modules } });
   } catch (e) { logger.error('Error fetching viewer info: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
 });
-
+ 
 // Update modules/permissions for a mapped viewer (Admin/Manager)
 router.put('/:id/viewers/:userId/modules', requireRole(['Admin','Manager']), async (req, res) => {
   try {
@@ -615,22 +657,22 @@ router.put('/:id/viewers/:userId/modules', requireRole(['Admin','Manager']), asy
     return res.json({ success: true, message: 'Viewer modules updated', data: { userId, modules } });
   } catch (e) { logger.error('Error updating viewer modules: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
 });
-
+ 
 router.post('/:id/contacts', requireRole(['Admin','Manager']), async (req, res) => { try { const id = req.params.id; const { name, email, phone, designation, is_primary } = req.body; if (!name) return res.status(400).json({ success: false, error: 'name required' }); if (is_primary) { await q('UPDATE client_contacts SET is_primary = 0 WHERE client_id = ?', [id]); } const r = await q('INSERT INTO client_contacts (client_id, name, email, phone, designation, is_primary, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())', [id, name, email || null, phone || null, designation || null, is_primary ? 1 : 0]); return res.status(201).json({ success: true, data: { id: r.insertId } }); } catch (e) { logger.error('Error adding contact: '+e.message); return res.status(500).json({ success: false, error: e.message }); } });
-
+ 
 router.put('/:id/contacts/:contactId', requireRole(['Admin','Manager']), async (req, res) => { try { const id = req.params.id; const contactId = req.params.contactId; const payload = req.body || {}; if (payload.is_primary) { await q('UPDATE client_contacts SET is_primary = 0 WHERE client_id = ?', [id]); } const allowed = ['name','email','phone','designation','is_primary']; const sets = []; const params = []; for (const k of allowed) if (payload[k] !== undefined) { sets.push(`${k} = ?`); params.push(payload[k]); } if (!sets.length) return res.status(400).json({ success: false, error: 'No fields' }); params.push(contactId); await q(`UPDATE client_contacts SET ${sets.join(', ')} WHERE id = ?`, params); return res.json({ success: true, message: 'Contact updated' }); } catch (e) { logger.error('Error updating contact: '+e.message); return res.status(500).json({ success: false, error: e.message }); } });
-
+ 
 router.delete('/:id/contacts/:contactId', requireRole(['Admin','Manager']), async (req, res) => { try { const contactId = req.params.contactId; await q('DELETE FROM client_contacts WHERE id = ?', [contactId]); return res.json({ success: true, message: 'Contact deleted' }); } catch (e) { logger.error('Error deleting contact: '+e.message); return res.status(500).json({ success: false, error: e.message }); } });
-
+ 
 router.post('/:id/contacts/:contactId/set-primary', requireRole(['Admin','Manager']), async (req, res) => { try { const id = req.params.id; const contactId = req.params.contactId; await q('UPDATE client_contacts SET is_primary = 0 WHERE client_id = ?', [id]); await q('UPDATE client_contacts SET is_primary = 1 WHERE id = ?', [contactId]); return res.json({ success: true, message: 'Primary contact set' }); } catch (e) { logger.error('Error setting primary contact: '+e.message); return res.status(500).json({ success: false, error: e.message }); } });
-
+ 
 router.post('/:id/documents', requireRole(['Admin','Manager']), async (req, res) => {
   try {
     const id = req.params.id;
     // Support both single document (file_url+file_name) or an array `documents: [{file_url, file_name, file_type, uploaded_by}, ...]`
     const docs = Array.isArray(req.body.documents) ? req.body.documents : (req.body.file_name ? [req.body] : []);
     if (!docs || docs.length === 0) return res.status(400).json({ success: false, error: 'file_name (or file_url + file_name) required' });
-
+ 
     const inserted = [];
     for (const d of docs) {
       if (!d) continue;
@@ -648,7 +690,7 @@ router.post('/:id/documents', requireRole(['Admin','Manager']), async (req, res)
         logger.debug('Failed inserting document for client ' + id + ': ' + (e && e.message));
       }
     }
-
+ 
     if (inserted.length === 0) return res.status(400).json({ success: false, error: 'No valid documents provided' });
     return res.status(201).json({ success: true, data: inserted });
   } catch (e) {
@@ -656,7 +698,7 @@ router.post('/:id/documents', requireRole(['Admin','Manager']), async (req, res)
     return res.status(500).json({ success: false, error: e.message });
   }
 });
-
+ 
 // Multipart file upload endpoint: accept files as form-data `files[]`
 router.post('/:id/upload', requireRole(['Admin','Manager']), upload.array('files', 20), async (req, res) => {
   try {
@@ -683,6 +725,8 @@ router.post('/:id/upload', requireRole(['Admin','Manager']), upload.array('files
     return res.status(500).json({ success: false, error: e.message });
   }
 });
-
+ 
 module.exports = router;
-
+ 
+ 
+ 

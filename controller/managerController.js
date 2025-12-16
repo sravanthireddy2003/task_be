@@ -4,13 +4,11 @@ module.exports = {
   getManagerDashboard: async (req, res) => {
     try {
       const q = (sql, params=[]) => new Promise((r, rej) => db.query(sql, params, (e, rows) => e ? rej(e) : r(rows)));
-      // ensure projects table has manager_id before querying by it
       const cols = await q("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'projects' AND COLUMN_NAME = 'manager_id'");
       let projectCountRow;
       if (Array.isArray(cols) && cols.length > 0) {
         projectCountRow = (await q('SELECT COUNT(*) as c FROM projects WHERE manager_id = ?', [req.user.id]))[0] || { c: 0 };
       } else {
-        // table doesn't have manager_id column; return 0 for manager-scoped projects
         projectCountRow = { c: 0 };
       }
       const projectCount = projectCountRow.c;
