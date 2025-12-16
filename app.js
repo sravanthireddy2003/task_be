@@ -90,6 +90,9 @@ app.use('/api/uploads',uploadCRUD);
 const adminRoutes = require(__root + 'routes/adminRoutes');
 app.use('/api/admin', adminRoutes);
 
+// Project Management Routes (department-wise projects, tasks, subtasks)
+const projectRoutes = require(__root + 'cleaned_backend/routes/projectRoutes');
+app.use('/api/projects', projectRoutes);
 
 
 module.exports = app;
