@@ -39,7 +39,7 @@ router.post('/', requireRole(['Admin', 'Manager', 'Employee']), async (req, res)
           projects = await q(`
             SELECT DISTINCT p.* FROM projects p
             LEFT JOIN project_departments pd ON p.id = pd.project_id
-            LEFT JOIN departments d ON (pd.department_id = d.id OR pd.department_id = d.public_id)
+            LEFT JOIN departments d ON pd.department_id = d.id
             WHERE p.is_active = 1 AND (
               p.project_manager_id = ? OR
               d.id IN (SELECT department_id FROM users u WHERE u._id = ?)
@@ -54,7 +54,7 @@ router.post('/', requireRole(['Admin', 'Manager', 'Employee']), async (req, res)
           const depts = await q(`
             SELECT pd.department_id, d.name, d.public_id
             FROM project_departments pd
-            JOIN departments d ON (pd.department_id = d.id OR pd.department_id = d.public_id)
+            JOIN departments d ON pd.department_id = d.id
             WHERE pd.project_id = ?
           `, [p.id]);
           const out = {
@@ -186,13 +186,13 @@ router.get('/', async (req, res) => {
     if (!projectParam) {
       let projects;
       if (req.user.role === 'Admin') {
-        projects = await q('SELECT * FROM projects WHERE is_active = 1 ORDER BY created_at DESC');
+        projects = await q('SELECT * FROM projects ORDER BY created_at DESC');
       } else if (req.user.role === 'Manager') {
         projects = await q(`
           SELECT DISTINCT p.* FROM projects p
           LEFT JOIN project_departments pd ON p.id = pd.project_id
-          LEFT JOIN departments d ON (pd.department_id = d.id OR pd.department_id = d.public_id)
-          WHERE p.is_active = 1 AND (
+          LEFT JOIN departments d ON pd.department_id = d.id
+          WHERE (
             p.project_manager_id = ? OR
             d.id IN (SELECT department_id FROM users u WHERE u._id = ?)
           )
@@ -202,8 +202,8 @@ router.get('/', async (req, res) => {
         projects = await q(`
           SELECT DISTINCT p.* FROM projects p
           JOIN project_departments pd ON p.id = pd.project_id
-          JOIN departments d ON (pd.department_id = d.id OR pd.department_id = d.public_id)
-          WHERE p.is_active = 1 AND d.id = (SELECT department_id FROM users u WHERE u._id = ? LIMIT 1)
+          JOIN departments d ON pd.department_id = d.id
+          WHERE d.id = (SELECT department_id FROM users u WHERE u._id = ? LIMIT 1)
           ORDER BY p.created_at DESC
         `, [req.user._id]);
       } else {
@@ -215,7 +215,7 @@ router.get('/', async (req, res) => {
         const depts = await q(`
           SELECT pd.department_id, d.name, d.public_id
           FROM project_departments pd
-          JOIN departments d ON (pd.department_id = d.id OR pd.department_id = d.public_id)
+          JOIN departments d ON pd.department_id = d.id
           WHERE pd.project_id = ?
         `, [p.id]);
         const out = {
@@ -245,7 +245,8 @@ router.get('/', async (req, res) => {
     const project = await q('SELECT * FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [projectParam, projectParam]);
     logger.info(`Tasks GET: project lookup returned ${project ? project.length : 0} rows for projectParam=${projectParam}`);
     if (!project || project.length === 0) {
-      return res.status(404).json({ success: false, message: 'Project not found' });
+      // Return an empty list when the requested project doesn't exist (frontend-friendly)
+      return res.json({ success: true, data: [] });
     }
 
     const projectId_internal = project[0].id;
