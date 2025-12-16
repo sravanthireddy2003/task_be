@@ -6,11 +6,53 @@ const crypto = require('crypto');
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 require('dotenv').config();
 const jwt = require('jsonwebtoken');
+const emailService = require(__root + 'utils/emailService');
 
 function q(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
   });
+}
+
+async function hasColumn(table, column) {
+  try {
+    const rows = await q("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?", [table, column]);
+    return Array.isArray(rows) && rows.length > 0;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function findExistingColumn(table, candidates) {
+  for (const c of candidates) {
+    if (await hasColumn(table, c)) return c;
+  }
+  // Fallback: scan table columns and match by patterns
+  try {
+    const cols = await q("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", [table]);
+    if (Array.isArray(cols) && cols.length > 0) {
+      const names = cols.map(r => String(r.COLUMN_NAME || r.column_name || r.COLUMN_NAME).toLowerCase());
+      // project-like
+      for (const n of names) {
+        if (n.includes('project') || n.includes('proj')) return cols[names.indexOf(n)].COLUMN_NAME;
+      }
+      // department-like
+      for (const n of names) {
+        if (n.includes('department') || n.includes('dept')) return cols[names.indexOf(n)].COLUMN_NAME;
+      }
+      // created_by-like
+      for (const n of names) {
+        if (n.includes('created') || n.includes('created_by') || n.includes('createdby')) return cols[names.indexOf(n)].COLUMN_NAME;
+      }
+      // assigned-like
+      for (const n of names) {
+        if (n.includes('assign') || n.includes('assigned')) return cols[names.indexOf(n)].COLUMN_NAME;
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+  return null;
 }
 
 // ==================== CREATE TASK ====================
@@ -90,12 +132,19 @@ router.post('/', requireRole(['Admin', 'Manager', 'Employee']), async (req, res)
     }
 
     const publicId = crypto.randomBytes(8).toString('hex');
+    // Ensure `public_id` column exists on tasks table; attempt to add if missing
+    let tasksHasPublic = await hasColumn('tasks', 'public_id');
+    if (!tasksHasPublic) {
+      try {
+        await q('ALTER TABLE tasks ADD COLUMN public_id VARCHAR(64) NULL UNIQUE');
+        tasksHasPublic = true;
+      } catch (e) {
+        logger.warn('Tasks: could not add public_id column to tasks table:', e && e.message ? e.message : e);
+        tasksHasPublic = false;
+      }
+    }
     const createdBy = req.user._id;
 
-    const taskSql = `
-      INSERT INTO tasks (public_id, project_id, department_id, title, description, priority, assigned_to, start_date, due_date, estimated_hours, status, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'New', ?)
-    `;
     // Resolve assignedTo (accept public_id -> _id)
     let assigned_internal = null;
     if (assignedTo) {
@@ -108,33 +157,163 @@ router.post('/', requireRole(['Admin', 'Manager', 'Employee']), async (req, res)
       }
     }
 
-    const taskParams = [publicId, project[0].id, department_internal, title, description || null, priority, assigned_internal || null, startDate || null, endDate || null, estimatedHours || null, createdBy];
+    // Determine actual column names on `tasks` table to avoid ER_BAD_FIELD_ERROR
+    const projectCol = await findExistingColumn('tasks', ['project_id', 'projectId', 'project']);
+    const deptCol = await findExistingColumn('tasks', ['department_id', 'departmentId', 'department']);
+    const assignedCol = await findExistingColumn('tasks', ['assigned_to', 'assignedTo', 'assigned']);
+    const createdByCol = await findExistingColumn('tasks', ['created_by', 'createdBy', 'created']);
+    const publicColName = tasksHasPublic ? (await findExistingColumn('tasks', ['public_id', 'publicId'])) || 'public_id' : null;
 
-    const result = await q(taskSql, taskParams);
+    if (!projectCol || !deptCol || !createdByCol) {
+      return res.status(500).json({ success: false, error: 'Tasks table missing expected columns (project/department/created_by). Please check DB schema.' });
+    }
+
+    // Detect optional date and estimated columns
+    const startDateCol = await findExistingColumn('tasks', ['start_date', 'startDate', 'start']);
+    const dueDateCol = await findExistingColumn('tasks', ['due_date', 'dueDate', 'due']);
+    let estimatedCol = await findExistingColumn('tasks', ['estimated_hours', 'estimatedHours', 'estimated']);
+    const statusCol = await findExistingColumn('tasks', ['status']);
+
+    // If estimated column missing, try to add it (best-effort)
+    if (!estimatedCol) {
+      try {
+        await q('ALTER TABLE tasks ADD COLUMN estimated_hours DECIMAL(8,2) NULL');
+        // refresh detection
+        const ec = await findExistingColumn('tasks', ['estimated_hours', 'estimatedHours', 'estimated']);
+        if (ec) {
+          estimatedCol = ec;
+        }
+      } catch (e) {
+        // ignore failures
+      }
+    }
+
+    // Use a mutable var for estimated column name
+    let estimatedColName = estimatedCol || (await findExistingColumn('tasks', ['estimated_hours', 'estimatedHours', 'estimated']));
+
+    // Build columns and params dynamically
+    const cols = [];
+    const placeholders = [];
+    const paramsArr = [];
+    if (publicColName) {
+      cols.push(publicColName);
+      placeholders.push('?');
+      paramsArr.push(publicId);
+    }
+    cols.push(projectCol); placeholders.push('?'); paramsArr.push(project[0].id);
+    cols.push(deptCol); placeholders.push('?'); paramsArr.push(department_internal);
+    cols.push('title'); placeholders.push('?'); paramsArr.push(title);
+    cols.push('description'); placeholders.push('?'); paramsArr.push(description || null);
+    cols.push('priority'); placeholders.push('?'); paramsArr.push(priority);
+    if (assignedCol) { cols.push(assignedCol); placeholders.push('?'); paramsArr.push(assigned_internal || null); }
+    if (startDateCol) { cols.push(startDateCol); placeholders.push('?'); paramsArr.push(startDate || null); }
+    if (dueDateCol) { cols.push(dueDateCol); placeholders.push('?'); paramsArr.push(endDate || null); }
+    if (estimatedColName) { cols.push(estimatedColName); placeholders.push('?'); paramsArr.push(estimatedHours || null); }
+    if (statusCol) { cols.push(statusCol); placeholders.push('?'); paramsArr.push('New'); }
+    cols.push(createdByCol); placeholders.push('?'); paramsArr.push(createdBy);
+
+    // Deduplicate columns/params (prevent 'column specified twice' errors)
+    const seenCols = new Set();
+    const dedupCols = [];
+    const dedupParams = [];
+    for (let i = 0; i < cols.length; i++) {
+      const c = cols[i];
+      if (!seenCols.has(c)) {
+        seenCols.add(c);
+        dedupCols.push(c);
+        dedupParams.push(paramsArr[i]);
+      }
+    }
+    const taskSql = `INSERT INTO tasks (${dedupCols.join(', ')}) VALUES (${dedupCols.map(() => '?').join(', ')})`;
+
+    const result = await q(taskSql, dedupParams);
     const taskId = result.insertId;
+
+    // If we couldn't store public_id earlier, attempt to update this row with generated publicId
+    if (!tasksHasPublic) {
+      try {
+        await q('ALTER TABLE tasks ADD COLUMN public_id VARCHAR(64) NULL UNIQUE');
+        await q('UPDATE tasks SET public_id = ? WHERE id = ?', [publicId, taskId]);
+      } catch (e) {
+        // ignore — response will include generated publicId even if not persisted
+        logger.warn('Tasks: failed to persist public_id for task', taskId, e && e.message ? e.message : e);
+      }
+    }
 
     // Log activity
     await q('INSERT INTO task_activity_logs (task_id, user_id, action, details) VALUES (?, ?, ?, ?)', [taskId, createdBy, 'created', `Task "${title}" created`]);
 
     const task = await q('SELECT * FROM tasks WHERE id = ? LIMIT 1', [taskId]);
-    // Respond with public ids
-    const deptPub = await q('SELECT public_id FROM departments WHERE id = ? LIMIT 1', [task[0].department_id]);
-    res.status(201).json({
-      success: true,
-      data: {
-        id: task[0].public_id,
-        public_id: task[0].public_id,
-        title: task[0].title,
-        description: task[0].description,
-        priority: task[0].priority,
-        status: task[0].status,
-        projectPublicId: project[0].public_id,
-        departmentPublicId: deptPub && deptPub.length > 0 ? deptPub[0].public_id : null,
-        assigned_user: assigned_internal ? ({ id: assignedTo, name: null }) : null,
+    // Build a sanitized response: no null values, enrich department and assigned user, include subtask count
+    let out = {};
+    if (task && task[0]) {
+      const row = task[0];
+      out = {
+        id: row.public_id,
+        public_id: row.public_id,
+        title: row.title,
+        description: row.description || undefined,
+        priority: row.priority || undefined,
+        status: row.status || undefined,
+        projectPublicId: project[0] && project[0].public_id ? project[0].public_id : undefined,
         subtask_count: 0,
-        created_at: task[0].created_at
+        created_at: row.created_at
+      };
+
+      // department
+      try {
+        const deptPub = await q('SELECT public_id, name FROM departments WHERE id = ? LIMIT 1', [row.department_id]);
+        if (Array.isArray(deptPub) && deptPub.length > 0) {
+          out.departmentPublicId = deptPub[0].public_id || undefined;
+          out.departmentName = deptPub[0].name || undefined;
+        }
+      } catch (e) { /* ignore */ }
+
+      // assigned user
+      if (row.assigned_to) {
+        try {
+          const u = await q('SELECT _id, public_id, name, email FROM users WHERE _id = ? LIMIT 1', [row.assigned_to]);
+          if (Array.isArray(u) && u.length > 0) {
+            out.assigned_user = { id: u[0].public_id || u[0]._id, name: u[0].name || undefined, email: u[0].email || undefined };
+          } else {
+            out.assigned_user = { id: row.assigned_to };
+          }
+        } catch (e) {
+          out.assigned_user = { id: row.assigned_to };
+        }
       }
-    });
+
+      // subtask count
+      try {
+        const sc = await q('SELECT COUNT(1) AS cnt FROM subtasks WHERE task_id = ?', [row.id]);
+        if (Array.isArray(sc) && sc.length > 0) out.subtask_count = sc[0].cnt || 0;
+      } catch (e) { out.subtask_count = 0; }
+
+      // remove keys that are null/undefined
+      Object.keys(out).forEach(k => { if (out[k] === null || out[k] === undefined) delete out[k]; });
+    }
+
+    res.status(201).json({ success: true, data: out });
+
+    // send assignment email if applicable (best-effort)
+    try {
+      if (task && task[0] && task[0].assigned_to) {
+        const user = (await q('SELECT name, email, public_id FROM users WHERE _id = ? LIMIT 1', [task[0].assigned_to]))[0];
+        if (user && user.email) {
+          const subject = `You have been assigned a new task: ${task[0].title || ''}`;
+          const est = task[0].estimated_hours ? `Estimated hours: ${task[0].estimated_hours}` : '';
+          const projectPid = project[0] && project[0].public_id ? project[0].public_id : '';
+          const body = `Hello ${user.name || ''},\n\nYou have been assigned a new task (${task[0].public_id}) in project ${projectPid}.\nTitle: ${task[0].title || ''}\n${task[0].description ? 'Description: ' + task[0].description + '\n' : ''}${est}\n\nPlease complete the task within the assigned hours.\n\nRegards,\nTeam`;
+          if (emailService && typeof emailService.sendEmail === 'function') {
+            emailService.sendEmail(user.email, subject, body).catch(err => logger.warn('Email send failed: ' + (err && err.message)));
+          } else {
+            logger.info('Assignment email (no emailService):', { to: user.email, subject, body });
+          }
+        }
+      }
+    } catch (e) {
+      logger.warn('Failed to send assignment email: ' + (e && e.message));
+    }
   } catch (e) {
     logger.error('Create task error:', e.message);
     res.status(500).json({ success: false, error: e.message });
@@ -445,8 +624,15 @@ router.put('/:id', requireRole(['Admin', 'Manager', 'Employee']), async (req, re
       }
       updateFields.push('assigned_to = ?'); params.push(assignedTo);
     }
-    if (startDate) { updateFields.push('start_date = ?'); params.push(startDate); }
-    if (endDate) { updateFields.push('due_date = ?'); params.push(endDate); }
+    // detect actual column names for dates, estimated hours and status
+    const startDateColUp = await findExistingColumn('tasks', ['start_date', 'startDate', 'start']);
+    const dueDateColUp = await findExistingColumn('tasks', ['due_date', 'dueDate', 'due']);
+    const estimatedColUp = await findExistingColumn('tasks', ['estimated_hours', 'estimatedHours', 'estimated']);
+    const statusColUp = await findExistingColumn('tasks', ['status']);
+    if (startDate && startDateColUp) { updateFields.push(startDateColUp + ' = ?'); params.push(startDate); }
+    if (endDate && dueDateColUp) { updateFields.push(dueDateColUp + ' = ?'); params.push(endDate); }
+    if (estimatedHours !== undefined && estimatedColUp) { updateFields.push(estimatedColUp + ' = ?'); params.push(estimatedHours); }
+    if (status && statusColUp) { updateFields.push(statusColUp + ' = ?'); params.push(status); }
     if (estimatedHours) { updateFields.push('estimated_hours = ?'); params.push(estimatedHours); }
     if (actualHours) { updateFields.push('actual_hours = ?'); params.push(actualHours); }
     if (progressPercentage !== undefined) { updateFields.push('progress_percentage = ?'); params.push(progressPercentage); }

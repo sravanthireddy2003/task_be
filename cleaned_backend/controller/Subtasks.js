@@ -12,6 +12,15 @@ function q(sql, params = []) {
   });
 }
 
+async function hasColumn(table, column) {
+  try {
+    const rows = await q("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?", [table, column]);
+    return Array.isArray(rows) && rows.length > 0;
+  } catch (e) {
+    return false;
+  }
+}
+
 // ==================== CREATE SUBTASK ====================
 // POST /api/subtasks
 router.post('/', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
@@ -32,13 +41,38 @@ router.post('/', requireRole(['Admin', 'Manager', 'Employee']), async (req, res)
     const publicId = crypto.randomBytes(8).toString('hex');
     const createdBy = req.user._id;
 
-    const subtaskSql = `
-      INSERT INTO subtasks (public_id, task_id, project_id, department_id, title, description, priority, assigned_to, estimated_hours, status, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Open', ?)
-    `;
-    const subtaskParams = [publicId, parentTask.id, parentTask.project_id, parentTask.department_id, title, description || null, priority, assignedTo || null, estimatedHours || null, createdBy];
+    // Ensure estimated_hours column exists (best-effort)
+    if (!await hasColumn('subtasks', 'estimated_hours')) {
+      try {
+        await q('ALTER TABLE subtasks ADD COLUMN estimated_hours DECIMAL(8,2) NULL');
+      } catch (e) {
+        // ignore if cannot add
+      }
+    }
 
-    const result = await q(subtaskSql, subtaskParams);
+    // Build INSERT dynamically to avoid referencing missing columns (status/estimated_hours)
+    const estimatedExists = await hasColumn('subtasks', 'estimated_hours');
+    const statusExists = await hasColumn('subtasks', 'status');
+
+    const cols = ['public_id','task_id','project_id','department_id','title','description','priority','assigned_to'];
+    const placeholders = cols.map(() => '?');
+    const params = [publicId, parentTask.id, parentTask.project_id, parentTask.department_id, title, description || null, priority, assignedTo || null];
+
+    if (estimatedExists) { cols.push('estimated_hours'); placeholders.push('?'); params.push(estimatedHours || null); }
+    if (statusExists) { cols.push('status'); placeholders.push('?'); params.push('Open'); }
+    // created_by is expected
+    cols.push('created_by'); placeholders.push('?'); params.push(createdBy);
+
+    // Deduplicate columns/params
+    const seen = new Set();
+    const dcols = [];
+    const dparams = [];
+    for (let i = 0; i < cols.length; i++) {
+      const c = cols[i];
+      if (!seen.has(c)) { seen.add(c); dcols.push(c); dparams.push(params[i]); }
+    }
+    const subtaskSql = `INSERT INTO subtasks (${dcols.join(',')}) VALUES (${dcols.map(() => '?').join(',')})`;
+    const result = await q(subtaskSql, dparams);
     const subtaskId = result.insertId;
 
     // Log activity
