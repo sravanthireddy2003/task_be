@@ -543,6 +543,196 @@ router.get('/', async (req, res) => {
   }
 });
 
+// PUT /api/projects/tasks/:id - Update task
+router.put('/:id', requireRole(['Admin','Manager']), async (req, res) => {
+  const { id: taskId } = req.params;
+  const {
+    stage,
+    title,
+    priority,
+    description,
+    client_id,
+    projectId,
+    projectPublicId,
+    taskDate,
+    time_alloted,
+    assigned_to,
+  } = req.body;
+
+  logger.info(`[PUT /tasks/:id] Updating task: taskId=${taskId}`);
+
+  try {
+    db.getConnection((err, connection) => {
+      if (err) {
+        logger.error(`DB connection error: ${err}`);
+        return res.status(500).json({ success: false, error: 'Database connection error' });
+      }
+
+      // Build dynamic update query (only update fields that are provided)
+      const updates = [];
+      const values = [];
+
+      if (stage !== undefined) {
+        updates.push('stage = ?');
+        values.push(stage);
+      }
+      if (title !== undefined) {
+        updates.push('title = ?');
+        values.push(title);
+      }
+      if (priority !== undefined) {
+        updates.push('priority = ?');
+        values.push(priority);
+      }
+      if (description !== undefined) {
+        updates.push('description = ?');
+        values.push(description);
+      }
+      if (client_id !== undefined) {
+        updates.push('client_id = ?');
+        values.push(client_id);
+      }
+      if (taskDate !== undefined) {
+        updates.push('taskDate = ?');
+        values.push(taskDate);
+      }
+      if (time_alloted !== undefined) {
+        updates.push('time_alloted = ?');
+        values.push(time_alloted);
+      }
+      if (projectId !== undefined) {
+        updates.push('project_id = ?');
+        values.push(projectId);
+      }
+      if (projectPublicId !== undefined) {
+        updates.push('project_public_id = ?');
+        values.push(projectPublicId);
+      }
+
+      updates.push('updatedAt = ?');
+      values.push(new Date().toISOString());
+      values.push(taskId);
+
+      if (updates.length === 1) {
+        // Only updatedAt, nothing to update
+        connection.release();
+        return res.status(400).json({ success: false, error: 'No fields to update' });
+      }
+
+      const updateTaskQuery = `UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`;
+
+      connection.query(updateTaskQuery, values, (err, result) => {
+        if (err) {
+          connection.release();
+          logger.error(`Error updating task: ${err.message}`);
+          return res.status(500).json({ success: false, error: 'Database update error' });
+        }
+
+        if (result.affectedRows === 0) {
+          connection.release();
+          return res.status(404).json({ success: false, error: 'Task not found' });
+        }
+
+        // Update assigned users if provided
+        if (Array.isArray(assigned_to)) {
+          const deleteQuery = `DELETE FROM taskassignments WHERE task_id = ?`;
+          connection.query(deleteQuery, [taskId], (delErr) => {
+            if (delErr) {
+              logger.error(`Error clearing task assignments: ${delErr.message}`);
+            } else if (assigned_to.length > 0) {
+              const insertQuery = `INSERT INTO taskassignments (task_id, user_id) VALUES ?`;
+              const values = assigned_to.map((userId) => [taskId, userId]);
+              connection.query(insertQuery, [values], (insErr) => {
+                if (insErr) {
+                  logger.error(`Error assigning users: ${insErr.message}`);
+                }
+              });
+            }
+          });
+        }
+
+        connection.release();
+        logger.info(`Task updated successfully: taskId=${taskId}`);
+        return res.status(200).json({
+          success: true,
+          message: 'Task updated successfully',
+          data: { taskId },
+        });
+      });
+    });
+  } catch (error) {
+    logger.error(`Unexpected error updating task: taskId=${taskId}, error=${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: 'Unexpected server error',
+      details: error.message,
+    });
+  }
+});
+
+// DELETE /api/projects/tasks/:id - Delete task
+router.delete('/:id', requireRole(['Admin','Manager']), (req, res) => {
+  const { id: taskId } = req.params;
+
+  logger.info(`[DELETE /tasks/:id] Deleting task: taskId=${taskId}`);
+
+  db.getConnection((err, connection) => {
+    if (err) {
+      console.error('DB connection error on delete:', err);
+      return res.status(500).json({ success: false, error: 'DB connection error' });
+    }
+
+    connection.beginTransaction((err) => {
+      if (err) {
+        connection.release();
+        console.error('Error starting transaction for delete:', err);
+        return res.status(500).json({ success: false, error: 'Transaction error' });
+      }
+
+      const tasksToRun = [
+        { sql: 'DELETE FROM taskassignments WHERE task_id = ?', params: [taskId] },
+        { sql: 'DELETE FROM task_assignments WHERE task_id = ?', params: [taskId] },
+        { sql: 'DELETE FROM subtasks WHERE task_id = ?', params: [taskId] },
+        { sql: 'DELETE FROM task_hours WHERE task_id = ?', params: [taskId] },
+        { sql: 'DELETE FROM task_activities WHERE task_id = ?', params: [taskId] },
+        { sql: 'DELETE FROM tasks WHERE id = ?', params: [taskId] },
+      ];
+
+      const runStep = (idx) => {
+        if (idx >= tasksToRun.length) {
+          connection.commit((err) => {
+            if (err) {
+              return connection.rollback(() => {
+                connection.release();
+                console.error('Error committing delete transaction:', err);
+                return res.status(500).json({ success: false, error: 'Commit error' });
+              });
+            }
+            connection.release();
+            logger.info(`Task deleted successfully: taskId=${taskId}`);
+            return res.status(200).json({ success: true, message: 'Task deleted successfully' });
+          });
+          return;
+        }
+
+        const step = tasksToRun[idx];
+        connection.query(step.sql, step.params, (qErr, qRes) => {
+          if (qErr) {
+            return connection.rollback(() => {
+              connection.release();
+              console.error('Error during delete step:', qErr);
+              return res.status(500).json({ success: false, error: 'Delete failed', details: qErr.message });
+            });
+          }
+          runStep(idx + 1);
+        });
+      };
+
+      runStep(0);
+    });
+  });
+});
+
 router.get("/taskdropdownfortaskHrs", async (req, res) => {
   try {
     const userId = req.query.user_id;
