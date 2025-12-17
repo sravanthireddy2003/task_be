@@ -234,6 +234,21 @@ router.post('/', requireRole('Admin'), async (req, res) => {
           if (newUserId) {
             try { await q('INSERT INTO client_viewers (client_id, user_id, created_at) VALUES (?, ?, NOW())', [clientId, newUserId]); } catch (e) {}
 
+            // If clientss.user_id column exists, set it to this new user for primary contact
+            try {
+              if (await hasColumn('clientss', 'user_id')) {
+                // Only set when primary contact or when client.user_id is empty
+                if (c.is_primary) {
+                  await q('UPDATE clientss SET user_id = ? WHERE id = ?', [newUserId, clientId]).catch(()=>{});
+                } else {
+                  // attempt to set if currently null
+                  await q('UPDATE clientss SET user_id = COALESCE(user_id, ?) WHERE id = ?', [newUserId, clientId]).catch(()=>{});
+                }
+              }
+            } catch (e) {
+              logger.debug('Failed updating clientss.user_id: ' + (e && e.message));
+            }
+
             // send credentials email
             try {
               const setupLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/auth/setup?uid=${publicId}`;
@@ -339,6 +354,15 @@ if ((createViewer || enableClientPortal) && (primaryContactEmail || email)) {
       // ignore mapping errors
     }
 
+    // set clientss.user_id to this created portal user when applicable
+    try {
+      if (await hasColumn('clientss', 'user_id')) {
+        await q('UPDATE clientss SET user_id = ? WHERE id = ?', [newUserId, clientId]).catch(()=>{});
+      }
+    } catch (e) {
+      logger.debug('Failed to set clientss.user_id for portal user: ' + (e && e.message));
+    }
+
     // send credentials email using welcomeTemplate
     const setupLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/auth/setup?uid=${publicId}`;
     const userTemplate = emailService.welcomeTemplate({
@@ -362,31 +386,49 @@ if ((createViewer || enableClientPortal) && (primaryContactEmail || email)) {
 }
  
 // 2. CLIENT WELCOME EMAIL (Always sent if email exists)
+let clientCredentials = null;
 if (primaryContactEmail || email) {
   const clientEmail = primaryContactEmail || email;
   const clientPortalLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/client-portal/${ref}`;
- 
-  // ✅ CLIENT WELCOME EMAIL (Different role/title)
-  // generate a temporary password for the client portal and include it in the welcome email
-  const clientTempPassword = crypto.randomBytes(6).toString('hex');
+
+  // Ensure a `users` row exists for the client email. If missing, create one and persist temp password.
+  try {
+    const existing = await q('SELECT _id FROM users WHERE email = ? LIMIT 1', [clientEmail]).catch(() => []);
+    if (!existing || existing.length === 0) {
+      const bcrypt = require('bcryptjs');
+      const clientTempPassword = crypto.randomBytes(6).toString('hex');
+      const hashed = await new Promise((resolve, reject) => bcrypt.hash(clientTempPassword, 10, (err, hash) => (err ? reject(err) : resolve(hash))));
+      const publicIdForClient = crypto.randomBytes(8).toString('hex');
+      const displayNameForClient = primaryContactName || name || `Client ${ref}`;
+
+      const ins = await q(`INSERT INTO users (public_id, name, email, password, role, isActive, createdAt) VALUES (?, ?, ?, ?, ?, ?, NOW())`, [publicIdForClient, displayNameForClient, clientEmail, hashed, 'Client', 1]).catch((e) => { throw e; });
+      const newUid = ins && ins.insertId ? ins.insertId : null;
+      if (newUid) {
+        // map to client_viewers and set clientss.user_id when available
+        try { await q('INSERT INTO client_viewers (client_id, user_id, created_at) VALUES (?, ?, NOW())', [clientId, newUid]).catch(()=>{}); } catch (e) {}
+        try { if (await hasColumn('clientss', 'user_id')) await q('UPDATE clientss SET user_id = ? WHERE id = ?', [newUid, clientId]).catch(()=>{}); } catch (e) { logger.debug('Failed setting clientss.user_id for client email user: ' + (e && e.message)); }
+        clientCredentials = { email: clientEmail, tempPassword: clientTempPassword, publicId: publicIdForClient, userId: newUid };
+      }
+    }
+  } catch (e) {
+    logger.debug('Failed ensuring client user exists: ' + (e && e.message));
+  }
+
+  // Generate/send welcome email (include temp password if we created one)
+  const clientTempPasswordToUse = clientCredentials ? clientCredentials.tempPassword : null;
   const clientTemplate = emailService.welcomeTemplate({
     name: primaryContactName || name,
     email: clientEmail,
     role: 'Client',
     title: `Client - ${company}`,
-    tempPassword: clientTempPassword,
+    tempPassword: clientTempPasswordToUse,
     createdBy: 'System Admin',
     createdAt: new Date(),
     setupLink: clientPortalLink
   });
- 
+
   try {
-    await emailService.sendEmail({
-      to: clientEmail,
-      subject: clientTemplate.subject,
-      text: clientTemplate.text,
-      html: clientTemplate.html
-    });
+    await emailService.sendEmail({ to: clientEmail, subject: clientTemplate.subject, text: clientTemplate.text, html: clientTemplate.html });
     logger.info('✅ Client welcome sent:', clientEmail);
   } catch (e) {
     logger.warn('Client welcome failed:', e.message);
@@ -402,7 +444,8 @@ if (primaryContactEmail || email) {
     return res.status(201).json({
       success: true,
       data: { id: clientId, ref, name, company, documents: attachedDocuments },
-      viewer: viewerInfo
+      viewer: viewerInfo,
+      clientCredentials: clientCredentials || null
     });
  
   } catch (e) {
@@ -613,6 +656,14 @@ router.post('/:id/create-viewer', requireRole('Admin'), async (req, res) => {
     const newUserId = userRes && userRes.insertId ? userRes.insertId : null;
     if (newUserId) {
       try { await q('INSERT INTO client_viewers (client_id, user_id, created_at) VALUES (?, ?, NOW())', [id, newUserId]); } catch (e) { logger.debug('Failed creating client_viewers mapping: ' + e.message); }
+      // Update clientss.user_id to point to the created viewer (if column exists)
+      try {
+        if (await hasColumn('clientss', 'user_id')) {
+          await q('UPDATE clientss SET user_id = ? WHERE id = ?', [newUserId, id]).catch(()=>{});
+        }
+      } catch (e) {
+        logger.debug('Failed to update clientss.user_id on create-viewer: ' + (e && e.message));
+      }
     }
     try { emailService.sendCredentials(email, name || `Client Viewer`, publicId, tempPassword); } catch (e) { logger.warn('Failed sending client viewer credentials: ' + e.message); }
     await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'create-viewer', JSON.stringify({ userId: newUserId, publicId })]).catch(()=>{});

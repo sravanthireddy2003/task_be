@@ -10,17 +10,18 @@ const SubtasksRouter = require(__root + 'controller/Subtasks');
 // Ensure authentication on all routes
 router.use(requireAuth);
  
-// ==================== PROJECT ROUTES ====================
-// Mount Projects router at root
-router.use('/', ProjectsRouter);
- 
+// Mount more specific sub-routers first so they are not captured by Projects' dynamic routes
 // ==================== TASK ROUTES ====================
 // Mount Tasks router at /tasks
 router.use('/tasks', TasksRouter);
- 
+
 // ==================== SUBTASK ROUTES ====================
 // Mount Subtasks router at /subtasks
 router.use('/subtasks', SubtasksRouter);
+
+// ==================== PROJECT ROUTES ====================
+// Mount Projects router at root
+router.use('/', ProjectsRouter);
  
 module.exports = router;
  

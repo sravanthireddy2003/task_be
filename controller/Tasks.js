@@ -75,14 +75,19 @@ async function createJsonHandler(req, res) {
         return res.status(500).send("Database connection error");
       }
 
-      // resolve client_id from projectId or projectPublicId when missing
+      // resolve client_id and project details from projectId or projectPublicId when missing
+      let finalProjectId = projectId || null;
+      let finalProjectPublicId = projectPublicId || null;
+      
       const resolveClientId = (cb) => {
         if (finalClientId) return cb(null, finalClientId);
         if (!projectId && !projectPublicId) return cb(new Error('missing_client_and_project'));
-        const q = `SELECT client_id FROM projects WHERE id = ? OR public_id = ? LIMIT 1`;
+        const q = `SELECT id, public_id, client_id FROM projects WHERE id = ? OR public_id = ? LIMIT 1`;
         connection.query(q, [projectId || null, projectPublicId || null], (qErr, rows) => {
           if (qErr) return cb(qErr);
           if (!rows || rows.length === 0) return cb(new Error('project_not_found'));
+          finalProjectId = rows[0].id;
+          finalProjectPublicId = rows[0].public_id;
           return cb(null, rows[0].client_id);
         });
       };
@@ -151,10 +156,10 @@ async function createJsonHandler(req, res) {
                   });
                 }
 
-                continueTaskCreation(req, connection, { ...req.body, assigned_to: finalAssigned, stage: normalizedStage, taskDate: adjustedTaskDate.toISOString(), time_alloted: finalTimeAlloted, client_id: finalClientId }, createdAt, updatedAt, "HIGH", res);
+                continueTaskCreation(req, connection, { ...req.body, assigned_to: finalAssigned, stage: normalizedStage, taskDate: adjustedTaskDate.toISOString(), time_alloted: finalTimeAlloted, client_id: finalClientId, projectId: finalProjectId, projectPublicId: finalProjectPublicId }, createdAt, updatedAt, "HIGH", res);
               });
             } else {
-              continueTaskCreation(req, connection, { ...req.body, assigned_to: finalAssigned, stage: normalizedStage, taskDate: adjustedTaskDate, time_alloted: finalTimeAlloted, client_id: finalClientId }, createdAt, updatedAt, finalPriority, res);
+              continueTaskCreation(req, connection, { ...req.body, assigned_to: finalAssigned, stage: normalizedStage, taskDate: adjustedTaskDate, time_alloted: finalTimeAlloted, client_id: finalClientId, projectId: finalProjectId, projectPublicId: finalProjectPublicId }, createdAt, updatedAt, finalPriority, res);
             }
           });
         });
@@ -186,28 +191,35 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
     status,
   } = body;
 
-  const insertTaskQuery = `
-    INSERT INTO tasks (title, description, stage, taskDate, priority, createdAt, updatedAt, time_alloted, estimated_hours, status, client_id, project_id, project_public_id) 
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  // Build INSERT dynamically: only include project reference columns if they exist
+  const checkColumn = (col) => new Promise((resolve) => {
+    connection.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tasks' AND COLUMN_NAME = ?", [col], (err, rows) => {
+      if (err) return resolve(false);
+      return resolve(Array.isArray(rows) && rows.length > 0);
+    });
+  });
 
-  connection.query(
-    insertTaskQuery,
-    [
-      title,
-      description,
-      stage,
-      taskDate,
-      finalPriority,
-      createdAt,
-      updatedAt,
-      time_alloted,
-      estimated_hours || time_alloted || null,
-      status || null,
-      client_id,
-      projectId || null,
-      projectPublicId || null,
-    ],
-    (err, result) => {
+  const projectIdColExists = await checkColumn('project_id');
+  const projectPublicColExists = await checkColumn('project_public_id');
+
+  const cols = ['title', 'description', 'stage', 'taskDate', 'priority', 'createdAt', 'updatedAt', 'time_alloted', 'estimated_hours', 'status', 'client_id'];
+  const placeholders = cols.map(() => '?');
+  const values = [title, description, stage, taskDate, finalPriority, createdAt, updatedAt, time_alloted, estimated_hours || time_alloted || null, status || null, client_id];
+
+  if (projectIdColExists) {
+    cols.push('project_id');
+    placeholders.push('?');
+    values.push(projectId || null);
+  }
+  if (projectPublicColExists) {
+    cols.push('project_public_id');
+    placeholders.push('?');
+    values.push(projectPublicId || null);
+  }
+
+  const insertTaskQuery = `INSERT INTO tasks (${cols.join(', ')}) VALUES (${placeholders.join(', ')})`;
+
+  connection.query(insertTaskQuery, values, (err, result) => {
       if (err) {
         return connection.rollback(() => {
           connection.release();
@@ -373,6 +385,161 @@ router.get("/taskdropdown", async (req, res) => {
   } catch (error) {
     console.error("Error fetching tasks:", error);
     res.status(500).json({ error: "Failed to fetch tasks" });
+  }
+});
+
+// GET /api/projects/tasks?project_id=123 or ?projectPublicId=abc
+// Returns tasks for the specified project (uses auth user from middleware)
+router.get('/', async (req, res) => {
+  try {
+    const user = req.user;
+    const projectParam = req.query.project_id || req.query.projectId || req.query.projectPublicId || req.body && (req.body.project_id || req.body.project_public_id || req.body.projectPublicId);
+    if (!projectParam) return res.status(400).json({ success: false, error: 'project_id or projectPublicId query parameter required' });
+
+    // helper: check if a column exists in the current database
+    const hasColumn = (table, column) => new Promise((resolve) => {
+      db.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?", [table, column], (err, rows) => {
+        if (err) return resolve(false);
+        return resolve(Array.isArray(rows) && rows.length > 0);
+      });
+    });
+
+    const tasksHasProjectId = await hasColumn('tasks', 'project_id');
+    const tasksHasProjectPublicId = await hasColumn('tasks', 'project_public_id');
+
+    // If caller passed a public id (non-numeric), resolve it to internal project id first
+    let resolvedProjectId = projectParam;
+    if (!/^\d+$/.test(String(projectParam))) {
+      try {
+        const projRows = await new Promise((resolve, reject) => db.query('SELECT id, public_id FROM projects WHERE public_id = ? LIMIT 1', [projectParam], (err, r) => err ? reject(err) : resolve(r)));
+        if (!projRows || projRows.length === 0) return res.status(404).json({ success: false, error: 'Project not found' });
+        resolvedProjectId = projRows[0].id;
+      } catch (err) {
+        logger.error('Error resolving project public_id: ' + (err && err.message));
+        return res.status(500).json({ success: false, error: 'Failed resolving project id' });
+      }
+    }
+
+    // Build SQL depending on which project link column exists on tasks
+    let sql;
+    let params = [];
+
+    if (tasksHasProjectId) {
+      sql = `
+        SELECT
+          t.id AS task_internal_id,
+          t.public_id AS task_id,
+          t.title,
+          t.description,
+          t.stage,
+          t.taskDate,
+          t.priority,
+          t.time_alloted,
+          t.estimated_hours,
+          t.status,
+          t.createdAt,
+          t.updatedAt,
+          c.id AS client_id,
+          c.name AS client_name,
+          GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
+          GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
+          GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names
+        FROM tasks t
+        LEFT JOIN clientss c ON t.client_id = c.id
+        LEFT JOIN taskassignments ta ON ta.task_id = t.id
+        LEFT JOIN users u ON u._id = ta.user_id
+        WHERE t.project_id = ?
+        GROUP BY t.id
+        ORDER BY t.createdAt DESC
+      `;
+      params = [resolvedProjectId];
+    } else if (tasksHasProjectPublicId) {
+      // If tasks stores project_public_id, determine the public id to search for
+      let projectPublicIdToUse = projectParam;
+      if (/^\d+$/.test(String(projectParam))) {
+        // caller passed numeric project id; fetch its public_id
+        try {
+          const r = await new Promise((resolve, reject) => db.query('SELECT public_id FROM projects WHERE id = ? LIMIT 1', [projectParam], (err, rr) => err ? reject(err) : resolve(rr)));
+          if (!r || r.length === 0) return res.status(404).json({ success: false, error: 'Project not found' });
+          projectPublicIdToUse = r[0].public_id;
+        } catch (err) {
+          logger.error('Error resolving project id->public_id: ' + (err && err.message));
+          return res.status(500).json({ success: false, error: 'Failed resolving project public id' });
+        }
+      }
+
+      sql = `
+        SELECT
+          t.id AS task_internal_id,
+          t.public_id AS task_id,
+          t.title,
+          t.description,
+          t.stage,
+          t.taskDate,
+          t.priority,
+          t.time_alloted,
+          t.estimated_hours,
+          t.status,
+          t.createdAt,
+          t.updatedAt,
+          c.id AS client_id,
+          c.name AS client_name,
+          GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
+          GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
+          GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names
+        FROM tasks t
+        LEFT JOIN clientss c ON t.client_id = c.id
+        LEFT JOIN taskassignments ta ON ta.task_id = t.id
+        LEFT JOIN users u ON u._id = ta.user_id
+        WHERE t.project_public_id = ?
+        GROUP BY t.id
+        ORDER BY t.createdAt DESC
+      `;
+      params = [projectPublicIdToUse];
+    } else {
+      // No project link on tasks table — cannot filter by project
+      return res.status(500).json({ success: false, error: 'Cannot filter tasks by project: tasks table has no project_id or project_public_id column' });
+    }
+
+    db.query(sql, params, (err, rows) => {
+      if (err) {
+        logger.error('Fetch project tasks error: ' + err.message);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+      const tasks = (rows || []).map(r => {
+        const assignedIds = r.assigned_user_ids ? String(r.assigned_user_ids).split(',') : [];
+        const assignedPublic = r.assigned_user_public_ids ? String(r.assigned_user_public_ids).split(',') : [];
+        const assignedNames = r.assigned_user_names ? String(r.assigned_user_names).split(',') : [];
+
+        const assignedUsers = assignedIds.map((uid, i) => ({
+          id: assignedPublic[i] || uid,
+          internalId: String(uid),
+          name: assignedNames[i] || null
+        }));
+
+        return {
+          id: r.task_id ? String(r.task_id) : String(r.task_internal_id),
+          title: r.title || null,
+          description: r.description || null,
+          stage: r.stage || null,
+          taskDate: r.taskDate ? new Date(r.taskDate).toISOString() : null,
+          priority: r.priority || null,
+          timeAlloted: r.time_alloted != null ? Number(r.time_alloted) : null,
+          estimatedHours: r.estimated_hours != null ? Number(r.estimated_hours) : (r.time_alloted != null ? Number(r.time_alloted) : null),
+          status: r.status || null,
+          createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null,
+          updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
+          client: r.client_id ? { id: r.client_id, name: r.client_name } : null,
+          assignedUsers
+        };
+      });
+
+      return res.json({ success: true, data: tasks, meta: { count: tasks.length } });
+    });
+  } catch (e) {
+    logger.error('Error in project tasks endpoint: ' + (e && e.message));
+    return res.status(500).json({ success: false, error: e.message });
   }
 });
 
