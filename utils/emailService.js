@@ -446,9 +446,7 @@ async function sendProjectNotifications({
  
   return results;
 }
-// ==================== TASK ASSIGNMENT EMAILS ====================
- 
-// TASK ASSIGNMENT TO EMPLOYEE Template
+
 function taskAssignedToEmployeeTemplate({
   taskTitle,
   taskId,
@@ -459,69 +457,91 @@ function taskAssignedToEmployeeTemplate({
   projectPublicId,
   assignedBy,
   taskLink,
-  employeeName
+  employeeName,
 }) {
   return {
-    subject: `New Task Assigned: ${taskTitle}`,
-    text: `
-Dear ${employeeName},
- 
-You have been assigned a new task.
- 
-Task Details:
-Title: ${taskTitle}
-ID: ${taskId}
-Priority: ${priority}
-Due Date: ${taskDate || 'TBD'}
-Project: ${projectName || 'N/A'}
-Assigned by: ${assignedBy}
- 
-${description ? `Description: ${description}` : ''}
- 
-Access the task: ${taskLink}
- 
-Thank you,
-${COMPANY_NAME}
-    `.trim(),
+    subject: `New Task Assigned: ${taskTitle} (Priority: ${priority})`,
     html: `
-<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"></head>
-<body style="margin:0; padding:20px; font-family:Arial,sans-serif; line-height:1.6; color:#333;">
-  <div style="max-width:600px; margin:0 auto; background:#fff; padding:30px; border:1px solid #ddd; border-radius:5px;">
-    <h2 style="color:#333; margin-top:0;">New Task Assignment</h2>
-   
-    <p>Dear <strong>${employeeName}</strong>,</p>
-   
-    <p>You have been assigned a new task:</p>
-   
-    <div style="background:#f8f9fa; padding:20px; border-radius:5px; margin:20px 0;">
-      <h3 style="margin-top:0; color:#495057;">Task Details</h3>
-      <p><strong>Title:</strong> ${taskTitle}</p>
-      <p><strong>Task ID:</strong> <strong>#${taskId}</strong></p>
-      <p><strong>Priority:</strong> <span style="color:${priority === 'HIGH' ? '#dc3545' : priority === 'MEDIUM' ? '#ffc107' : '#28a745'}; font-weight:bold;">${priority}</span></p>
-      <p><strong>Due Date:</strong> ${taskDate || 'TBD'}</p>
-      ${projectName ? `<p><strong>Project:</strong> ${projectName}</p>` : ''}
-      <p><strong>Assigned by:</strong> ${assignedBy}</p>
-      ${description ? `<p><strong>Description:</strong><br>${description}</p>` : ''}
-    </div>
-   
-    <p style="text-align:center; margin:30px 0;">
-      <a href="${taskLink}" style="background:#007bff; color:white; padding:12px 24px; text-decoration:none; border-radius:4px; font-weight:bold;">View Task Details</a>
-    </p>
-   
-    <hr style="margin:30px 0;">
-    <p>Thank you,<br><strong>${COMPANY_NAME}</strong></p>
-  </div>
-</body>
-</html>
-    `
+      <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px;">
+        <p>Dear <strong>${employeeName}</strong>,</p>
+
+        <p>
+          You have been assigned a new task. Please review the details below:
+        </p>
+
+        <table style="border-collapse: collapse; width: 100%; margin-top: 12px;">
+          <tr>
+            <td style="padding: 8px; font-weight: bold;">Task Title</td>
+            <td style="padding: 8px;">${taskTitle}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px; font-weight: bold;">Task ID</td>
+            <td style="padding: 8px;">#${taskId}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px; font-weight: bold;">Priority</td>
+            <td style="padding: 8px;">${priority}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px; font-weight: bold;">Due Date</td>
+            <td style="padding: 8px;">${taskDate}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px; font-weight: bold;">Assigned By</td>
+            <td style="padding: 8px;">${assignedBy}</td>
+          </tr>
+          ${
+            projectName
+              ? `
+          <tr>
+            <td style="padding: 8px; font-weight: bold;">Project</td>
+            <td style="padding: 8px;">${projectName}</td>
+          </tr>`
+              : ''
+          }
+        </table>
+
+        ${
+          description
+            ? `
+          <p style="margin-top: 16px;">
+            <strong>Description:</strong><br />
+            ${description}
+          </p>`
+            : ''
+        }
+
+        <p style="margin-top: 20px;">
+          <a href="${taskLink}"
+             style="
+               background-color: #ff8c00;
+               color: #ffffff;
+               padding: 10px 16px;
+               text-decoration: none;
+               border-radius: 4px;
+               display: inline-block;
+             ">
+            View Task Details
+          </a>
+        </p>
+
+        <p style="margin-top: 20px;">
+          If you have any questions or need clarification, please contact your manager or the support team.
+        </p>
+
+        <p style="margin-top: 24px;">
+          Best regards,<br />
+          <strong>Task Management System</strong>
+        </p>
+      </div>
+    `,
   };
 }
- 
-// Send task assignment emails to all assignees
+
+module.exports = taskAssignedToEmployeeTemplate;
+
 async function sendTaskAssignmentEmails({
-  finalAssigned, // array of user public_ids
+  finalAssigned = [],
   taskTitle,
   taskId,
   priority,
@@ -531,43 +551,104 @@ async function sendTaskAssignmentEmails({
   projectPublicId,
   assignedBy,
   taskLink,
-  db // database connection
+  connection,
 }) {
   const results = {};
- 
-  // Get user details for all assignees
-  const userDetailsPromises = finalAssigned.map(async (userPublicId) => {
-    const [users] = await db.promise().query('SELECT name, email FROM users WHERE public_id = ? LIMIT 1', [userPublicId]);
-    return users[0] || null;
-  });
- 
-  const assignees = await Promise.all(userDetailsPromises);
- 
-  // Send email to each assignee
-  for (let i = 0; i < assignees.length; i++) {
-    const assignee = assignees[i];
-    if (assignee && assignee.email) {
-      const template = taskAssignedToEmployeeTemplate({
-        taskTitle,
-        taskId,
-        priority,
-        taskDate,
-        description,
-        projectName,
-        projectPublicId,
-        assignedBy,
-        taskLink,
-        employeeName: assignee.name
-      });
-     
-      results[assignee.email] = await sendEmail({
-        to: assignee.email,
-        ...template
-      });
+
+  try {
+    // Basic validation
+    if (!connection) {
+      console.warn('⚠️ Database connection not provided');
+      return results;
     }
+
+    if (!Array.isArray(finalAssigned) || finalAssigned.length === 0) {
+      console.info('ℹ️ No assigned users to notify');
+      return results;
+    }
+
+    // Keep only valid public_ids
+    const userPublicIds = finalAssigned.filter(
+      id => typeof id === 'string' && id.trim().length > 0
+    );
+
+    if (userPublicIds.length === 0) {
+      console.info('ℹ️ No valid user public_ids provided');
+      return results;
+    }
+
+    /**
+     * Fetch user details
+     */
+    const users = await new Promise((resolve, reject) => {
+      const sql = `
+        SELECT name, email
+        FROM users
+        WHERE public_id IN (?)
+      `;
+
+      connection.query(sql, [userPublicIds], (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      });
+    });
+
+    if (users.length === 0) {
+      console.info('ℹ️ No matching users found for email notification');
+      return results;
+    }
+
+    console.log(`📧 Preparing to send ${users.length} task assignment emails`);
+
+    /**
+     * Send emails
+     */
+    for (const user of users) {
+      if (!user.email) continue;
+
+      try {
+        const emailTemplate = taskAssignedToEmployeeTemplate({
+          taskTitle,
+          taskId,
+          priority,
+          taskDate,
+          description,
+          projectName,
+          projectPublicId,
+          assignedBy,
+          taskLink,
+          employeeName: user.name || 'Team Member',
+        });
+
+        const mailResult = await sendEmail({
+          to: user.email,
+          ...emailTemplate,
+        });
+
+        results[user.email] = {
+          sent: true,
+          messageId: mailResult?.messageId || null,
+        };
+
+        console.log(`✅ Email sent to ${user.name} (${user.email})`);
+      } catch (mailError) {
+        results[user.email] = {
+          sent: false,
+          error: mailError.message,
+        };
+
+        console.error(
+          `❌ Failed to send email to ${user.email}:`,
+          mailError.message
+        );
+      }
+    }
+
+    return results;
+  } catch (error) {
+    console.error('❌ Task assignment email process failed:', error.message);
+    return results;
   }
- 
-  return results;
 }
  
 module.exports = {

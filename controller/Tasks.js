@@ -338,12 +338,16 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
 
   const insertTaskQuery = `INSERT INTO tasks (${cols.join(', ')}) VALUES (${placeholders.join(', ')})`;
 
-  connection.query(insertTaskQuery, values, (err, result) => {
+  // Helper function to handle the entire flow with proper closure
+  const executeTaskCreation = (resolve, reject) => {
+    let resolvedUserIds = []; // Declare at function scope
+
+    connection.query(insertTaskQuery, values, (err, result) => {
       if (err) {
         return connection.rollback(() => {
           connection.release();
           console.error("Error inserting task:", err);
-          return res.status(500).json({ error: "Error inserting task" });
+          reject(new Error("Error inserting task"));
         });
       }
 
@@ -353,18 +357,14 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
         return connection.rollback(() => {
           connection.release();
           console.error("Invalid task ID or assigned_to array");
-          return res.status(500).json({ error: "Invalid task assignment data" });
+          reject(new Error("Invalid task assignment data"));
         });
       }
 
-      // Resolve assigned user identifiers (frontend may send public_id strings)
       const rawAssigned = Array.isArray(assigned_to) ? assigned_to.slice() : [];
-
-      // Separate numeric IDs and non-numeric (assumed public_id)
       const numericIds = rawAssigned.filter(v => String(v).match(/^\d+$/)).map(v => Number(v));
       const publicIds = rawAssigned.filter(v => !String(v).match(/^\d+$/));
 
-      // Build query to fetch internal _id values for provided identifiers
       const resolveQueries = [];
       const resolveParams = [];
       if (publicIds.length > 0) {
@@ -376,25 +376,24 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
         resolveParams.push([numericIds]);
       }
 
-      let resolvedUserIds = [];
       if (resolveQueries.length === 0) {
         return connection.rollback(() => {
           connection.release();
-          console.error("No assigned users provided or invalid format");
-          return res.status(400).json({ error: "No assigned users provided or invalid format" });
+          reject(new Error("No assigned users provided or invalid format"));
         });
       }
 
-      // Run resolve queries sequentially and collect internal IDs
+      // Sequential resolver with proper variable scope
       const runResolveQuery = (idx) => {
         if (idx >= resolveQueries.length) {
-          // dedupe
+          // dedupe resolvedUserIds
           resolvedUserIds = Array.from(new Set(resolvedUserIds));
+          
           if (resolvedUserIds.length === 0) {
             return connection.rollback(() => {
               connection.release();
               console.error("Assigned users not found in users table");
-              return res.status(400).json({ error: "Assigned users not found" });
+              reject(new Error("Assigned users not found"));
             });
           }
 
@@ -402,66 +401,60 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
           const insertTaskAssignmentsQuery = `INSERT INTO taskassignments (task_id, user_id) VALUES ${taskAssignments.map(() => "(?, ?)").join(", ")}`;
           const flattenedValues = taskAssignments.flat();
 
-          connection.query(
-            insertTaskAssignmentsQuery,
-            flattenedValues,
-            (err, result) => {
+          connection.query(insertTaskAssignmentsQuery, flattenedValues, (err) => {
+            if (err) {
+              return connection.rollback(() => {
+                connection.release();
+                console.error("Error inserting task assignments:", err);
+                reject(new Error("Error inserting task assignments"));
+              });
+            }
+
+            // Send emails asynchronously without blocking commit
+            const assignedBy = (req.user && req.user.name) || 'System';
+            const link = `${process.env.FRONTEND_URL || process.env.BASE_URL || 'http://localhost:3000'}/tasks/${taskId}`;
+            const projectName = null;
+            const priority = finalPriority;
+            const taskDateVal = taskDate || null;
+            const descriptionVal = description || null;
+            
+            const sendEmails = require(__root + 'utils/emailService').sendTaskAssignmentEmails;
+            
+            // Fire and forget emails (don't await to avoid blocking)
+            sendEmails({
+              finalAssigned: rawAssigned,
+              taskTitle: title,
+              taskId,
+              priority,
+              taskDate: taskDateVal,
+              description: descriptionVal,
+              projectName,
+              projectPublicId: projectPublicId || null,
+              assignedBy,
+              taskLink: link,
+              connection
+            }).catch(emailError => {
+              console.error("Email sending failed:", emailError);
+            });
+
+            // Commit transaction regardless of email success
+            connection.commit((err) => {
               if (err) {
                 return connection.rollback(() => {
                   connection.release();
-                  console.error("Error inserting task assignments:", err);
-                  return res.status(500).json({ error: "Error inserting task assignments" });
+                  console.error("Error committing transaction:", err);
+                  reject(new Error("Error committing transaction"));
                 });
               }
 
-              const userEmailsQuery = `SELECT email, name FROM users WHERE _id IN (?)`;
-
-              connection.query(
-                userEmailsQuery,
-                [resolvedUserIds],
-                async (err, userResults) => {
-                  if (err) {
-                    return connection.rollback(() => {
-                      connection.release();
-                      console.error("Error fetching user emails:", err);
-                      return res.status(500).json({ error: "Error fetching user emails" });
-                    });
-                  }
-
-                  const emails = userResults.map((user) => user.email);
-                  const userNames = userResults.map((user) => user.name);
-
-                  try {
-                    const emailService = require(__root + 'utils/emailService');
-                    const assignedBy = (req.user && req.user.name) || 'System';
-                    const link = `${process.env.FRONTEND_URL || process.env.BASE_URL || 'http://localhost:3000'}/tasks/${taskId}`;
-                    const tpl = emailService.taskAssignedTemplate({ taskTitle: title, assignedBy, link, assignedTo: emails.join(', ') });
-                    await emailService.sendEmail({ to: emails, subject: tpl.subject, text: tpl.text, html: tpl.html });
-                    console.log('Emails (task assigned) sent (or logged)');
-                  } catch (mailError) {
-                    console.error('Error sending emails:', mailError && mailError.message);
-                  }
-
-                  connection.commit((err) => {
-                    if (err) {
-                      return connection.rollback(() => {
-                        connection.release();
-                        console.error("Error committing transaction:", err);
-                        return res.status(500).json({ error: "Error committing transaction" });
-                      });
-                    }
-
-                    connection.release();
-                    return res.status(201).json({
-                      message: "Task created and email notifications sent successfully",
-                      taskId,
-                      assignedUsers: assigned_to,
-                    });
-                  });
-                }
-              );
-            }
-          );
+              connection.release();
+              resolve({
+                taskId,
+                message: "Task created successfully",
+                assignedUsers: assigned_to,
+              });
+            });
+          });
           return;
         }
 
@@ -470,20 +463,36 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
             return connection.rollback(() => {
               connection.release();
               console.error("Error resolving assigned users:", err);
-              return res.status(500).json({ error: "Error resolving assigned users" });
+              reject(new Error("Error resolving assigned users"));
             });
           }
           if (Array.isArray(rows) && rows.length > 0) {
-            for (const r of rows) resolvedUserIds.push(r._id);
+            for (const r of rows) {
+              resolvedUserIds.push(r._id);
+            }
           }
           runResolveQuery(idx + 1);
         });
       };
 
       runResolveQuery(0);
-    }
-  );
+    });
+  };
+
+  return new Promise((resolve, reject) => {
+    executeTaskCreation(resolve, reject);
+  })
+  .then((result) => {
+    res.status(201).json({
+      message: "Task created and assignments completed successfully",
+      ...result
+    });
+  })
+  .catch((error) => {
+    res.status(500).json({ error: error.message });
+  });
 }
+
 
 router.get("/taskdropdown", async (req, res) => {
   try {
