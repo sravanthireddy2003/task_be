@@ -337,7 +337,7 @@ if ((createViewer || enableClientPortal) && (primaryContactEmail || email)) {
       bcrypt.hash(tempPassword, 10, (err, hash) => (err ? reject(err) : resolve(hash)));
     });
 
-    const roleToInsert = enableClientPortal ? 'Client' : 'Client-Viewer';
+    const roleToInsert = enableClientPortal ? 'Client-Viewer' : 'Client-Viewer';
     const displayName = enableClientPortal ? (primaryContactName || name) : `${name} (Viewer)`;
 
     const insertUserSql = `
@@ -401,7 +401,7 @@ if (primaryContactEmail || email) {
       const publicIdForClient = crypto.randomBytes(8).toString('hex');
       const displayNameForClient = primaryContactName || name || `Client ${ref}`;
 
-      const ins = await q(`INSERT INTO users (public_id, name, email, password, role, isActive, createdAt) VALUES (?, ?, ?, ?, ?, ?, NOW())`, [publicIdForClient, displayNameForClient, clientEmail, hashed, 'Client', 1]).catch((e) => { throw e; });
+      const ins = await q(`INSERT INTO users (public_id, name, email, password, role, isActive, createdAt) VALUES (?, ?, ?, ?, ?, ?, NOW())`, [publicIdForClient, displayNameForClient, clientEmail, hashed, 'Client-Viewer', 1]).catch((e) => { throw e; });
       const newUid = ins && ins.insertId ? ins.insertId : null;
       if (newUid) {
         // map to client_viewers and set clientss.user_id when available
@@ -646,30 +646,90 @@ router.post('/:id/create-viewer', requireRole('Admin'), async (req, res) => {
   try {
     const id = req.params.id;
     const { email, name } = req.body;
-    if (!email) return res.status(400).json({ success: false, error: 'email required' });
-    // create user and mapping
+    
+    // DEBUG: Log incoming request
+    logger.info(`[CREATE-VIEWER] Request: id=${id}, email=${email}, name=${name}`);
+    
+    if (!email) {
+      logger.warn('[CREATE-VIEWER] Missing email');
+      return res.status(400).json({ success: false, error: 'email required' });
+    }
+
+    // Generate credentials
     const tempPassword = crypto.randomBytes(6).toString('hex');
-    const hashed = await new Promise((resH, rejH) => require('bcryptjs').hash(tempPassword, 10, (e, h) => e ? rejH(e) : resH(h)));
+    logger.info(`[CREATE-VIEWER] Generated tempPassword: ${tempPassword}`);
+    
+    const hashed = await new Promise((resH, rejH) => {
+      require('bcryptjs').hash(tempPassword, 10, (e, h) => e ? rejH(e) : resH(h));
+    });
+    logger.info('[CREATE-VIEWER] Password hashed successfully');
+
     const publicId = crypto.randomBytes(8).toString('hex');
+    logger.info(`[CREATE-VIEWER] Generated publicId: ${publicId}`);
+
+    // CRITICAL DEBUG: Role before insert
+    const roleToInsert = 'Client-Viewer';
+    logger.info(`[CREATE-VIEWER] Role TO INSERT: "${roleToInsert}" (type: ${typeof roleToInsert}, length: ${roleToInsert.length})`);
+
     const insertUserSql = 'INSERT INTO users (public_id, name, email, password, role, isActive, createdAt) VALUES (?, ?, ?, ?, ?, ?, NOW())';
-    const userRes = await q(insertUserSql, [publicId, name || `Viewer for ${id}`, email, hashed, 'Client-Viewer', 1]);
+    logger.info(`[CREATE-VIEWER] SQL: ${insertUserSql}`);
+    logger.info(`[CREATE-VIEWER] Params: [${publicId}, "${name || `Viewer for ${id}`}", "${email}", "${hashed?.substring(0,10)}...", "${roleToInsert}", 1]`);
+
+    const userRes = await q(insertUserSql, [publicId, name || `Viewer for ${id}`, email, hashed, roleToInsert, 1]);
     const newUserId = userRes && userRes.insertId ? userRes.insertId : null;
+    
+    logger.info(`[CREATE-VIEWER] Insert result: ${JSON.stringify(userRes)}`);
+    logger.info(`[CREATE-VIEWER] New user ID: ${newUserId}`);
+
     if (newUserId) {
-      try { await q('INSERT INTO client_viewers (client_id, user_id, created_at) VALUES (?, ?, NOW())', [id, newUserId]); } catch (e) { logger.debug('Failed creating client_viewers mapping: ' + e.message); }
-      // Update clientss.user_id to point to the created viewer (if column exists)
+      // DEBUG: Verify what was actually saved in DB
+      const verifyRole = await q('SELECT role, public_id FROM users WHERE id = ?', [newUserId]);
+      logger.info(`[CREATE-VIEWER] DB SAVED role: "${verifyRole[0]?.role}" (type: ${typeof verifyRole[0]?.role})`);
+      logger.info(`[CREATE-VIEWER] DB SAVED public_id: "${verifyRole[0]?.public_id}"`);
+
+      // Create mapping
+      try {
+        await q('INSERT INTO client_viewers (client_id, user_id, created_at) VALUES (?, ?, NOW())', [id, newUserId]);
+        logger.info(`[CREATE-VIEWER] client_viewers mapping created`);
+      } catch (e) {
+        logger.error(`[CREATE-VIEWER] Failed client_viewers mapping: ${e.message}`);
+      }
+
+      // Update clientss.user_id if column exists
       try {
         if (await hasColumn('clientss', 'user_id')) {
-          await q('UPDATE clientss SET user_id = ? WHERE id = ?', [newUserId, id]).catch(()=>{});
+          await q('UPDATE clientss SET user_id = ? WHERE id = ?', [newUserId, id]);
+          logger.info(`[CREATE-VIEWER] clientss.user_id updated to ${newUserId}`);
         }
       } catch (e) {
-        logger.debug('Failed to update clientss.user_id on create-viewer: ' + (e && e.message));
+        logger.error(`[CREATE-VIEWER] Failed clientss update: ${e.message}`);
+      }
+
+      // FORCE CORRECT ROLE if wrong (temporary fix)
+      if (verifyRole[0]?.role !== 'Client-Viewer') {
+        await q('UPDATE users SET role = "Client-Viewer" WHERE id = ?', [newUserId]);
+        logger.warn(`[CREATE-VIEWER] FORCE-UPDATED role from "${verifyRole[0]?.role}" to "Client-Viewer"`);
       }
     }
-    try { emailService.sendCredentials(email, name || `Client Viewer`, publicId, tempPassword); } catch (e) { logger.warn('Failed sending client viewer credentials: ' + e.message); }
-    await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'create-viewer', JSON.stringify({ userId: newUserId, publicId })]).catch(()=>{});
+
+    // Send email
+    try {
+      await emailService.sendCredentials(email, name || `Client Viewer`, publicId, tempPassword);
+      logger.info(`[CREATE-VIEWER] Credentials email sent to ${email}`);
+    } catch (e) {
+      logger.warn(`[CREATE-VIEWER] Email failed: ${e.message}`);
+    }
+
+    // Log activity
+    await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', 
+      [id, req.user?._id || null, 'create-viewer', JSON.stringify({ userId: newUserId, publicId })])
+      .catch(e => logger.error(`[CREATE-VIEWER] Activity log failed: ${e.message}`));
+
+    logger.info(`[CREATE-VIEWER] SUCCESS: ${JSON.stringify({ publicId, userId: newUserId })}`);
     return res.status(201).json({ success: true, data: { publicId, userId: newUserId } });
+
   } catch (e) {
-    logger.error('Error creating client viewer: ' + e.message);
+    logger.error(`[CREATE-VIEWER] FULL ERROR: ${e.stack || e.message}`);
     return res.status(500).json({ success: false, error: e.message });
   }
 });
