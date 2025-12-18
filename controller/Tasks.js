@@ -21,7 +21,126 @@ const dayjs = require('dayjs');
 
 // enforce tenant + auth for all task routes
 router.use(tenantMiddleware);
-router.use(requireAuth);
+// POST /api/projects/tasks/selected-details
+// Body: { "taskIds": [1,2,3] }
+// Returns tasks with assigned users, subtasks (checklist), activities, and total hours
+router.post('/selected-details', requireRole(['Admin','Manager','Employee']), async (req, res) => {
+  try {
+    const taskIds = req.body.taskIds || req.body.task_ids || [];
+    if (!Array.isArray(taskIds) || taskIds.length === 0) return res.status(400).json({ success: false, error: 'taskIds (array) required' });
+
+    const ids = taskIds.map(id => Number(id)).filter(Boolean);
+    if (ids.length === 0) return res.status(400).json({ success: false, error: 'No valid task IDs provided' });
+
+    const sql = `
+      SELECT
+        t.id AS task_internal_id,
+        t.public_id AS task_id,
+        t.title,
+        t.description,
+        t.stage,
+        t.taskDate,
+        t.priority,
+        t.time_alloted,
+        t.estimated_hours,
+        t.status,
+        t.createdAt,
+        t.updatedAt,
+        c.id AS client_id,
+        c.name AS client_name,
+        GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
+        GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
+        GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names
+      FROM tasks t
+      LEFT JOIN clientss c ON t.client_id = c.id
+      LEFT JOIN taskassignments ta ON ta.task_id = t.id
+      LEFT JOIN users u ON u._id = ta.user_id
+      WHERE t.id IN (?)
+      GROUP BY t.id
+      ORDER BY t.createdAt DESC
+    `;
+
+    db.query(sql, [ids], async (err, rows) => {
+      if (err) {
+        logger.error('selected-details fetch error: ' + (err && err.message));
+        return res.status(500).json({ success: false, error: err.message });
+      }
+
+      // fetch subtasks (checklist)
+      const subtasks = await new Promise((resolve, reject) => db.query(
+        'SELECT * FROM subtasks WHERE task_id IN (?)',
+        [ids], (e, r) => e ? reject(e) : resolve(r)
+      ));
+
+      // fetch activities (what employees added)
+      const activities = await new Promise((resolve, reject) => db.query(
+        `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt, u._id AS user_id, u.name AS user_name
+         FROM task_activities ta
+         LEFT JOIN users u ON ta.user_id = u._id
+         WHERE ta.task_id IN (?)
+         ORDER BY ta.createdAt DESC`,
+        [ids], (e, r) => e ? reject(e) : resolve(r)
+      ));
+
+      // fetch total hours per task
+      const hours = await new Promise((resolve, reject) => db.query(
+        'SELECT task_id, SUM(hours) AS total_hours FROM task_hours WHERE task_id IN (?) GROUP BY task_id',
+        [ids], (e, r) => e ? reject(e) : resolve(r)
+      ));
+
+      const subtasksMap = {};
+      (subtasks || []).forEach(s => {
+        const k = String(s.task_id);
+        if (!subtasksMap[k]) subtasksMap[k] = [];
+        subtasksMap[k].push({ id: s.id, title: s.title, description: s.description || null, dueDate: s.due_date ? new Date(s.due_date).toISOString() : null, tag: s.tag || null, createdAt: s.created_at ? new Date(s.created_at).toISOString() : null, updatedAt: s.updated_at ? new Date(s.updated_at).toISOString() : null });
+      });
+
+      const activitiesMap = {};
+      (activities || []).forEach(a => {
+        const k = String(a.task_id);
+        if (!activitiesMap[k]) activitiesMap[k] = [];
+        activitiesMap[k].push({ type: a.type, activity: a.activity, createdAt: a.createdAt ? new Date(a.createdAt).toISOString() : null, user: a.user_id ? { id: String(a.user_id), name: a.user_name } : null });
+      });
+
+      const hoursMap = {};
+      (hours || []).forEach(h => { hoursMap[String(h.task_id)] = Number(h.total_hours || 0); });
+
+      const tasks = (rows || []).map(r => {
+        const assignedIds = r.assigned_user_ids ? String(r.assigned_user_ids).split(',') : [];
+        const assignedPublic = r.assigned_user_public_ids ? String(r.assigned_user_public_ids).split(',') : [];
+        const assignedNames = r.assigned_user_names ? String(r.assigned_user_names).split(',') : [];
+
+        const assignedUsers = assignedIds.map((uid, i) => ({ id: assignedPublic[i] || uid, internalId: String(uid), name: assignedNames[i] || null }));
+
+        const key = String(r.task_internal_id || r.task_id);
+
+        return {
+          id: r.task_id ? String(r.task_id) : String(r.task_internal_id),
+          title: r.title || null,
+          description: r.description || null,
+          stage: r.stage || null,
+          taskDate: r.taskDate ? new Date(r.taskDate).toISOString() : null,
+          priority: r.priority || null,
+          timeAlloted: r.time_alloted != null ? Number(r.time_alloted) : null,
+          estimatedHours: r.estimated_hours != null ? Number(r.estimated_hours) : (r.time_alloted != null ? Number(r.time_alloted) : null),
+          status: r.status || null,
+          createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null,
+          updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
+          client: r.client_id ? { id: String(r.client_id), name: r.client_name } : null,
+          assignedUsers,
+          checklist: subtasksMap[key] || [],
+          activities: activitiesMap[key] || [],
+          totalHours: hoursMap[key] != null ? hoursMap[key] : 0
+        };
+      });
+
+      return res.json({ success: true, data: tasks, meta: { count: tasks.length } });
+    });
+  } catch (e) {
+    logger.error('Error in selected-details endpoint: ' + (e && e.message));
+    return res.status(500).json({ success: false, error: e && e.message });
+  }
+});
 
 async function createJsonHandler(req, res) {
   try {

@@ -5,7 +5,6 @@ const logger = require(__root + 'logger');
 const crypto = require('crypto');
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 require('dotenv').config();
- 
 router.use(requireAuth);
  
 function q(sql, params = []) {
@@ -23,9 +22,6 @@ async function hasColumn(table, column) {
   }
 }
  
-// ==================== CREATE PROJECT ====================
-// POST /api/projects
-// Admin / Project Manager creates a project with client and departments
 router.post('/', requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { projectName, description, clientPublicId, projectManagerId, projectManagerPublicId, project_manager_id, department_ids = [], departmentIds = [], departmentPublicIds = [], priority = 'Medium', startDate, endDate, start_date, end_date, budget } = req.body;
@@ -38,10 +34,10 @@ router.post('/', requireRole(['Admin', 'Manager']), async (req, res) => {
     const clientHasPublic = await hasColumn('clientss', 'public_id');
     let client;
     if (clientHasPublic) {
-      client = await q('SELECT id FROM clientss WHERE public_id = ? LIMIT 1', [clientPublicId]);
+      client = await q('SELECT id, name, email FROM clientss WHERE public_id = ? LIMIT 1', [clientPublicId]);
     } else {
       if (/^\d+$/.test(String(clientPublicId))) {
-        client = await q('SELECT id FROM clientss WHERE id = ? LIMIT 1', [clientPublicId]);
+        client = await q('SELECT id, name, email FROM clientss WHERE id = ? LIMIT 1', [clientPublicId]);
       } else {
         return res.status(400).json({ success: false, message: 'clients table has no public_id column; provide numeric client id instead' });
       }
@@ -50,10 +46,12 @@ router.post('/', requireRole(['Admin', 'Manager']), async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
     const clientId = client[0].id;
+    const clientInfo = client[0]; // Store client details for email
  
     // Validate departments if provided. Accept departmentPublicIds, department_ids, or departmentIds (mixed numeric or public_id)
     const deptInput = Array.isArray(departmentPublicIds) && departmentPublicIds.length > 0 ? departmentPublicIds : (department_ids.length > 0 ? department_ids : departmentIds);
     let deptIdMap = {};
+    let departmentNames = [];
     if (Array.isArray(deptInput) && deptInput.length > 0) {
       // split numeric ids and public_ids
       const numeric = deptInput.filter(d => /^\d+$/.test(String(d))).map(Number);
@@ -63,16 +61,20 @@ router.post('/', requireRole(['Admin', 'Manager']), async (req, res) => {
       if (numeric.length > 0 && publicIds.length > 0) {
         const placeholdersNum = numeric.map(() => '?').join(',');
         const placeholdersPub = publicIds.map(() => '?').join(',');
-        deptRecords = await q(`SELECT id, public_id FROM departments WHERE id IN (${placeholdersNum}) OR public_id IN (${placeholdersPub})`, [...numeric, ...publicIds]);
+        deptRecords = await q(`SELECT id, public_id, name FROM departments WHERE id IN (${placeholdersNum}) OR public_id IN (${placeholdersPub})`, [...numeric, ...publicIds]);
       } else if (numeric.length > 0) {
         const placeholdersNum = numeric.map(() => '?').join(',');
-        deptRecords = await q(`SELECT id, public_id FROM departments WHERE id IN (${placeholdersNum})`, numeric);
+        deptRecords = await q(`SELECT id, public_id, name FROM departments WHERE id IN (${placeholdersNum})`, numeric);
       } else if (publicIds.length > 0) {
         const placeholdersPub = publicIds.map(() => '?').join(',');
-        deptRecords = await q(`SELECT id, public_id FROM departments WHERE public_id IN (${placeholdersPub})`, publicIds);
+        deptRecords = await q(`SELECT id, public_id, name FROM departments WHERE public_id IN (${placeholdersPub})`, publicIds);
       }
  
-      deptRecords.forEach(d => { if (d.public_id) deptIdMap[d.public_id] = d.id; deptIdMap[String(d.id)] = d.id; });
+      deptRecords.forEach(d => {
+        if (d.public_id) deptIdMap[d.public_id] = d.id;
+        deptIdMap[String(d.id)] = d.id;
+        departmentNames.push(d.name);
+      });
  
       // Check if all departments were found
       const notFound = deptInput.filter(di => !deptIdMap[String(di)]);
@@ -86,13 +88,15 @@ router.post('/', requireRole(['Admin', 'Manager']), async (req, res) => {
  
     // Resolve project manager public id -> numeric _id if provided
     let pmId = null;
+    let projectManagerInfo = null;
     const pmPublic = projectManagerPublicId || projectManagerId || project_manager_id || null;
     if (pmPublic) {
-      const pmRows = await q('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [pmPublic]);
+      const pmRows = await q('SELECT _id, public_id, name, email FROM users WHERE public_id = ? LIMIT 1', [pmPublic]);
       if (!pmRows || pmRows.length === 0) {
         return res.status(400).json({ success: false, message: 'Project manager not found' });
       }
       pmId = pmRows[0]._id;
+      projectManagerInfo = pmRows[0]; // Store PM details for email
     }
  
     // Create project
@@ -119,8 +123,8 @@ router.post('/', requireRole(['Admin', 'Manager']), async (req, res) => {
     const project = await q('SELECT * FROM projects WHERE id = ? LIMIT 1', [projectId]);
     const depts = await q('SELECT pd.department_id, d.name, d.public_id FROM project_departments pd JOIN departments d ON pd.department_id = d.id WHERE pd.project_id = ?', [projectId]);
  
-    // Enrich client info for response (reuse earlier clientHasPublic)
-    const clientInfo = clientHasPublic ? await q('SELECT public_id, name FROM clientss WHERE id = ? LIMIT 1', [clientId]) : await q('SELECT id as public_id, name FROM clientss WHERE id = ? LIMIT 1', [clientId]);
+    // Enrich client info for response
+    const responseClientInfo = clientHasPublic ? await q('SELECT public_id, name FROM clientss WHERE id = ? LIMIT 1', [clientId]) : await q('SELECT id as public_id, name FROM clientss WHERE id = ? LIMIT 1', [clientId]);
  
     const response = {
       id: project[0].public_id,
@@ -134,8 +138,9 @@ router.post('/', requireRole(['Admin', 'Manager']), async (req, res) => {
       status: project[0].status,
       created_at: project[0].created_at,
       departments: depts.map(d => ({ public_id: d.public_id, name: d.name })),
-      client: clientInfo && clientInfo.length > 0 ? { public_id: clientInfo[0].public_id, name: clientInfo[0].name } : null
+      client: responseClientInfo && responseClientInfo.length > 0 ? { public_id: responseClientInfo[0].public_id, name: responseClientInfo[0].name } : null
     };
+   
     // Enrich with project manager info if present
     if (project[0].project_manager_id) {
       const pmRows = await q('SELECT public_id, name FROM users WHERE _id = ? LIMIT 1', [project[0].project_manager_id]);
@@ -144,6 +149,27 @@ router.post('/', requireRole(['Admin', 'Manager']), async (req, res) => {
       }
     }
  
+    const emailService = require(__root + 'utils/emailService');
+   
+    const projectLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/projects/${publicId}`;
+    const creatorName = req.user.name || 'Administrator';
+   
+    const emailResults = await emailService.sendProjectNotifications({
+      projectManagerInfo,
+      clientInfo,
+      projectName,
+      publicId,
+      priority,
+      startDate: startDate || start_date,
+      endDate: endDate || end_date,
+      budget,
+      departmentNames,
+      projectLink,
+      creatorName
+    });
+ 
+    console.log('Project emails sent:', emailResults);
+ 
     res.status(201).json({ success: true, data: response });
   } catch (e) {
     logger.error('Create project error:', e.message);
@@ -151,9 +177,6 @@ router.post('/', requireRole(['Admin', 'Manager']), async (req, res) => {
   }
 });
  
-// ==================== GET ALL PROJECTS ====================
-// GET /api/projects
-// Return projects visible to the user (based on role and department)
 router.get('/', async (req, res) => {
   try {
     let projects;
@@ -526,5 +549,6 @@ router.delete('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
 });
  
 module.exports = router;
+ 
  
  
