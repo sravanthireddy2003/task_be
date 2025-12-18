@@ -14,6 +14,113 @@ require('dotenv').config();
 const upload = require(__root + 'multer');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+
+const MODULE_ROUTE_MAP = {
+  Admin: {
+    'Dashboard': '/admin/dashboard',
+    'User Management': '/admin/users',
+    'Clients': '/admin/clients',
+    'Departments': '/admin/departments',
+    'Tasks': '/admin/tasks',
+    'Projects': '/admin/projects',
+    'Workflow (Project & Task Flow)': '/admin/workflow',
+    'Notifications': '/admin/notifications',
+    'Reports & Analytics': '/admin/reports',
+    'Document & File Management': '/admin/documents',
+    'Chat / Real-Time Collaboration': '/admin/chat',
+    'Approval Workflows': '/admin/approvals',
+    'Settings & Master Configuration': '/admin/settings'
+  },
+  Manager: {
+    'Dashboard': '/manager/dashboard',
+    'Clients': '/manager/clients',
+    'Departments': '/manager/departments',
+    'Tasks': '/manager/tasks',
+    'Projects': '/manager/projects',
+    'Workflow (Project & Task Flow)': '/manager/workflow',
+    'Notifications': '/manager/notifications',
+    'Reports & Analytics': '/manager/reports',
+    'Document & File Management': '/manager/documents',
+    'Chat / Real-Time Collaboration': '/manager/chat',
+    'Approval Workflows': '/manager/approvals',
+    'Settings & Master Configuration': '/manager/settings'
+  },
+  Employee: {
+    'Dashboard': '/employee/dashboard',
+    'Tasks': '/employee/tasks',
+    'Notifications': '/employee/notifications',
+    'Reports & Analytics': '/employee/reports',
+    'Document & File Management': '/employee/documents',
+    'Chat / Real-Time Collaboration': '/employee/chat'
+  },
+  'Client-Viewer': {
+    'Dashboard': '/client/dashboard',
+    'Assigned Tasks': '/client/tasks',
+    'Document & File Management': '/client/documents'
+  },
+  Client: {
+    'Dashboard': '/client/dashboard',
+    'Projects': '/client/projects',
+    'Tasks': '/client/tasks',
+    'Document & File Management': '/client/documents'
+  }
+};
+
+function slugifyModule(name) {
+  if (!name) return '';
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+}
+
+function modulePathFor(role, name) {
+  const map = MODULE_ROUTE_MAP[role] || {};
+  if (map[name]) return map[name];
+  const base = role ? `/${role.toLowerCase()}` : '';
+  const slug = slugifyModule(name);
+  return slug ? `${base}/${slug}` : base || '/';
+}
+
+function annotateModulesWithPaths(modules, role) {
+  if (!Array.isArray(modules)) return [];
+  return modules.map(m => ({ ...m, path: modulePathFor(role, m.name) }));
+}
+
+function normalizeStoredModules(user) {
+  if (!user || !user.modules) return null;
+  let arr;
+  try {
+    arr = typeof user.modules === 'string' ? JSON.parse(user.modules) : user.modules;
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(arr) || arr.length === 0) return null;
+  return arr
+    .map(m => {
+      const name = m.name || m.module || '';
+      const access = m.access || 'full';
+      let mid = m.moduleId || m.id || m.module_id || m.module || '';
+      if (typeof mid === 'number') mid = String(mid);
+      if (!mid) mid = crypto.randomBytes(8).toString('hex');
+      return { moduleId: mid, name, access };
+    })
+    .filter(m => (m.name || '').toLowerCase() !== 'team & employees');
+}
+
+function getDefaultModules(role) {
+  function mk(name, access) { return { moduleId: crypto.randomBytes(8).toString('hex'), name, access }; }
+  if (role === 'Admin') return [ mk('User Management','full'), mk('Dashboard','full'), mk('Clients','full'), mk('Departments','full'), mk('Tasks','full'), mk('Projects','full'), mk('Workflow (Project & Task Flow)','full'), mk('Notifications','full'), mk('Reports & Analytics','full'), mk('Document & File Management','full'), mk('Chat / Real-Time Collaboration','full'), mk('Approval Workflows','full'), mk('Settings & Master Configuration','full') ];
+  if (role === 'Manager') return [ mk('Dashboard','full'), mk('Clients','full'), mk('Tasks','full'), mk('Projects','full'), mk('Workflow (Project & Task Flow)','full'), mk('Notifications','limited'), mk('Reports & Analytics','full'), mk('Document & File Management','limited'), mk('Chat / Real-Time Collaboration','full'), mk('Approval Workflows','limited') ];
+  if (role === 'Employee') return [ mk('Dashboard','view'), mk('Tasks','limited'), mk('Notifications','limited'), mk('Reports & Analytics','limited'), mk('Document & File Management','limited'), mk('Chat / Real-Time Collaboration','full') ];
+  if (role === 'Client-Viewer') return [ mk('Dashboard','view'), mk('Assigned Tasks','view'), mk('Document & File Management','view') ];
+  return [];
+}
+
+const SIDEBAR_ORDER = ['Dashboard','User Management','Clients','Departments','Tasks','Projects','Workflow (Project & Task Flow)','Notifications','Reports & Analytics','Document & File Management','Chat / Real-Time Collaboration','Approval Workflows','Settings & Master Configuration'];
+
+function reorderModules(modules) {
+  if (!modules || !modules.length) return [];
+  return [ ...SIDEBAR_ORDER.map(name => modules.find(m => m.name === name)).filter(Boolean), ...modules.filter(m => !SIDEBAR_ORDER.includes(m.name)) ];
+}
 
 // Ensure users table has 2FA columns. If missing, add them at runtime.
 async function ensureUsers2FAColumns() {
@@ -315,40 +422,10 @@ async function completeLoginForUser(user, req, res) {
     const token = jwt.sign({ id: tokenIdForJwt }, process.env.SECRET || 'secret', { expiresIn: '7d' });
     const refreshToken = jwt.sign({ id: tokenIdForJwt, type: 'refresh' }, process.env.SECRET || 'secret', { expiresIn: '30d' });
 
-    const crypto = require('crypto');
-    function normalizeModulesFromUser(user) {
-      if (!user || !user.modules) return null;
-      let arr;
-      try { arr = typeof user.modules === 'string' ? JSON.parse(user.modules) : user.modules; } catch { return null; }
-      if (!Array.isArray(arr) || arr.length === 0) return null;
-      return arr.map(m => {
-        const name = m.name || m.module || '';
-        const access = m.access || 'full';
-        let mid = m.moduleId || m.id || m.module_id || m.module || '';
-        if (typeof mid === 'number') mid = String(mid);
-        if (!mid) mid = crypto.randomBytes(8).toString('hex');
-        return { moduleId: mid, name, access };
-      }).filter(m => (m.name || '').toLowerCase() !== 'team & employees');
-    }
-
-    function getModulesForRole(role) {
-      function mk(n, name, access) { return { moduleId: crypto.randomBytes(8).toString('hex'), name, access }; }
-      if (role === 'Admin') return [ mk(1,'User Management','full'), mk(2,'Dashboard','full'), mk(3,'Clients','full'), mk(4,'Departments','full'), mk(5,'Tasks','full'), mk(6,'Projects','full'), mk(8,'Workflow (Project & Task Flow)','full'), mk(9,'Notifications','full'), mk(10,'Reports & Analytics','full'), mk(11,'Document & File Management','full'), mk(13,'Chat / Real-Time Collaboration','full'), mk(14,'Approval Workflows','full'), mk(12,'Settings & Master Configuration','full') ];
-      if (role === 'Manager') return [ mk(2,'Dashboard','full'), mk(4,'Departments','full'), mk(5,'Tasks','full'), mk(6,'Projects','full'), mk(8,'Workflow (Project & Task Flow)','full'), mk(9,'Notifications','limited'), mk(10,'Reports & Analytics','full'), mk(11,'Document & File Management','limited'), mk(13,'Chat / Real-Time Collaboration','full'), mk(14,'Approval Workflows','limited') ];
-      if (role === 'Employee') return [ mk(2,'Dashboard','view'), mk(5,'Tasks','limited'), mk(9,'Notifications','limited'), mk(10,'Reports & Analytics','limited'), mk(11,'Document & File Management','limited'), mk(13,'Chat / Real-Time Collaboration','full') ];
-      if (role === 'Client-Viewer') return [ mk(2,'Dashboard','view'), mk(5,'Assigned Tasks','view'), mk(11,'Document & File Management','view') ];
-      return [];
-    }
-
-    const SIDEBAR_ORDER = ['Dashboard','User Management','Clients','Departments','Tasks','Projects','Workflow (Project & Task Flow)','Notifications','Reports & Analytics','Document & File Management','Chat / Real-Time Collaboration','Approval Workflows','Settings & Master Configuration'];
-    function reorderModulesForSidebar(modules) {
-      if (!modules || !modules.length) return [];
-      return [ ...SIDEBAR_ORDER.map(name => modules.find(m => m.name === name)).filter(Boolean), ...modules.filter(m => !SIDEBAR_ORDER.includes(m.name)) ];
-    }
-
-    const storedModules = normalizeModulesFromUser(user);
-    const modulesToReturn = storedModules && storedModules.length ? storedModules : getModulesForRole(user.role);
-    const orderedModules = reorderModulesForSidebar(modulesToReturn);
+    const storedModules = normalizeStoredModules(user);
+    const modulesToReturn = storedModules && storedModules.length ? storedModules : getDefaultModules(user.role);
+    const orderedModules = reorderModules(modulesToReturn);
+    const modulesWithPaths = annotateModulesWithPaths(orderedModules, user.role);
 
     // Get role-based login response with dashboard metrics and accessible resources
     let roleBasedData = {};
@@ -356,8 +433,7 @@ async function completeLoginForUser(user, req, res) {
       const RoleBasedLoginResponse = require('./utils/RoleBasedLoginResponse');
       const metrics = await RoleBasedLoginResponse.getDashboardMetrics(user._id, user.role, user.tenant_id);
       const resources = await RoleBasedLoginResponse.getAccessibleResources(user._id, user.role, user.tenant_id);
-      const sidebar = RoleBasedLoginResponse.getSidebarForRole(user.role);
-      roleBasedData = { metrics, resources, sidebar };
+      roleBasedData = { metrics, resources };
     } catch (e) {
       console.warn('Could not load role-based login response:', e.message);
       roleBasedData = {};
@@ -380,7 +456,7 @@ async function completeLoginForUser(user, req, res) {
         name: user.name, 
         role: user.role,
         // Include modules for all roles (Client-Viewer gets restricted modules with view-only access)
-        modules: orderedModules,
+        modules: modulesWithPaths,
         phone: user.phone || null,
         title: user.title || null,
         department: user.department || null
@@ -411,122 +487,7 @@ router.post('/verify-otp', (req, res) => {
       const ok = await otpService.verifyOtp(user._id || user.email, otp);
       if (!ok) return res.status(401).json({ message: 'Invalid or expired OTP' });
 
-      const tokenIdForJwt = user.public_id || String(user._id);
-      const token = jwt.sign({ id: tokenIdForJwt }, process.env.SECRET || 'secret', { expiresIn: '7d' });
-
-      const crypto = require('crypto');
-
-      // Normalize stored modules
-      function normalizeModulesFromUser(user) {
-        if (!user || !user.modules) return null;
-        let arr;
-        try {
-          arr = typeof user.modules === 'string' ? JSON.parse(user.modules) : user.modules;
-        } catch {
-          return null;
-        }
-        if (!Array.isArray(arr) || arr.length === 0) return null;
-
-        return arr
-          .map(m => {
-            const name = m.name || m.module || '';
-            const access = m.access || 'full';
-            let mid = m.moduleId || m.id || m.module_id || m.module || '';
-            if (typeof mid === 'number') mid = String(mid);
-            if (!mid) mid = crypto.randomBytes(8).toString('hex');
-            return { moduleId: mid, name, access };
-          })
-          .filter(m => (m.name || '').toLowerCase() !== 'team & employees');
-      }
-
-      // Role-based default modules
-      function getModulesForRole(role) {
-        function mk(n, name, access) { return { moduleId: crypto.randomBytes(8).toString('hex'), name, access }; }
-        if (role === 'Admin') return [
-          mk(1,'User Management','full'),
-          mk(2,'Dashboard','full'),
-          mk(3,'Clients','full'),
-          mk(4,'Departments','full'),
-          mk(5,'Tasks','full'),
-          mk(6,'Projects','full'),
-          mk(8,'Workflow (Project & Task Flow)','full'),
-          mk(9,'Notifications','full'),
-          mk(10,'Reports & Analytics','full'),
-          mk(11,'Document & File Management','full'),
-          mk(13,'Chat / Real-Time Collaboration','full'),
-          mk(14,'Approval Workflows','full'),
-          mk(12,'Settings & Master Configuration','full')
-        ];
-        if (role === 'Manager') return [
-          mk(2,'Dashboard','full'), mk(4,'Departments','full'), mk(5,'Tasks','full'), mk(6,'Projects','full'),
-          mk(8,'Workflow (Project & Task Flow)','full'), mk(9,'Notifications','limited'), mk(10,'Reports & Analytics','full'),
-          mk(11,'Document & File Management','limited'), mk(13,'Chat / Real-Time Collaboration','full'), mk(14,'Approval Workflows','limited')
-        ];
-        if (role === 'Employee') return [
-          mk(2,'Dashboard','view'), mk(5,'Tasks','limited'), mk(9,'Notifications','limited'), mk(10,'Reports & Analytics','limited'),
-          mk(11,'Document & File Management','limited'), mk(13,'Chat / Real-Time Collaboration','full')
-        ];
-        if (role === 'Client') return [
-          mk(2,'Dashboard','view'), mk(6,'Projects','view'), mk(9,'Notifications','limited'), mk(10,'Reports & Analytics','limited'),
-          mk(11,'Document & File Management','limited'), mk(13,'Chat / Real-Time Collaboration','limited')
-        ];
-        return [];
-      }
-
-      // Sidebar ordering
-      const SIDEBAR_ORDER = [
-        'Dashboard',
-        'User Management',
-        'Clients',
-        'Departments',
-        'Tasks',
-        'Projects',
-        'Workflow (Project & Task Flow)',
-        'Notifications',
-        'Reports & Analytics',
-        'Document & File Management',
-        'Chat / Real-Time Collaboration',
-        'Approval Workflows',
-        'Settings & Master Configuration'
-      ];
-
-      function reorderModulesForSidebar(modules) {
-        if (!modules || !modules.length) return [];
-        // Ensure all modules are in desired order, append any extra modules at the end
-        return [
-          ...SIDEBAR_ORDER.map(name => modules.find(m => m.name === name)).filter(Boolean),
-          ...modules.filter(m => !SIDEBAR_ORDER.includes(m.name))
-        ];
-      }
-
-      // Determine modules to return
-      const storedModules = normalizeModulesFromUser(user);
-      const modulesToReturn = storedModules && storedModules.length ? storedModules : getModulesForRole(user.role);
-      const orderedModules = reorderModulesForSidebar(modulesToReturn);
-
-      // Optional: log login history
-      try {
-        const insert = 'INSERT INTO login_history (user_id, tenant_id, ip, user_agent, success, created_at) VALUES (?, ?, ?, ?, ?, NOW())';
-        const ip = req.ip || (req.connection && req.connection.remoteAddress);
-        const ua = req.headers['user-agent'] || '';
-        db.query(insert, [user._id, user.tenant_id || null, ip, ua, 1], () => {});
-      } catch {}
-
-      // Generate refresh token
-      const refreshToken = jwt.sign({ id: tokenIdForJwt, type: 'refresh' }, process.env.SECRET || 'secret', { expiresIn: '30d' });
-
-      // Return user with ordered modules
-      return res.json({
-        token,
-        refreshToken,
-        user: {
-          id: user.public_id || String(user._id),
-          email: user.email,
-          name: user.name,
-          role: user.role,
-          modules: orderedModules
-        }
-      });
+      return completeLoginForUser(user, req, res);
     });
   } catch (e) {
     return res.status(401).json({ message: 'Invalid or expired temp token', error: e.message });

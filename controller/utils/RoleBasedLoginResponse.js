@@ -190,37 +190,37 @@ async function getAccessibleResources(userId, userRole, tenantId) {
 function getSidebarForRole(role) {
   const menus = {
     Admin: [
-      { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', path: '/dashboard' },
-      { id: 'clients', label: 'Clients', icon: 'business', path: '/clients', children: [
-        { id: 'clients-list', label: 'Client List', path: '/clients' },
-        { id: 'clients-create', label: 'Add Client', path: '/clients/create' }
+      { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', path: '/admin/dashboard' },
+      { id: 'clients', label: 'Clients', icon: 'business', path: '/admin/clients', children: [
+        { id: 'clients-list', label: 'Client List', path: '/admin/clients' },
+        { id: 'clients-create', label: 'Add Client', path: '/admin/clients/create' }
       ]},
-      { id: 'users', label: 'User Management', icon: 'people', path: '/users' },
-      { id: 'departments', label: 'Departments', icon: 'domain', path: '/departments' },
-      { id: 'tasks', label: 'Tasks', icon: 'task', path: '/tasks' },
-      { id: 'projects', label: 'Projects', icon: 'project', path: '/projects' },
-      { id: 'analytics', label: 'Analytics', icon: 'analytics', path: '/analytics' },
-      { id: 'reports', label: 'Reports', icon: 'report', path: '/reports' },
-      { id: 'settings', label: 'Settings', icon: 'settings', path: '/settings' }
+      { id: 'users', label: 'User Management', icon: 'people', path: '/admin/users' },
+      { id: 'departments', label: 'Departments', icon: 'domain', path: '/admin/departments' },
+      { id: 'tasks', label: 'Tasks', icon: 'task', path: '/admin/tasks' },
+      { id: 'projects', label: 'Projects', icon: 'project', path: '/admin/projects' },
+      { id: 'analytics', label: 'Analytics', icon: 'analytics', path: '/admin/analytics' },
+      { id: 'reports', label: 'Reports', icon: 'report', path: '/admin/reports' },
+      { id: 'settings', label: 'Settings', icon: 'settings', path: '/admin/settings' }
     ],
 
     Manager: [
-      { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', path: '/dashboard' },
-      { id: 'clients', label: 'My Clients', icon: 'business', path: '/clients' },
-      { id: 'tasks', label: 'Tasks', icon: 'task', path: '/tasks' },
-      { id: 'projects', label: 'Projects', icon: 'project', path: '/projects' },
-      { id: 'reports', label: 'Reports', icon: 'report', path: '/reports' }
+      { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', path: '/manager/dashboard' },
+      { id: 'clients', label: 'My Clients', icon: 'business', path: '/manager/clients' },
+      { id: 'tasks', label: 'Tasks', icon: 'task', path: '/manager/tasks' },
+      { id: 'projects', label: 'Projects', icon: 'project', path: '/manager/projects' },
+      { id: 'reports', label: 'Reports', icon: 'report', path: '/manager/reports' }
     ],
 
     'Client-Viewer': [
-      { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', path: '/dashboard' },
-      { id: 'tasks', label: 'Assigned Tasks', icon: 'task', path: '/tasks' },
-      { id: 'documents', label: 'Document & File Management', icon: 'document', path: '/documents' }
+      { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', path: '/client/dashboard' },
+      { id: 'tasks', label: 'Assigned Tasks', icon: 'task', path: '/client/tasks' },
+      { id: 'documents', label: 'Document & File Management', icon: 'document', path: '/client/documents' }
     ],
 
     Employee: [
-      { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', path: '/dashboard' },
-      { id: 'tasks', label: 'My Tasks', icon: 'task', path: '/tasks' }
+      { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', path: '/employee/dashboard' },
+      { id: 'tasks', label: 'My Tasks', icon: 'task', path: '/employee/tasks' }
     ]
   };
 
