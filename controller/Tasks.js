@@ -19,6 +19,18 @@ const winston = require("winston");
 const { google } = require("googleapis");
 const dayjs = require('dayjs');
 
+// helper: check if a column exists on a table (promise)
+const hasColumn = (table, column) => new Promise((resolve) => {
+  db.query(
+    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?",
+    [table, column],
+    (err, rows) => {
+      if (err) return resolve(false);
+      return resolve(Array.isArray(rows) && rows.length > 0);
+    }
+  );
+});
+
 // enforce tenant + auth for all task routes
 router.use(tenantMiddleware);
 // POST /api/projects/tasks/selected-details
@@ -524,20 +536,20 @@ router.get('/', async (req, res) => {
     const projectParam = req.query.project_id || req.query.projectId || req.query.projectPublicId || req.body && (req.body.project_id || req.body.project_public_id || req.body.projectPublicId);
     if (!projectParam) return res.status(400).json({ success: false, error: 'project_id or projectPublicId query parameter required' });
 
-    // helper: check if a column exists in the current database
-    const hasColumn = (table, column) => new Promise((resolve) => {
-      db.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?", [table, column], (err, rows) => {
-        if (err) return resolve(false);
-        return resolve(Array.isArray(rows) && rows.length > 0);
-      });
-    });
+    // use shared hasColumn helper
 
     const tasksHasProjectId = await hasColumn('tasks', 'project_id');
     const tasksHasProjectPublicId = await hasColumn('tasks', 'project_public_id');
+    const hasIsDeleted = await hasColumn('tasks', 'isDeleted');
+    const includeDeleted = req.query.includeDeleted === '1' || req.query.includeDeleted === 'true';
 
-    // If caller passed a public id (non-numeric), resolve it to internal project id first
+    // Prepare resolved numeric id and public id to search across both task columns if present
     let resolvedProjectId = projectParam;
+    let projectPublicIdToUse = null;
+
     if (!/^\d+$/.test(String(projectParam))) {
+      // caller passed public_id string
+      projectPublicIdToUse = projectParam;
       try {
         const projRows = await new Promise((resolve, reject) => db.query('SELECT id, public_id FROM projects WHERE public_id = ? LIMIT 1', [projectParam], (err, r) => err ? reject(err) : resolve(r)));
         if (!projRows || projRows.length === 0) return res.status(404).json({ success: false, error: 'Project not found' });
@@ -546,6 +558,9 @@ router.get('/', async (req, res) => {
         logger.error('Error resolving project public_id: ' + (err && err.message));
         return res.status(500).json({ success: false, error: 'Failed resolving project id' });
       }
+    } else {
+      // numeric id provided; resolvedProjectId is numeric
+      resolvedProjectId = Number(projectParam);
     }
 
     // Build SQL depending on which project link column exists on tasks
@@ -553,7 +568,19 @@ router.get('/', async (req, res) => {
     let params = [];
 
     if (tasksHasProjectId) {
-      sql = `
+      // If tasks table also stores project_public_id, search by either numeric id OR public id
+      if (tasksHasProjectPublicId) {
+        // ensure we have public id to search for
+        if (!projectPublicIdToUse) {
+          try {
+            const r = await new Promise((resolve, reject) => db.query('SELECT public_id FROM projects WHERE id = ? LIMIT 1', [resolvedProjectId], (err, rr) => err ? reject(err) : resolve(rr)));
+            if (r && r.length > 0) projectPublicIdToUse = r[0].public_id;
+          } catch (err) {
+            // ignore; we'll still search by numeric id
+          }
+        }
+
+        sql = `
         SELECT
           t.id AS task_internal_id,
           t.public_id AS task_id,
@@ -576,11 +603,41 @@ router.get('/', async (req, res) => {
         LEFT JOIN clientss c ON t.client_id = c.id
         LEFT JOIN taskassignments ta ON ta.task_id = t.id
         LEFT JOIN users u ON u._id = ta.user_id
-        WHERE t.project_id = ?
+        WHERE (t.project_id = ?${projectPublicIdToUse ? ' OR t.project_public_id = ?' : ''}) ${hasIsDeleted && !includeDeleted ? 'AND t.isDeleted != 1' : ''}
         GROUP BY t.id
         ORDER BY t.createdAt DESC
       `;
-      params = [resolvedProjectId];
+        params = projectPublicIdToUse ? [resolvedProjectId, projectPublicIdToUse] : [resolvedProjectId];
+      } else {
+        sql = `
+        SELECT
+          t.id AS task_internal_id,
+          t.public_id AS task_id,
+          t.title,
+          t.description,
+          t.stage,
+          t.taskDate,
+          t.priority,
+          t.time_alloted,
+          t.estimated_hours,
+          t.status,
+          t.createdAt,
+          t.updatedAt,
+          c.id AS client_id,
+          c.name AS client_name,
+          GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
+          GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
+          GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names
+        FROM tasks t
+        LEFT JOIN clientss c ON t.client_id = c.id
+        LEFT JOIN taskassignments ta ON ta.task_id = t.id
+        LEFT JOIN users u ON u._id = ta.user_id
+        WHERE t.project_id = ? ${hasIsDeleted && !includeDeleted ? 'AND t.isDeleted != 1' : ''}
+        GROUP BY t.id
+        ORDER BY t.createdAt DESC
+      `;
+        params = [resolvedProjectId];
+      }
     } else if (tasksHasProjectPublicId) {
       // If tasks stores project_public_id, determine the public id to search for
       let projectPublicIdToUse = projectParam;
@@ -619,7 +676,7 @@ router.get('/', async (req, res) => {
         LEFT JOIN clientss c ON t.client_id = c.id
         LEFT JOIN taskassignments ta ON ta.task_id = t.id
         LEFT JOIN users u ON u._id = ta.user_id
-        WHERE t.project_public_id = ?
+        WHERE t.project_public_id = ? ${hasIsDeleted && !includeDeleted ? 'AND t.isDeleted != 1' : ''}
         GROUP BY t.id
         ORDER BY t.createdAt DESC
       `;
@@ -749,7 +806,7 @@ router.put('/:id', requireRole(['Admin','Manager']), async (req, res) => {
 
       const updateTaskQuery = `UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`;
 
-      connection.query(updateTaskQuery, values, (err, result) => {
+      connection.query(updateTaskQuery, values, async (err, result) => {
         if (err) {
           connection.release();
           logger.error(`Error updating task: ${err.message}`);
@@ -761,31 +818,104 @@ router.put('/:id', requireRole(['Admin','Manager']), async (req, res) => {
           return res.status(404).json({ success: false, error: 'Task not found' });
         }
 
-        // Update assigned users if provided
-        if (Array.isArray(assigned_to)) {
-          const deleteQuery = `DELETE FROM taskassignments WHERE task_id = ?`;
-          connection.query(deleteQuery, [taskId], (delErr) => {
-            if (delErr) {
-              logger.error(`Error clearing task assignments: ${delErr.message}`);
-            } else if (assigned_to.length > 0) {
-              const insertQuery = `INSERT INTO taskassignments (task_id, user_id) VALUES ?`;
-              const values = assigned_to.map((userId) => [taskId, userId]);
-              connection.query(insertQuery, [values], (insErr) => {
-                if (insErr) {
-                  logger.error(`Error assigning users: ${insErr.message}`);
-                }
-              });
-            }
-          });
-        }
+        try {
+          // If assigned_to provided, resolve public_ids to internal _id and replace assignments
+          if (Array.isArray(assigned_to)) {
+            // delete existing
+            await new Promise((resolve, reject) => connection.query('DELETE FROM taskassignments WHERE task_id = ?', [taskId], (e) => e ? reject(e) : resolve()));
 
-        connection.release();
-        logger.info(`Task updated successfully: taskId=${taskId}`);
-        return res.status(200).json({
-          success: true,
-          message: 'Task updated successfully',
-          data: { taskId },
-        });
+            if (assigned_to.length > 0) {
+              const numericIds = assigned_to.filter(v => /^\d+$/.test(String(v))).map(v => Number(v));
+              const publicIds = assigned_to.filter(v => !/^\d+$/.test(String(v))).map(v => String(v));
+              let finalIds = Array.from(new Set(numericIds));
+
+              if (publicIds.length > 0) {
+                const rows = await new Promise((resolve, reject) => connection.query('SELECT _id, public_id FROM users WHERE public_id IN (?)', [publicIds], (e, r) => e ? reject(e) : resolve(r)));
+                if (Array.isArray(rows) && rows.length > 0) rows.forEach(r => { if (r && r._id) finalIds.push(r._id); });
+              }
+
+              finalIds = Array.from(new Set(finalIds));
+              if (finalIds.length > 0) {
+                const insertVals = finalIds.map(uid => [taskId, uid]);
+                await new Promise((resolve, reject) => connection.query('INSERT INTO taskassignments (task_id, user_id) VALUES ?', [insertVals], (e) => e ? reject(e) : resolve()));
+              }
+            }
+          }
+
+          // If DB has soft-delete flag, restore the task on update so it becomes visible in subsequent GETs
+          try {
+            const hasIsDeletedFlag = await hasColumn('tasks', 'isDeleted');
+            if (hasIsDeletedFlag) {
+              await new Promise((resolve, reject) => connection.query('UPDATE tasks SET isDeleted = 0, deleted_at = NULL WHERE id = ?', [taskId], (e) => e ? reject(e) : resolve()));
+            }
+          } catch (restoreErr) {
+            // ignore restore errors, continue to return updated object
+            logger.warn(`Failed to restore task isDeleted flag: ${restoreErr && restoreErr.message}`);
+          }
+
+          // Fetch and return the updated task object so client and subsequent GETs see consistent data
+          const fetchSql = `
+            SELECT
+              t.id AS task_internal_id,
+              t.public_id AS task_id,
+              t.title,
+              t.description,
+              t.stage,
+              t.taskDate,
+              t.priority,
+              t.time_alloted,
+              t.estimated_hours,
+              t.status,
+              t.createdAt,
+              t.updatedAt,
+              c.id AS client_id,
+              c.name AS client_name,
+              GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
+              GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
+              GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names
+            FROM tasks t
+            LEFT JOIN clientss c ON t.client_id = c.id
+            LEFT JOIN taskassignments ta ON ta.task_id = t.id
+            LEFT JOIN users u ON u._id = ta.user_id
+            WHERE t.id = ?
+            GROUP BY t.id
+            LIMIT 1
+          `;
+
+          const rows = await new Promise((resolve, reject) => connection.query(fetchSql, [taskId], (e, r) => e ? reject(e) : resolve(r)));
+          let taskObj = { taskId };
+          if (Array.isArray(rows) && rows.length > 0) {
+            const r = rows[0];
+            const assignedIds = r.assigned_user_ids ? String(r.assigned_user_ids).split(',') : [];
+            const assignedPublic = r.assigned_user_public_ids ? String(r.assigned_user_public_ids).split(',') : [];
+            const assignedNames = r.assigned_user_names ? String(r.assigned_user_names).split(',') : [];
+            const assignedUsers = assignedIds.map((uid, i) => ({ id: assignedPublic[i] || uid, internalId: String(uid), name: assignedNames[i] || null }));
+
+            taskObj = {
+              id: r.task_id ? String(r.task_id) : String(r.task_internal_id),
+              title: r.title || null,
+              description: r.description || null,
+              stage: r.stage || null,
+              taskDate: r.taskDate ? new Date(r.taskDate).toISOString() : null,
+              priority: r.priority || null,
+              timeAlloted: r.time_alloted != null ? Number(r.time_alloted) : null,
+              estimatedHours: r.estimated_hours != null ? Number(r.estimated_hours) : (r.time_alloted != null ? Number(r.time_alloted) : null),
+              status: r.status || null,
+              createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null,
+              updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
+              client: r.client_id ? { id: String(r.client_id), name: r.client_name } : null,
+              assignedUsers
+            };
+          }
+
+          connection.release();
+          logger.info(`Task updated successfully: taskId=${taskId}`);
+          return res.status(200).json({ success: true, message: 'Task updated successfully', data: taskObj });
+        } catch (e) {
+          connection.release();
+          logger.error(`Error post-updating task assignments/fetch: ${e && e.message}`);
+          return res.status(500).json({ success: false, error: 'Post-update processing failed', details: e && e.message });
+        }
       });
     });
   } catch (error) {
@@ -810,54 +940,78 @@ router.delete('/:id', requireRole(['Admin','Manager']), (req, res) => {
       return res.status(500).json({ success: false, error: 'DB connection error' });
     }
 
-    connection.beginTransaction((err) => {
-      if (err) {
-        connection.release();
-        console.error('Error starting transaction for delete:', err);
-        return res.status(500).json({ success: false, error: 'Transaction error' });
-      }
-
-      const tasksToRun = [
-        { sql: 'DELETE FROM taskassignments WHERE task_id = ?', params: [taskId] },
-        { sql: 'DELETE FROM task_assignments WHERE task_id = ?', params: [taskId] },
-        { sql: 'DELETE FROM subtasks WHERE task_id = ?', params: [taskId] },
-        { sql: 'DELETE FROM task_hours WHERE task_id = ?', params: [taskId] },
-        { sql: 'DELETE FROM task_activities WHERE task_id = ?', params: [taskId] },
-        { sql: 'DELETE FROM tasks WHERE id = ?', params: [taskId] },
-      ];
-
-      const runStep = (idx) => {
-        if (idx >= tasksToRun.length) {
-          connection.commit((err) => {
-            if (err) {
-              return connection.rollback(() => {
-                connection.release();
-                console.error('Error committing delete transaction:', err);
-                return res.status(500).json({ success: false, error: 'Commit error' });
-              });
-            }
+    (async () => {
+      try {
+        const hasIsDeleted = await hasColumn('tasks', 'isDeleted');
+        if (hasIsDeleted) {
+          // perform soft-delete
+          connection.query('UPDATE tasks SET isDeleted = 1, deleted_at = NOW() WHERE id = ?', [taskId], (uErr) => {
             connection.release();
-            logger.info(`Task deleted successfully: taskId=${taskId}`);
-            return res.status(200).json({ success: true, message: 'Task deleted successfully' });
+            if (uErr) {
+              console.error('Error soft-deleting task:', uErr);
+              return res.status(500).json({ success: false, error: 'Soft-delete failed', details: uErr.message });
+            }
+            logger.info(`Task soft-deleted successfully: taskId=${taskId}`);
+            return res.status(200).json({ success: true, message: 'Task soft-deleted' });
           });
           return;
         }
 
-        const step = tasksToRun[idx];
-        connection.query(step.sql, step.params, (qErr, qRes) => {
-          if (qErr) {
-            return connection.rollback(() => {
-              connection.release();
-              console.error('Error during delete step:', qErr);
-              return res.status(500).json({ success: false, error: 'Delete failed', details: qErr.message });
-            });
+        // Fallback to hard delete when no soft-delete column exists
+        connection.beginTransaction((err) => {
+          if (err) {
+            connection.release();
+            console.error('Error starting transaction for delete:', err);
+            return res.status(500).json({ success: false, error: 'Transaction error' });
           }
-          runStep(idx + 1);
-        });
-      };
 
-      runStep(0);
-    });
+          const tasksToRun = [
+            { sql: 'DELETE FROM taskassignments WHERE task_id = ?', params: [taskId] },
+            { sql: 'DELETE FROM task_assignments WHERE task_id = ?', params: [taskId] },
+            { sql: 'DELETE FROM subtasks WHERE task_id = ?', params: [taskId] },
+            { sql: 'DELETE FROM task_hours WHERE task_id = ?', params: [taskId] },
+            { sql: 'DELETE FROM task_activities WHERE task_id = ?', params: [taskId] },
+            { sql: 'DELETE FROM tasks WHERE id = ?', params: [taskId] },
+          ];
+
+          const runStep = (idx) => {
+            if (idx >= tasksToRun.length) {
+              connection.commit((err) => {
+                if (err) {
+                  return connection.rollback(() => {
+                    connection.release();
+                    console.error('Error committing delete transaction:', err);
+                    return res.status(500).json({ success: false, error: 'Commit error' });
+                  });
+                }
+                connection.release();
+                logger.info(`Task deleted successfully: taskId=${taskId}`);
+                return res.status(200).json({ success: true, message: 'Task deleted successfully' });
+              });
+              return;
+            }
+
+            const step = tasksToRun[idx];
+            connection.query(step.sql, step.params, (qErr, qRes) => {
+              if (qErr) {
+                return connection.rollback(() => {
+                  connection.release();
+                  console.error('Error during delete step:', qErr);
+                  return res.status(500).json({ success: false, error: 'Delete failed', details: qErr.message });
+                });
+              }
+              runStep(idx + 1);
+            });
+          };
+
+          runStep(0);
+        });
+      } catch (e) {
+        connection.release();
+        console.error('Unexpected error during delete handling:', e);
+        return res.status(500).json({ success: false, error: 'Unexpected error', details: e && e.message });
+      }
+    })();
   });
 });
 
@@ -898,7 +1052,7 @@ router.get("/gettaskss", (req, res) => {
   // optional filter: ?userId=<public_id|internal_id>
   const filterUserParam = req.query.userId;
 
-  const buildAndRun = (resolvedUserId) => {
+  const buildAndRun = async (resolvedUserId) => {
     let query = `
       SELECT 
           t.id AS task_id, 
@@ -968,6 +1122,50 @@ router.get("/gettaskss", (req, res) => {
       END,
       t.createdAt ASC;
     `;
+
+    // Exclude soft-deleted tasks by default if schema supports it
+    try {
+      const hasIsDeletedList = await hasColumn('tasks', 'isDeleted');
+      const includeDeleted = req.query.includeDeleted === '1' || req.query.includeDeleted === 'true';
+      if (hasIsDeletedList && !includeDeleted) {
+        if (query.includes('WHERE')) {
+          query = query.replace(/ORDER BY[\s\S]*$/m, '');
+          query += ` AND t.isDeleted != 1 `;
+        } else {
+          query = query.replace(/ORDER BY[\s\S]*$/m, '');
+          query += ` WHERE t.isDeleted != 1 `;
+        }
+        // re-append ordering
+        query += ` ORDER BY 
+      CASE t.priority
+        WHEN 'HIGH' THEN 
+          CASE t.stage
+            WHEN 'TODO' THEN 1
+            WHEN 'IN_PROGRESS' THEN 2
+            WHEN 'COMPLETED' THEN 3
+            ELSE 4
+          END
+        WHEN 'MEDIUM' THEN 
+          CASE t.stage
+            WHEN 'TODO' THEN 5
+            WHEN 'IN_PROGRESS' THEN 6
+            WHEN 'COMPLETED' THEN 7
+            ELSE 8
+          END
+        WHEN 'LOW' THEN 
+          CASE t.stage
+            WHEN 'TODO' THEN 9
+            WHEN 'IN_PROGRESS' THEN 10
+            WHEN 'COMPLETED' THEN 11
+            ELSE 12
+          END
+        ELSE 13
+      END,
+      t.createdAt ASC;`;
+      }
+    } catch (err) {
+      // ignore and continue without deleted filter
+    }
 
     const queryParams = role === 'Employee' ? [resolvedUserId] : (resolvedUserId ? [resolvedUserId] : []);
 
@@ -1090,7 +1288,7 @@ router.get("/gettasks", (req, res) => {
   // optional filter param: userId (can be public_id or numeric _id)
   const filterUserParam = req.query.userId;
 
-  const buildAndRun = (resolvedUserId) => {
+  const buildAndRun = async (resolvedUserId) => {
     let query = `
           SELECT 
               t.id AS task_id, 
@@ -1135,6 +1333,22 @@ router.get("/gettasks", (req, res) => {
       query += ` WHERE t.id IN (SELECT task_id FROM taskassignments WHERE user_id = ?)`;
       query += ` ORDER BY t.createdAt`;
     }
+
+    // Exclude soft-deleted tasks by default if schema supports it
+    try {
+      const hasIsDeletedList = await hasColumn('tasks', 'isDeleted');
+      const includeDeleted = req.query.includeDeleted === '1' || req.query.includeDeleted === 'true';
+      if (hasIsDeletedList && !includeDeleted) {
+        if (query.includes('WHERE')) {
+          query = query.replace(/ORDER BY[\s\S]*$/m, '');
+          query += ` AND t.isDeleted != 1 `;
+        } else {
+          query = query.replace(/ORDER BY[\s\S]*$/m, '');
+          query += ` WHERE t.isDeleted != 1 `;
+        }
+        query += ` ORDER BY t.createdAt`;
+      }
+    } catch (err) {}
 
     const params = role === 'Employee' ? [resolvedUserId] : (resolvedUserId ? [resolvedUserId] : []);
 
@@ -1236,61 +1450,75 @@ router.get("/gettaskbyId/:task_id", (req, res) => {
           u.role AS user_role
       FROM 
           tasks t
-      LEFT JOIN 
-          taskassignments ta ON t.id = ta.task_id
-      LEFT JOIN 
-          users u ON ta.user_id = u._id
-      LEFT JOIN 
-          clientss c ON t.client_id = c.id 
+      LEFT JOIN taskassignments ta ON t.id = ta.task_id
+      LEFT JOIN users u ON ta.user_id = u._id
+      LEFT JOIN clientss c ON t.client_id = c.id 
       WHERE 
           t.id = ?
       ORDER BY 
           t.id;
   `;
 
-  db.query(query, [task_id], (err, results) => {
-    if (err) {
-      console.error("Error fetching task:", err);
-      return res.status(500).send("Error fetching task");
-    }
-
-    if (results.length === 0) {
-      return res.status(404).send("Task not found");
-    }
-
-    // Group the results by task
-    const task = {
-      task_id: results[0].task_id,
-      title: results[0].title,
-      client_name: results[0].client_name,
-      description: results[0].description,
-      stage: results[0].stage,
-      taskDate: results[0].taskDate,
-      priority: results[0].priority,
-      createdAt: results[0].createdAt,
-      updatedAt: results[0].updatedAt,
-      time_alloted: results[0].time_alloted, // Include time_alloted in response
-      assigned_users: [],
-    };
-
-    results.forEach((row) => {
-      if (row.user_id) {
-        task.assigned_users.push({
-          user_id: row.user_id,
-          user_name: row.user_name,
-          user_role: row.user_role,
-        });
+  // Exclude soft-deleted task by default if schema supports it and caller didn't request includeDeleted
+  (async () => {
+    try {
+      const includeDeleted = req.query.includeDeleted === '1' || req.query.includeDeleted === 'true';
+      const hasIsDeleted = await hasColumn('tasks', 'isDeleted');
+      let finalQuery = query;
+      if (hasIsDeleted && !includeDeleted) {
+        // safely inject the filter before ORDER BY
+        finalQuery = finalQuery.replace('WHERE t.id = ?', 'WHERE t.id = ? AND t.isDeleted != 1');
       }
-    });
 
-    // If employee, ensure the task is assigned to them
-    if (role === 'Employee') {
-      const assigned = task.assigned_users.some(u => String(u.user_id) === String(userId));
-      if (!assigned) return res.status(403).json({ message: 'Forbidden' });
-    }
+      db.query(finalQuery, [task_id], (err, results) => {
+            if (err) {
+              console.error("Error fetching task:", err);
+              return res.status(500).send("Error fetching task");
+            }
 
-    res.status(200).json(task);
-  });
+            if (results.length === 0) {
+              return res.status(404).send("Task not found");
+            }
+
+            // Group the results by task
+            const task = {
+              task_id: results[0].task_id,
+              title: results[0].title,
+              client_name: results[0].client_name,
+              description: results[0].description,
+              stage: results[0].stage,
+              taskDate: results[0].taskDate,
+              priority: results[0].priority,
+              createdAt: results[0].createdAt,
+              updatedAt: results[0].updatedAt,
+              time_alloted: results[0].time_alloted, // Include time_alloted in response
+              assigned_users: [],
+            };
+
+            results.forEach((row) => {
+              if (row.user_id) {
+                task.assigned_users.push({
+                  user_id: row.user_id,
+                  user_name: row.user_name,
+                  user_role: row.user_role,
+                });
+              }
+            });
+
+            // If employee, ensure the task is assigned to them
+            if (role === 'Employee') {
+              const assigned = task.assigned_users.some(u => String(u.user_id) === String(userId));
+              if (!assigned) return res.status(403).json({ message: 'Forbidden' });
+            }
+
+            res.status(200).json(task);
+          });
+        } catch (err) {
+          console.error('Error processing gettaskbyId:', err);
+          return res.status(500).send('Error fetching task');
+        }
+      })();
+  
 });
 
 router.delete("/deltask/:task_id", requireRole(['Admin','Manager']), (req, res) => {
