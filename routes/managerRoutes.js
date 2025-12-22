@@ -7,8 +7,10 @@ const Manager = require(__root + 'controller/managerController');
 router.use(auth, allowRoles('Manager'));
 
 router.get('/dashboard', Manager.getManagerDashboard);
-router.post('/project', Manager.createProject);
-router.put('/project/:id', Manager.updateProject);
-router.post('/task/reassign', Manager.reassignTask);
+router.get('/clients', Manager.getAssignedClients);
+router.get('/projects', Manager.getAssignedProjects);
+router.get('/timeline', Manager.getTaskTimeline);
+router.get('/tasks', Manager.getTaskTimeline);
+router.get('/employees', Manager.getDepartmentEmployees);
 
 module.exports = router;

@@ -5,6 +5,12 @@ const crypto = require('crypto');
 
 const MODULES_FILE = path.join(__root, 'data', 'modules.json');
 
+function q(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
+  });
+}
+
 function readModules() {
   try {
     if (!fs.existsSync(MODULES_FILE)) return [];
@@ -44,6 +50,22 @@ function tableHasColumn(table, column) {
       return resolve(rows.length > 0);
     });
   });
+}
+
+async function fetchClientDocuments(clientIds = []) {
+  if (!clientIds.length) return {};
+  const hasClientDoc = await tableHasColumn('client_documents', 'client_id');
+  if (!hasClientDoc) return {};
+  const rows = await q(
+    'SELECT id, client_id, file_url, file_name, file_type, uploaded_at FROM client_documents WHERE client_id IN (?) AND is_active = 1 ORDER BY uploaded_at DESC',
+    [clientIds]
+  );
+  return (rows || []).reduce((memo, row) => {
+    if (!row || row.client_id === undefined || row.client_id === null) return memo;
+    if (!memo[row.client_id]) memo[row.client_id] = [];
+    memo[row.client_id].push(row);
+    return memo;
+  }, {});
 }
 
 // helper to get column data type (e.g. 'int','varchar') at file scope
@@ -105,52 +127,94 @@ module.exports = {
 
   manageClients: async (req, res) => {
 
-    // optional ?userId filter (public_id or numeric id)
     const filterUserParam = req.query.userId;
+    const baseCols = ['id', 'ref', 'name', 'company'];
+    const optionalCols = ['public_id', 'email', 'phone', 'status', 'created_at', 'manager_id', 'tenant_id'];
+    const selectCols = await buildSelect('clientss', baseCols, optionalCols).catch(() => baseCols.join(', '));
 
-    const runQuery = async (resolvedUserId) => {
-      safeSelect('clientss', ['id','name','email','company'], ['tenant_id'], '', [], (err, rows) => {
-        if (err) return res.status(500).json({ success: false, error: err.message });
-        // try to map clients to public_id (if column exists in clientss table)
-        db.query('SELECT id, public_id FROM clientss', [], (mapErr, mapRows) => {
-          if (mapErr || !Array.isArray(mapRows) || mapRows.length === 0) return res.json({ success: true, data: rows });
-          const map = {};
-          mapRows.forEach(r => { map[r.id] = r.public_id || r.id; });
-          let out = rows.map(r => ({ ...r, id: map[r.id] || r.id }));
-          // if a user filter was provided, try to limit clients that match created_by/user_id if such column exists
-          if (resolvedUserId) {
-            // check if clientss table has user-related columns
-            db.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'clientss' AND TABLE_SCHEMA = DATABASE() AND COLUMN_NAME IN ('created_by','user_id')", [], (colErr, cols) => {
-              if (colErr || !Array.isArray(cols) || cols.length === 0) return res.json({ success: true, data: out });
-              const colNames = cols.map(c => c.COLUMN_NAME);
-              // fetch clients where any of these columns equals resolvedUserId
-              const whereParts = colNames.map(n => `${n} = ?`).join(' OR ');
-              const params = colNames.map(() => resolvedUserId);
-              safeSelect('clientss', ['id','name','email','company'], ['tenant_id'], `WHERE ${whereParts}`, params, (fErr, fRows) => {
-                if (fErr) return res.json({ success: true, data: out });
-                const filtered = fRows.map(r => ({ ...r, id: map[r.id] || r.id }));
-                return res.json({ success: true, data: filtered });
-              });
-            });
-            return;
-          }
-          res.json({ success: true, data: out });
+    const queryClients = async (whereClause = '', params = []) => {
+      const clause = whereClause ? ` ${whereClause}` : '';
+      return await q(`SELECT ${selectCols} FROM clientss${clause}`, params);
+    };
+
+    const enrich = async (rows = []) => {
+      if (!Array.isArray(rows)) return [];
+      const clientIds = Array.from(new Set(rows.map((r) => r.id).filter(Boolean)));
+      const documentsByClient = await fetchClientDocuments(clientIds);
+      const managerIds = Array.from(
+        new Set(
+          rows
+            .map((r) => (r.manager_id ? String(r.manager_id) : null))
+            .filter(Boolean)
+        )
+      );
+      let managerMap = {};
+      if (managerIds.length) {
+        const mgrRows = await q(
+          'SELECT _id, public_id, name FROM users WHERE _id IN (?) OR public_id IN (?)',
+          [managerIds, managerIds]
+        );
+        mgrRows.forEach((mgr) => {
+          if (!mgr) return;
+          const keyId = mgr._id ? String(mgr._id) : null;
+          const keyPublic = mgr.public_id ? String(mgr.public_id) : null;
+          const entry = { public_id: mgr.public_id || null, name: mgr.name || null };
+          if (keyId) managerMap[keyId] = entry;
+          if (keyPublic) managerMap[keyPublic] = entry;
         });
+      }
+      const hasPublicIdCol = await tableHasColumn('clientss', 'public_id');
+      return rows.map((row) => {
+        const normalizedClientId = hasPublicIdCol ? row.public_id || row.id : row.id;
+        const clientKey = row.manager_id ? String(row.manager_id) : null;
+        const managerInfo = clientKey ? managerMap[clientKey] : null;
+        return {
+          id: normalizedClientId || row.id,
+          ref: row.ref || null,
+          name: row.name || null,
+          company: row.company || null,
+          email: row.email || null,
+          phone: row.phone || null,
+          status: row.status || null,
+          created_at: row.created_at || null,
+          manager_id: row.manager_id || null,
+          manager_public_id: managerInfo ? managerInfo.public_id : null,
+          manager_name: managerInfo ? managerInfo.name : null,
+          documents: documentsByClient[row.id] || []
+        };
       });
     };
 
+    const runQuery = async (resolvedUserId) => {
+      let whereClause = '';
+      const params = [];
+      if (resolvedUserId) {
+        const filterColumns = [];
+        for (const col of ['created_by', 'user_id']) {
+          if (await tableHasColumn('clientss', col)) filterColumns.push(col);
+        }
+        if (filterColumns.length) {
+          whereClause = `WHERE ${filterColumns.map((n) => `${n} = ?`).join(' OR ')}`;
+          params.push(...filterColumns.map(() => resolvedUserId));
+        }
+      }
+      const rows = await queryClients(whereClause, params);
+      const payload = await enrich(rows);
+      return res.json({ success: true, data: payload });
+    };
+
     if (filterUserParam) {
-      const isNumeric = /^\d+$/.test(String(filterUserParam));
-      if (isNumeric) { runQuery(filterUserParam); return; }
-      db.query('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [filterUserParam], (err, rows) => {
-        if (err) return res.status(500).json({ success: false, error: err.message });
-        if (!rows || rows.length === 0) return res.status(404).json({ success: false, message: 'User not found for provided userId' });
-        runQuery(rows[0]._id);
-      });
-      return;
+      if (/^\d+$/.test(String(filterUserParam))) {
+        return runQuery(filterUserParam);
+      }
+      const users = await q('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [filterUserParam]);
+      if (!Array.isArray(users) || users.length === 0) {
+        return res.status(404).json({ success: false, message: 'User not found for provided userId' });
+      }
+      return runQuery(users[0]._id);
     }
 
-    runQuery(null);
+    return runQuery(null);
   },
 
   manageDepartments: async (req, res) => {

@@ -9,5 +9,6 @@ router.use(auth, allowRoles('Employee'));
 router.get('/my-tasks', Employee.getMyTasks);
 router.post('/subtask', Employee.addSubtask);
 router.put('/subtask/:id', Employee.updateSubtask);
+router.post('/subtask/:id/complete', Employee.softDeleteChecklistItem);
 
 module.exports = router;

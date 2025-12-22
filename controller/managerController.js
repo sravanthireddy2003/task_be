@@ -1,50 +1,582 @@
 const db = require(__root + 'db');
+const RoleBasedLoginResponse = require(__root + 'controller/utils/RoleBasedLoginResponse');
+
+const NUMERIC_COLUMN_TYPES = new Set(['int', 'bigint', 'tinyint', 'smallint', 'mediumint', 'decimal', 'float', 'double', 'numeric']);
+
+const queryAsync = (sql, params = []) =>
+  new Promise((resolve, reject) => {
+    db.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
+  });
+
+function accessDenied(message) {
+  const error = new Error(message);
+  error.status = 403;
+  return error;
+}
+
+async function fetchColumnTypes(table, columns = []) {
+  if (!columns.length) return {};
+  const placeholder = columns.map(() => '?').join(',');
+  const rows = await queryAsync(
+    `SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME IN (${placeholder})`,
+    [table, ...columns]
+  );
+  const map = {};
+  (rows || []).forEach((row) => {
+    if (row && row.COLUMN_NAME) map[row.COLUMN_NAME] = row.DATA_TYPE || '';
+  });
+  return map;
+}
+
+function valueForColumn(type, user) {
+  if (!type) return null;
+  const lower = String(type).toLowerCase();
+  if (NUMERIC_COLUMN_TYPES.has(lower)) return user._id || null;
+  return user.id || (user._id ? String(user._id) : null);
+}
+
+function buildAccessClause(columnMeta, user) {
+  const clauses = [];
+  const params = [];
+  Object.entries(columnMeta).forEach(([column, type]) => {
+    const value = valueForColumn(type, user);
+    if (value === null || value === undefined) return;
+    clauses.push(`${column} = ?`);
+    params.push(value);
+  });
+  if (!clauses.length) return null;
+  return { expression: clauses.join(' OR '), params };
+}
+
+async function requireFeatureAccess(req, feature) {
+  const resources = await RoleBasedLoginResponse.getAccessibleResources(req.user._id, req.user.role, req.user.tenant_id, req.user.id);
+  if (!resources || !Array.isArray(resources.features) || !resources.features.includes(feature)) {
+    throw accessDenied(`Access denied: ${feature} feature`);
+  }
+  return resources;
+}
+
+async function hasColumn(table, column) {
+  const rows = await queryAsync(
+    'SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
+    [table, column]
+  );
+  return Array.isArray(rows) && rows.length > 0;
+}
+
+const tableColumnCache = {};
+
+async function cachedHasColumn(table, column) {
+  tableColumnCache[table] = tableColumnCache[table] || {};
+  if (tableColumnCache[table][column] === undefined) {
+    tableColumnCache[table][column] = await hasColumn(table, column);
+  }
+  return tableColumnCache[table][column];
+}
+
+const clientColumnCache = {};
+
+async function clientHasPublicId() {
+  if (clientColumnCache.public_id === undefined) {
+    clientColumnCache.public_id = await cachedHasColumn('clientss', 'public_id');
+  }
+  return clientColumnCache.public_id;
+}
+
+async function clientFieldSelects(alias = 'c') {
+  const selects = [`${alias}.name AS client_name`];
+  if (await clientHasPublicId()) selects.push(`${alias}.public_id AS client_public_id`);
+  return selects;
+}
+
+const tableExistsCache = {};
+
+async function tableExists(table) {
+  if (tableExistsCache[table] !== undefined) {
+    return tableExistsCache[table];
+  }
+  const rows = await queryAsync(
+    'SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1',
+    [table]
+  );
+  tableExistsCache[table] = Array.isArray(rows) && rows.length > 0;
+  return tableExistsCache[table];
+}
+
+async function fetchClientDocuments(clientIds = []) {
+  if (!clientIds.length) return {};
+  if (!(await tableExists('client_documents'))) return {};
+  const rows = await queryAsync(
+    'SELECT id, client_id, file_url, file_name, file_type, uploaded_at FROM client_documents WHERE client_id IN (?) AND is_active = 1 ORDER BY uploaded_at DESC',
+    [clientIds]
+  );
+  return (rows || []).reduce((memo, row) => {
+    if (!row || row.client_id === undefined || row.client_id === null) return memo;
+    if (!memo[row.client_id]) memo[row.client_id] = [];
+    memo[row.client_id].push(row);
+    return memo;
+  }, {});
+}
+
+async function gatherManagerProjects(req) {
+  const columnMeta = await fetchColumnTypes('projects', ['manager_id', 'project_manager_id']);
+  const clause = buildAccessClause(columnMeta, req.user);
+  if (!clause) return [];
+  const clientFields = await clientFieldSelects('c');
+  const sql = `
+    SELECT
+      p.id,
+      p.public_id,
+      p.name,
+      p.status,
+      p.priority,
+      p.start_date,
+      p.end_date,
+      p.client_id,
+      ${clientFields.join(', ')}
+    FROM projects p
+    LEFT JOIN clientss c ON c.id = p.client_id
+    WHERE (${clause.expression})
+    ORDER BY p.updated_at DESC, p.created_at DESC
+  `;
+  return await queryAsync(sql, clause.params);
+}
+
+function dedupe(values = []) {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+async function countRelatedTasks(projectIds = [], projectPublicIds = []) {
+  if (!projectIds.length && !projectPublicIds.length) return 0;
+  const filters = [];
+  const params = [];
+  if (projectIds.length && (await cachedHasColumn('tasks', 'project_id'))) {
+    filters.push('t.project_id IN (?)');
+    params.push(projectIds);
+  }
+  if (projectPublicIds.length && (await cachedHasColumn('tasks', 'project_public_id'))) {
+    filters.push('t.project_public_id IN (?)');
+    params.push(projectPublicIds);
+  }
+  if (!filters.length) return 0;
+  const hasIsDeletedFlag = await cachedHasColumn('tasks', 'isDeleted');
+  const deletedClauseLine = hasIsDeletedFlag
+    ? `
+    AND (t.isDeleted IS NULL OR t.isDeleted != 1)`
+    : '';
+  const sql = `
+    SELECT COUNT(DISTINCT t.id) AS total
+    FROM tasks t
+    WHERE (${filters.join(' OR ')})${deletedClauseLine}
+  `;
+  return (await queryAsync(sql, params))[0]?.total || 0;
+}
+
+async function buildTaskFilter(projectIds, projectPublicIds) {
+  const clauses = [];
+  const params = [];
+  if (projectIds.length && (await cachedHasColumn('tasks', 'project_id'))) {
+    clauses.push('t.project_id IN (?)');
+    params.push(projectIds);
+  }
+  if (projectPublicIds.length && (await cachedHasColumn('tasks', 'project_public_id'))) {
+    clauses.push('t.project_public_id IN (?)');
+    params.push(projectPublicIds);
+  }
+  if (!clauses.length) return null;
+  return { expression: clauses.join(' OR '), params };
+}
+
+async function fetchTaskTimeline(projectIds, projectPublicIds) {
+  const filter = await buildTaskFilter(projectIds, projectPublicIds);
+  if (!filter) return [];
+  const clientFields = await clientFieldSelects('c');
+  const hasIsDeletedFlag = await cachedHasColumn('tasks', 'isDeleted');
+  const sql = `
+    SELECT
+      t.id AS task_internal_id,
+      t.public_id AS task_id,
+      t.title,
+      t.stage,
+      t.taskDate,
+      t.priority,
+      t.status,
+      t.time_alloted,
+      ${clientFields.join(', ')},
+      p.id AS project_internal_id,
+      p.public_id AS project_public_id,
+      p.name AS project_name,
+      p.priority AS project_priority,
+      p.status AS project_status,
+      p.start_date AS project_start_date,
+      p.end_date AS project_end_date,
+      p.client_id AS project_client_id,
+      GROUP_CONCAT(DISTINCT u._id) AS assigned_user_internal_ids,
+      GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
+      GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names
+    FROM tasks t
+    LEFT JOIN clientss c ON c.id = t.client_id
+    LEFT JOIN projects p ON (p.id = t.project_id OR (t.project_public_id IS NOT NULL AND p.public_id = t.project_public_id))
+    LEFT JOIN taskassignments ta ON ta.task_id = t.id
+    LEFT JOIN users u ON u._id = ta.user_id
+    WHERE (${filter.expression})${hasIsDeletedFlag ? `
+     AND (t.isDeleted IS NULL OR t.isDeleted != 1)` : ''}
+    GROUP BY t.id
+    ORDER BY t.taskDate ASC, t.updatedAt DESC
+  `;
+  return await queryAsync(sql, filter.params);
+}
+
+function parseProjectFilter(req) {
+  const candidates = [
+    req.query?.project_id,
+    req.query?.projectId,
+    req.query?.project_public_id,
+    req.query?.projectPublicId,
+    req.body?.project_id,
+    req.body?.projectId,
+    req.body?.project_public_id,
+    req.body?.projectPublicId
+  ];
+  const raw = candidates.find((value) => value !== undefined && value !== null && String(value).trim() !== '');
+  if (!raw) return null;
+  const trimmed = String(raw).trim();
+  if (!trimmed) return null;
+  if (/^\d+$/.test(trimmed)) {
+    return { type: 'id', value: Number(trimmed) };
+  }
+  return { type: 'public', value: trimmed };
+}
+
+function toIsoDate(value) {
+  if (value === undefined || value === null) return null;
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) return null;
+  return timestamp.toISOString();
+}
+
+async function fetchManagerDepartment(userId) {
+  if (!userId) return null;
+  const rows = await queryAsync(
+    'SELECT department_public_id FROM users WHERE _id = ? LIMIT 1',
+    [userId]
+  );
+  if (!Array.isArray(rows) || !rows.length) return null;
+  return rows[0].department_public_id || null;
+}
 
 module.exports = {
   getManagerDashboard: async (req, res) => {
     try {
-      const q = (sql, params=[]) => new Promise((r, rej) => db.query(sql, params, (e, rows) => e ? rej(e) : r(rows)));
-      const cols = await q("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'projects' AND COLUMN_NAME = 'manager_id'");
-      let projectCountRow;
-      if (Array.isArray(cols) && cols.length > 0) {
-        projectCountRow = (await q('SELECT COUNT(*) as c FROM projects WHERE manager_id = ?', [req.user.id]))[0] || { c: 0 };
-      } else {
-        projectCountRow = { c: 0 };
-      }
-      const projectCount = projectCountRow.c;
-      const taskCountRow = (await q('SELECT COUNT(*) as c FROM tasks'))[0] || { c: 0 };
-      const taskCount = taskCountRow.c;
-      return res.json({ success: true, data: { projectCount, taskCount } });
-    } catch (e) {
-      return res.status(500).json({ success: false, error: e.message });
+      const resources = await requireFeatureAccess(req, 'Dashboard');
+      const projects = await gatherManagerProjects(req);
+      const projectIds = dedupe(projects.map((project) => project.id)).filter(Boolean);
+      const projectPublicIds = dedupe(projects.map((project) => project.public_id)).filter(Boolean);
+      const projectCount = projects.length;
+      const taskCount = await countRelatedTasks(projectIds, projectPublicIds);
+      const assignedClientIds = Array.isArray(resources.assignedClientIds)
+        ? resources.assignedClientIds.filter(Boolean)
+        : [];
+      const clientCount = assignedClientIds.length
+        ? (await queryAsync(
+            'SELECT COUNT(*) AS total FROM clientss WHERE id IN (?) AND (isDeleted IS NULL OR isDeleted != 1)',
+            [assignedClientIds]
+          ))[0]?.total || 0
+        : 0;
+      return res.json({
+        success: true,
+        data: { projectCount, taskCount, clientCount }
+      });
+    } catch (error) {
+      return res.status(error.status || 500).json({ success: false, error: error.message });
     }
   },
 
-  createProject: (req, res) => {
-    const { name, description } = req.body;
-    if (!name) return res.status(400).json({ success: false, error: 'Project name required' });
-    const sql = 'INSERT INTO projects (name, description, manager_id, tenant_id, created_at) VALUES (?, ?, ?, ?, NOW())';
-    const tenant = req.user.tenant_id || null;
-    db.query(sql, [name, description || '', req.user.id, tenant], (err, result) => {
-      if (err) return res.status(500).json({ success: false, error: err.message });
-      res.json({ success: true, data: { id: result.insertId, name, description } });
-    });
+  getAssignedClients: async (req, res) => {
+    try {
+      const resources = await requireFeatureAccess(req, 'Assigned Clients');
+      const assignedClientIds = Array.isArray(resources.assignedClientIds)
+        ? resources.assignedClientIds.filter(Boolean)
+        : [];
+      if (!assignedClientIds.length) return res.json({ success: true, data: [] });
+
+      const hasStatus = await cachedHasColumn('clientss', 'status');
+      const hasCreatedAt = await cachedHasColumn('clientss', 'created_at');
+      const hasManager = await cachedHasColumn('clientss', 'manager_id');
+      const hasEmail = await cachedHasColumn('clientss', 'email');
+      const hasPhone = await cachedHasColumn('clientss', 'phone');
+      const hasPublicId = await cachedHasColumn('clientss', 'public_id');
+      const hasIsDeleted = await cachedHasColumn('clientss', 'isDeleted');
+      const hasClientContacts = await tableExists('client_contacts');
+
+      const selectCols = ['c.id', 'c.ref', 'c.name', 'c.company'];
+      if (hasPublicId) selectCols.push('c.public_id');
+      if (hasStatus) selectCols.push('c.status');
+      if (hasManager) {
+        selectCols.push('c.manager_id');
+        selectCols.push('(SELECT public_id FROM users WHERE _id = c.manager_id OR public_id = c.manager_id LIMIT 1) AS manager_public_id');
+        selectCols.push('(SELECT name FROM users WHERE _id = c.manager_id OR public_id = c.manager_id LIMIT 1) AS manager_name');
+      }
+      if (hasCreatedAt) selectCols.push('c.created_at');
+      if (hasClientContacts) {
+        if (!hasEmail) selectCols.push('pc.email AS email');
+        else selectCols.push('c.email');
+        if (!hasPhone) selectCols.push('pc.phone AS phone');
+        else selectCols.push('c.phone');
+      } else {
+        if (hasEmail) selectCols.push('c.email');
+        if (hasPhone) selectCols.push('c.phone');
+      }
+
+      const joinClause = hasClientContacts
+        ? ' LEFT JOIN (SELECT client_id, email, phone FROM client_contacts WHERE is_primary = 1) pc ON pc.client_id = c.id '
+        : '';
+
+      const filters = ['c.id IN (?)'];
+      const params = [assignedClientIds];
+      if (hasIsDeleted) filters.push('(c.isDeleted IS NULL OR c.isDeleted != 1)');
+      const whereSql = `WHERE ${filters.join(' AND ')}`;
+      const orderBy = hasCreatedAt ? 'c.created_at DESC' : 'c.id DESC';
+
+      const clients = await queryAsync(
+        `SELECT ${selectCols.join(', ')} FROM clientss c${joinClause} ${whereSql} ORDER BY ${orderBy}`,
+        params
+      );
+
+      const documentsByClient = await fetchClientDocuments(assignedClientIds);
+
+      const payload = await Promise.all(
+        (clients || []).map(async (client) => {
+          const normalizedManagerId = hasManager && client.manager_id && Number(client.manager_id) !== 0 ? client.manager_id : null;
+          const row = {
+            id: client.id,
+            public_id: client.public_id || null,
+            ref: client.ref,
+            name: client.name,
+            company: client.company,
+            status: client.status || null,
+            manager_id: normalizedManagerId,
+            manager_public_id: client.manager_public_id || null,
+            manager_name: client.manager_name || null,
+            created_at: client.created_at || null,
+            email: client.email || null,
+            phone: client.phone || null,
+            documents: documentsByClient[client.id] || []
+          };
+
+          if (hasManager && normalizedManagerId && !row.manager_name) {
+            const mgr = await queryAsync(
+              'SELECT public_id, name FROM users WHERE _id = ? OR public_id = ? LIMIT 1',
+              [normalizedManagerId, String(normalizedManagerId)]
+            );
+            if (Array.isArray(mgr) && mgr.length > 0) {
+              row.manager_public_id = mgr[0].public_id || row.manager_public_id;
+              row.manager_name = mgr[0].name || row.manager_name;
+            }
+          }
+
+          return row;
+        })
+      );
+
+      return res.json({ success: true, data: payload });
+    } catch (error) {
+      return res.status(error.status || 500).json({ success: false, error: error.message });
+    }
   },
 
-  updateProject: (req, res) => {
-    const { id } = req.params;
-    db.query('UPDATE projects SET ? WHERE id = ?', [req.body, id], (err) => {
-      if (err) return res.status(500).json({ success: false, error: err.message });
-      res.json({ success: true, message: 'Project updated' });
-    });
+  getAssignedProjects: async (req, res) => {
+    try {
+      await requireFeatureAccess(req, 'Projects');
+      const projects = await gatherManagerProjects(req);
+      const payload = projects.map((project) => ({
+        id: project.public_id || String(project.id),
+        name: project.name,
+        status: project.status,
+        priority: project.priority,
+        startDate: project.start_date,
+        endDate: project.end_date,
+        client: project.client_id
+          ? { id: project.client_public_id || String(project.client_id), name: project.client_name }
+          : null
+      }));
+      return res.json({ success: true, data: payload });
+    } catch (error) {
+      return res.status(error.status || 500).json({ success: false, error: error.message });
+    }
   },
 
-  reassignTask: (req, res) => {
-    const { taskId, newUserId } = req.body;
-    if (!taskId || !newUserId) return res.status(400).json({ success: false, error: 'taskId and newUserId required' });
-    db.query('UPDATE tasks SET assigned_to = ? WHERE id = ?', [newUserId, taskId], (err, result) => {
-      if (err) return res.status(500).json({ success: false, error: err.message });
-      res.json({ success: true, message: 'Task reassigned' });
-    });
+  getTaskTimeline: async (req, res) => {
+    try {
+      await requireFeatureAccess(req, 'Tasks');
+      const projects = await gatherManagerProjects(req);
+      const projectIds = dedupe(projects.map((project) => project.id)).filter(Boolean);
+      const projectPublicIds = dedupe(projects.map((project) => project.public_id)).filter(Boolean);
+      const projectFilter = parseProjectFilter(req);
+      const lookupById = new Map();
+      const lookupByPublicId = new Map();
+      projects.forEach((project) => {
+        if (project && project.id) lookupById.set(String(project.id), project);
+        if (project && project.public_id) lookupByPublicId.set(String(project.public_id), project);
+      });
+      let selectedProject = null;
+      let filteredProjectIds = [...projectIds];
+      let filteredProjectPublicIds = [...projectPublicIds];
+      if (projectFilter) {
+        selectedProject =
+          projectFilter.type === 'id'
+            ? lookupById.get(String(projectFilter.value))
+            : lookupByPublicId.get(String(projectFilter.value));
+        if (!selectedProject) {
+          return res
+            .status(404)
+            .json({ success: false, error: 'Project not found or not assigned to this manager' });
+        }
+        filteredProjectIds = selectedProject.id ? [selectedProject.id] : [];
+        filteredProjectPublicIds = selectedProject.public_id ? [selectedProject.public_id] : [];
+      }
+      const tasks = await fetchTaskTimeline(filteredProjectIds, filteredProjectPublicIds);
+      const taskInternalIds = dedupe(tasks.map((task) => task.task_internal_id)).filter(Boolean);
+      let taskChecklists = [];
+      let taskActivities = [];
+      if (taskInternalIds.length) {
+        taskChecklists = await queryAsync(
+          'SELECT id, task_Id AS task_id, title, due_date, tag, created_at, updated_at, status, estimated_hours FROM subtasks WHERE task_Id IN (?)',
+          [taskInternalIds]
+        );
+        taskActivities = await queryAsync(
+          `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt, u._id AS user_id, u.name AS user_name
+           FROM task_activities ta
+           LEFT JOIN users u ON ta.user_id = u._id
+           WHERE ta.task_id IN (?)
+           ORDER BY ta.createdAt DESC`,
+          [taskInternalIds]
+        );
+      }
+      const checklistMap = {};
+      (taskChecklists || []).forEach((subtask) => {
+        if (!subtask || subtask.task_id === undefined || subtask.task_id === null) return;
+        const key = String(subtask.task_id);
+        if (!checklistMap[key]) checklistMap[key] = [];
+        checklistMap[key].push({
+          id: subtask.id,
+          title: subtask.title || null,
+          status: subtask.status || null,
+          dueDate: toIsoDate(subtask.due_date),
+          tag: subtask.tag || null,
+          estimatedHours: subtask.estimated_hours != null ? Number(subtask.estimated_hours) : null,
+          createdAt: toIsoDate(subtask.created_at),
+          updatedAt: toIsoDate(subtask.updated_at)
+        });
+      });
+      const activityMap = {};
+      (taskActivities || []).forEach((activity) => {
+        if (!activity || activity.task_id === undefined || activity.task_id === null) return;
+        const key = String(activity.task_id);
+        if (!activityMap[key]) activityMap[key] = [];
+        activityMap[key].push({
+          type: activity.type || null,
+          activity: activity.activity || null,
+          createdAt: toIsoDate(activity.createdAt),
+          user: activity.user_id ? { id: String(activity.user_id), name: activity.user_name || null } : null
+        });
+      });
+      const formatted = (tasks || []).map((task) => {
+        const assignedInternal = task.assigned_user_internal_ids
+          ? String(task.assigned_user_internal_ids).split(',')
+          : [];
+        const assignedPublic = task.assigned_user_public_ids
+          ? String(task.assigned_user_public_ids).split(',')
+          : [];
+        const assignedNames = task.assigned_user_names ? String(task.assigned_user_names).split(',') : [];
+        const assignedUsers = assignedPublic.map((publicId, idx) => ({
+          id: publicId || (assignedInternal[idx] ? String(assignedInternal[idx]) : null),
+          internalId: assignedInternal[idx] ? String(assignedInternal[idx]) : null,
+          name: assignedNames[idx] || null
+        }));
+        const taskKey = String(task.task_internal_id || task.task_id);
+        return {
+          id: task.task_id ? String(task.task_id) : String(task.task_internal_id),
+          title: task.title,
+          stage: task.stage,
+          taskDate: task.taskDate ? new Date(task.taskDate).toISOString() : null,
+          priority: task.priority,
+          status: task.status,
+          timeAlloted: task.time_alloted != null ? Number(task.time_alloted) : null,
+          client: {
+            id: task.client_public_id || (task.client_id ? String(task.client_id) : null),
+            name: task.client_name || null
+          },
+          project: {
+            internalId: task.project_internal_id || null,
+            id: task.project_public_id || (task.project_internal_id ? String(task.project_internal_id) : null),
+            name: task.project_name || null,
+            status: task.project_status || null,
+            priority: task.project_priority || null,
+            startDate: toIsoDate(task.project_start_date),
+            endDate: toIsoDate(task.project_end_date),
+            clientId: task.project_client_id ? String(task.project_client_id) : null
+          },
+          assignedUsers,
+          checklist: checklistMap[taskKey] || [],
+          activityTimeline: activityMap[taskKey] || []
+        };
+      });
+      const meta = { count: formatted.length };
+      let projectMeta = null;
+      if (selectedProject) {
+        projectMeta = {
+          internalId: selectedProject.id || null,
+          id: selectedProject.public_id || (selectedProject.id ? String(selectedProject.id) : null),
+          publicId: selectedProject.public_id || null,
+          name: selectedProject.name || null,
+          status: selectedProject.status || null,
+          priority: selectedProject.priority || null,
+          startDate: toIsoDate(selectedProject.start_date),
+          endDate: toIsoDate(selectedProject.end_date),
+          client: {
+            id: selectedProject.client_public_id || (selectedProject.client_id ? String(selectedProject.client_id) : null),
+            name: selectedProject.client_name || null
+          }
+        };
+        meta.project = projectMeta;
+      }
+      const payload = { success: true, data: formatted, meta };
+      if (projectMeta) payload.project = projectMeta;
+      return res.json(payload);
+    } catch (error) {
+      return res.status(error.status || 500).json({ success: false, error: error.message });
+    }
+  },
+
+  getDepartmentEmployees: async (req, res) => {
+    try {
+      await requireFeatureAccess(req, 'Tasks');
+      const departmentPublicId = await fetchManagerDepartment(req.user._id);
+      if (!departmentPublicId) {
+        return res.json({ success: true, data: [] });
+      }
+      const rows = await queryAsync(
+        `SELECT _id, public_id, name, email, phone, title, role, isActive, isGuest, department_public_id
+         FROM users
+         WHERE role = 'Employee' AND department_public_id = ?`,
+        [departmentPublicId]
+      );
+      const employees = (rows || []).map((row) => ({
+        id: row.public_id || String(row._id),
+        internalId: row._id ? String(row._id) : null,
+        name: row.name || null,
+        email: row.email || null,
+        phone: row.phone || null,
+        title: row.title || null,
+        role: row.role || null,
+        isActive: row.isActive !== undefined ? Boolean(row.isActive) : null,
+        isGuest: row.isGuest !== undefined ? Boolean(row.isGuest) : null,
+        departmentPublicId: row.department_public_id || null
+      }));
+      return res.json({ success: true, data: employees, meta: { count: employees.length } });
+    } catch (error) {
+      return res.status(error.status || 500).json({ success: false, error: error.message });
+    }
   }
 };

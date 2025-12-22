@@ -6,10 +6,40 @@
 
 const db = require(__root + 'db');
 
+function buildTenantClause(alias = 'clientss', tenantId) {
+  const tenantParam = tenantId ?? null;
+  const column = `${alias}.tenant_id`;
+  return {
+    clause: `(${column} = ? OR ${column} IS NULL OR ${column} = 0 OR ? IS NULL)`,
+    params: [tenantParam, tenantParam]
+  };
+}
+
+function normalizeIdentifier(value) {
+  if (value === undefined || value === null) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  return raw;
+}
+
+function buildManagerClause(userId, externalId) {
+  const primaryId = normalizeIdentifier(userId);
+  const external = normalizeIdentifier(externalId);
+  const managerSet = new Set();
+  if (primaryId !== null) managerSet.add(primaryId);
+  if (external !== null) managerSet.add(external);
+  const managerIds = Array.from(managerSet);
+  const clauseParts = managerIds.map(() => 'manager_id = ?').join(' OR ');
+  const clause = clauseParts ? `(${clauseParts}) OR user_id = ?` : 'user_id = ?';
+  const params = [...managerIds, userId];
+  return { clause, params };
+}
+
 /**
  * Get role-specific dashboard metrics
  */
-async function getDashboardMetrics(userId, userRole, tenantId) {
+async function getDashboardMetrics(userId, userRole, tenantId, userExternalId) {
   return new Promise(async (resolve) => {
     try {
       const metrics = {
@@ -31,8 +61,12 @@ async function getDashboardMetrics(userId, userRole, tenantId) {
         },
 
         Manager: async () => {
+          const tenantFilter = buildTenantClause('clientss', tenantId);
+          const managerMatch = buildManagerClause(userId, userExternalId);
+          const clientClause = `${managerMatch.clause} AND ${tenantFilter.clause}`;
+          const clientParams = [...managerMatch.params, ...tenantFilter.params];
           const stats = await Promise.all([
-            new Promise(r => db.query('SELECT COUNT(*) as count FROM clientss WHERE manager_id = ? AND tenant_id = ?', [userId, tenantId], (e, res) => r(res && res[0] ? res[0].count : 0))),
+            new Promise(r => db.query(`SELECT COUNT(*) as count FROM clientss WHERE ${clientClause}`, clientParams, (e, res) => r(res && res[0] ? res[0].count : 0))),
             new Promise(r => db.query('SELECT COUNT(*) as count FROM tasks WHERE assigned_to_manager = ? AND tenant_id = ?', [userId, tenantId], (e, res) => r(res && res[0] ? res[0].count : 0))),
             new Promise(r => db.query('SELECT COUNT(*) as count FROM tasks WHERE assigned_to_manager = ? AND stage = "completed" AND tenant_id = ?', [userId, tenantId], (e, res) => r(res && res[0] ? res[0].count : 0))),
           ]);
@@ -94,7 +128,7 @@ async function getDashboardMetrics(userId, userRole, tenantId) {
 /**
  * Get accessible resources based on role
  */
-async function getAccessibleResources(userId, userRole, tenantId) {
+async function getAccessibleResources(userId, userRole, tenantId, userExternalId) {
   return new Promise(async (resolve) => {
     try {
       const resources = {
@@ -111,9 +145,16 @@ async function getAccessibleResources(userId, userRole, tenantId) {
         }),
 
         Manager: async () => {
+          const tenantFilter = buildTenantClause('clientss', tenantId);
+          const managerMatch = buildManagerClause(userId, userExternalId);
+          const clause = `${managerMatch.clause} AND ${tenantFilter.clause}`;
+          const params = [...managerMatch.params, ...tenantFilter.params];
           const clientIds = await new Promise(r =>
-            db.query('SELECT id FROM clientss WHERE manager_id = ? AND tenant_id = ?', [userId, tenantId],
-              (e, res) => r(res ? res.map(r => r.id) : []))
+            db.query(
+              `SELECT id FROM clientss WHERE ${clause}`,
+              params,
+              (e, res) => r(res ? res.map(r => r.id) : [])
+            )
           );
           return {
             canViewAllClients: false,

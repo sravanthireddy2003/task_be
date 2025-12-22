@@ -88,6 +88,24 @@ function q(sql, params = []) {
     db.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
   });
 }
+
+function isEmptyValue(value) {
+  if (value === undefined || value === null) return true;
+  if (typeof value === 'number') return value === 0;
+  const str = String(value).trim();
+  return str === '' || str === '0';
+}
+
+async function resolveUserId(value) {
+  if (isEmptyValue(value)) return null;
+  const raw = String(value).trim();
+  if (/^\d+$/.test(raw)) {
+    const rows = await q('SELECT _id FROM users WHERE _id = ? LIMIT 1', [Number(raw)]).catch(() => []);
+    return Array.isArray(rows) && rows.length ? rows[0]._id : null;
+  }
+  const rows = await q('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [raw]).catch(() => []);
+  return Array.isArray(rows) && rows.length ? rows[0]._id : null;
+}
  
 // Cache and helper to check for column existence (prevents ER_BAD_FIELD_ERROR)
 const columnCache = {};
@@ -134,10 +152,19 @@ router.post('/', requireRole('Admin'), async (req, res) => {
     await ensureClientTables();
     const {
       name, company, billingAddress, officeAddress, gstNumber, taxId, industry,
-      notes, status = 'Active', managerId, contacts = [], enableClientPortal = false,
+      notes, status = 'Active', managerId, manager_id: managerIdSnake, contacts = [], enableClientPortal = false,
       createViewer = false, email, phone, district, pincode, state, documents = []
     } = req.body;
  
+    const managerInput = managerId ?? managerIdSnake ?? null;
+    let resolvedManagerId = null;
+    if (!isEmptyValue(managerInput)) {
+      resolvedManagerId = await resolveUserId(managerInput);
+      if (resolvedManagerId === null) {
+        return res.status(404).json({ success: false, error: 'Manager not found' });
+      }
+    }
+
     if (!name || !company) {
       return res.status(400).json({ success: false, error: 'name and company required' });
     }
@@ -171,7 +198,7 @@ router.post('/', requireRole('Admin'), async (req, res) => {
     const fullParams = [
       ref, name, company, billingAddress || null, officeAddress || null,
       gstNumber || null, taxId || null, industry || null, notes || null,
-      status, managerId || null, email || null, phone || null
+      status, resolvedManagerId, email || null, phone || null
     ];
  
     let clientId;
@@ -189,7 +216,7 @@ router.post('/', requireRole('Admin'), async (req, res) => {
             tax_id = ?, industry = ?, notes = ?, manager_id = ?, email = ?, phone = ?
             WHERE id = ?
           `, [billingAddress || null, officeAddress || null, gstNumber || null, taxId || null,
-              industry || null, notes || null, managerId || null, email || null, phone || null, clientId]);
+              industry || null, notes || null, resolvedManagerId, email || null, phone || null, clientId]);
         } catch (u) { /* ignore update failures for optional columns */ }
       } else {
         throw e;
@@ -623,8 +650,39 @@ router.get('/:id', requireRole(['Admin','Manager','Client-Viewer']), async (req,
 });
  
 router.put('/:id', requireRole(['Admin','Manager']), async (req, res) => {
-  try { const id = req.params.id; const payload = req.body || {}; delete payload.id; delete payload.ref; const allowed = ['name','company','billing_address','office_address','gst_number','tax_id','industry','notes','status','manager_id']; const setCols = []; const params = []; for (const k of allowed) if (payload[k] !== undefined) { setCols.push(`${k} = ?`); params.push(payload[k]); } if (setCols.length === 0) return res.status(400).json({ success: false, error: 'No updatable fields provided' }); params.push(id); await q(`UPDATE clientss SET ${setCols.join(', ')} WHERE id = ?`, params); await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'update', JSON.stringify(payload)]).catch(()=>{}); return res.json({ success: true, message: 'Client updated' }); } catch (e) { logger.error('Error updating client: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
- 
+  try {
+    const id = req.params.id;
+    const payload = req.body || {};
+    delete payload.id;
+    delete payload.ref;
+    if (payload.managerId !== undefined && payload.manager_id === undefined) {
+      payload.manager_id = payload.managerId;
+      delete payload.managerId;
+    }
+    if (payload.manager_id !== undefined) {
+      if (!isEmptyValue(payload.manager_id)) {
+        const resolved = await resolveUserId(payload.manager_id);
+        if (resolved === null) {
+          return res.status(404).json({ success: false, error: 'Manager not found' });
+        }
+        payload.manager_id = resolved;
+      } else {
+        payload.manager_id = null;
+      }
+    }
+    const allowed = ['name','company','billing_address','office_address','gst_number','tax_id','industry','notes','status','manager_id'];
+    const setCols = [];
+    const params = [];
+    for (const k of allowed) if (payload[k] !== undefined) { setCols.push(`${k} = ?`); params.push(payload[k]); }
+    if (setCols.length === 0) return res.status(400).json({ success: false, error: 'No updatable fields provided' });
+    params.push(id);
+    await q(`UPDATE clientss SET ${setCols.join(', ')} WHERE id = ?`, params);
+    await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'update', JSON.stringify(payload)]).catch(()=>{});
+    return res.json({ success: true, message: 'Client updated' });
+  } catch (e) {
+    logger.error('Error updating client: ' + e.message);
+    return res.status(500).json({ success: false, error: e.message });
+  }
 });
  
 router.delete('/:id', requireRole('Admin'), async (req, res) => {
@@ -639,7 +697,34 @@ router.delete('/:id/permanent', requireRole('Admin'), async (req, res) => {
   try { const id = req.params.id; await q('DELETE FROM client_documents WHERE client_id = ?', [id]).catch(()=>{}); await q('DELETE FROM client_contacts WHERE client_id = ?', [id]).catch(()=>{}); await q('DELETE FROM client_activity_logs WHERE client_id = ?', [id]).catch(()=>{}); await q('DELETE FROM clientss WHERE id = ?', [id]); return res.json({ success: true, message: 'Client permanently deleted' }); } catch (e) { logger.error('Error permanently deleting client: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
 });
  
-router.post('/:id/assign-manager', requireRole('Admin'), async (req, res) => { try { const id = req.params.id; const { managerId } = req.body; if (!managerId) return res.status(400).json({ success: false, error: 'managerId required' }); await q('UPDATE clientss SET manager_id = ? WHERE id = ?', [managerId, id]); await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'assign-manager', JSON.stringify({ managerId })]).catch(()=>{}); return res.json({ success: true, message: 'Manager assigned' }); } catch (e) { logger.error('Error assigning manager: ' + e.message); return res.status(500).json({ success: false, error: e.message }); } });
+router.post('/:id/assign-manager', requireRole('Admin'), async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { managerId, manager_id: managerIdSnake, managerPublicId } = req.body || {};
+    const hasManagerField = Object.prototype.hasOwnProperty.call(req.body || {}, 'managerId')
+      || Object.prototype.hasOwnProperty.call(req.body || {}, 'manager_id')
+      || Object.prototype.hasOwnProperty.call(req.body || {}, 'managerPublicId');
+    if (!hasManagerField) {
+      return res.status(400).json({ success: false, error: 'managerId required' });
+    }
+    const managerInput = managerId ?? managerIdSnake ?? managerPublicId ?? null;
+    let finalManagerId = null;
+    if (!isEmptyValue(managerInput)) {
+      finalManagerId = await resolveUserId(managerInput);
+      if (finalManagerId === null) {
+        return res.status(404).json({ success: false, error: 'Manager not found' });
+      }
+    }
+    await q('UPDATE clientss SET manager_id = ? WHERE id = ?', [finalManagerId, id]);
+    await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())',
+      [id, req.user && req.user._id ? req.user._id : null, finalManagerId ? 'assign-manager' : 'unassign-manager', JSON.stringify({ managerId: finalManagerId })])
+      .catch(() => {});
+    return res.json({ success: true, message: finalManagerId ? 'Manager assigned' : 'Manager unassigned' });
+  } catch (e) {
+    logger.error('Error assigning manager: ' + e.message);
+    return res.status(500).json({ success: false, error: e.message });
+  }
+});
  
 // Create a client-viewer account and map it to this client
 router.post('/:id/create-viewer', requireRole('Admin'), async (req, res) => {

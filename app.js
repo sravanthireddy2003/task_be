@@ -79,12 +79,12 @@ app.use('/api/users', clientViewerAccessControl, StaffUser);
 const tasksCRUD=require(__root + 'controller/Tasks');
 app.use('/api/tasks', clientViewerAccessControl, tasksCRUD);
 
-const clientsCRUD=require(__root + 'controller/ClientsApi');
-app.use('/api/clients', clientViewerAccessControl, clientsCRUD);
-
 
 const uploadCRUD=require(__root + 'controller/Uploads');
 app.use('/api/uploads',uploadCRUD);
+
+const clientRoutes = require(__root + 'routes/clientRoutes');
+app.use('/api/clients', clientRoutes);
 
 // Admin routes (modules, departments, projects, tasks overview)
 const adminRoutes = require(__root + 'routes/adminRoutes');
@@ -93,6 +93,12 @@ app.use('/api/admin', adminRoutes);
 // Project Management Routes (department-wise projects, tasks, subtasks)
 const projectRoutes = require(__root + 'routes/projectRoutes');
 app.use('/api/projects', projectRoutes);
+
+const managerRoutes = require(__root + 'routes/managerRoutes');
+app.use('/api/manager', managerRoutes);
+
+const employeeRoutes = require(__root + 'routes/employeeRoutes');
+app.use('/api/employee', employeeRoutes);
 
 
 module.exports = app;

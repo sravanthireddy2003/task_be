@@ -431,8 +431,9 @@ async function completeLoginForUser(user, req, res) {
     let roleBasedData = {};
     try {
       const RoleBasedLoginResponse = require('./utils/RoleBasedLoginResponse');
-      const metrics = await RoleBasedLoginResponse.getDashboardMetrics(user._id, user.role, user.tenant_id);
-      const resources = await RoleBasedLoginResponse.getAccessibleResources(user._id, user.role, user.tenant_id);
+      const publicId = user.public_id || null;
+      const metrics = await RoleBasedLoginResponse.getDashboardMetrics(user._id, user.role, user.tenant_id, publicId);
+      const resources = await RoleBasedLoginResponse.getAccessibleResources(user._id, user.role, user.tenant_id, publicId);
       roleBasedData = { metrics, resources };
     } catch (e) {
       console.warn('Could not load role-based login response:', e.message);
