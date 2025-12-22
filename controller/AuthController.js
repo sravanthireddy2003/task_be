@@ -108,6 +108,7 @@ function normalizeStoredModules(user) {
     .filter(m => (m.name || '').toLowerCase() !== 'team & employees');
 }
 
+
 function getDefaultModules(role) {
   function mk(name, access) { return { moduleId: crypto.randomBytes(8).toString('hex'), name, access }; }
   if (role === 'Admin') return [ mk('User Management','full'), mk('Dashboard','full'), mk('Clients','full'), mk('Departments','full'), mk('Tasks','full'), mk('Projects','full'), mk('Workflow (Project & Task Flow)','full'), mk('Notifications','full'), mk('Reports & Analytics','full'), mk('Document & File Management','full'), mk('Chat / Real-Time Collaboration','full'), mk('Approval Workflows','full'), mk('Settings & Master Configuration','full') ];
