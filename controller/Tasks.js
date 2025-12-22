@@ -36,7 +36,7 @@ router.use(tenantMiddleware);
 // POST /api/projects/tasks/selected-details
 // Body: { "taskIds": [1,2,3] }
 // Returns tasks with assigned users, subtasks (checklist), activities, and total hours
-router.post('/selected-details', requireRole(['Admin','Manager','Employee']), async (req, res) => {
+router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const taskIds = req.body.taskIds || req.body.task_ids || [];
     if (!Array.isArray(taskIds) || taskIds.length === 0) return res.status(400).json({ success: false, error: 'taskIds (array) required' });
@@ -202,14 +202,13 @@ async function createJsonHandler(req, res) {
 
     db.getConnection((err, connection) => {
       if (err) {
-        console.error("Error getting database connection:", err);
         return res.status(500).send("Database connection error");
       }
 
       // resolve client_id and project details from projectId or projectPublicId when missing
       let finalProjectId = projectId || null;
       let finalProjectPublicId = projectPublicId || null;
-      
+
       const resolveClientId = (cb) => {
         if (finalClientId) return cb(null, finalClientId);
         if (!projectId && !projectPublicId) return cb(new Error('missing_client_and_project'));
@@ -226,7 +225,6 @@ async function createJsonHandler(req, res) {
       resolveClientId((resolveErr, resolvedCid) => {
         if (resolveErr) {
           connection.release();
-          console.error('Error resolving client_id from project identifiers:', resolveErr && resolveErr.message);
           return res.status(400).send('Missing required fields: client_id or valid projectId/projectPublicId');
         }
         finalClientId = resolvedCid;
@@ -234,7 +232,6 @@ async function createJsonHandler(req, res) {
         connection.beginTransaction((err) => {
           if (err) {
             connection.release();
-            console.error("Error starting transaction:", err);
             return res.status(500).send("Error starting transaction");
           }
 
@@ -248,7 +245,6 @@ async function createJsonHandler(req, res) {
             if (checkErr) {
               return connection.rollback(() => {
                 connection.release();
-                console.error("Error checking high priority tasks:", checkErr);
                 return res.status(500).send("Error checking existing tasks");
               });
             }
@@ -282,7 +278,6 @@ async function createJsonHandler(req, res) {
                 if (updateErr) {
                   return connection.rollback(() => {
                     connection.release();
-                    console.error("Error updating existing high priority task:", updateErr);
                     return res.status(500).send("Error managing task priorities");
                   });
                 }
@@ -297,13 +292,12 @@ async function createJsonHandler(req, res) {
       });
     });
   } catch (error) {
-    console.error("Error in task creation process:", error);
     return res.status(500).send("Error in task creation process");
   }
 }
 
-router.post('/createjson', requireRole(['Admin','Manager']), createJsonHandler);
-router.post('/', requireRole(['Admin','Manager']), createJsonHandler);
+router.post('/createjson', requireRole(['Admin', 'Manager']), createJsonHandler);
+router.post('/', requireRole(['Admin', 'Manager']), createJsonHandler);
 
 
 
@@ -358,7 +352,6 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
       if (err) {
         return connection.rollback(() => {
           connection.release();
-          console.error("Error inserting task:", err);
           reject(new Error("Error inserting task"));
         });
       }
@@ -368,7 +361,6 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
       if (!taskId || !Array.isArray(assigned_to) || assigned_to.length === 0) {
         return connection.rollback(() => {
           connection.release();
-          console.error("Invalid task ID or assigned_to array");
           reject(new Error("Invalid task assignment data"));
         });
       }
@@ -400,11 +392,10 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
         if (idx >= resolveQueries.length) {
           // dedupe resolvedUserIds
           resolvedUserIds = Array.from(new Set(resolvedUserIds));
-          
+
           if (resolvedUserIds.length === 0) {
             return connection.rollback(() => {
               connection.release();
-              console.error("Assigned users not found in users table");
               reject(new Error("Assigned users not found"));
             });
           }
@@ -417,7 +408,6 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
             if (err) {
               return connection.rollback(() => {
                 connection.release();
-                console.error("Error inserting task assignments:", err);
                 reject(new Error("Error inserting task assignments"));
               });
             }
@@ -429,9 +419,9 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
             const priority = finalPriority;
             const taskDateVal = taskDate || null;
             const descriptionVal = description || null;
-            
+
             const sendEmails = require(__root + 'utils/emailService').sendTaskAssignmentEmails;
-            
+
             // Fire and forget emails (don't await to avoid blocking)
             sendEmails({
               finalAssigned: rawAssigned,
@@ -454,7 +444,6 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
               if (err) {
                 return connection.rollback(() => {
                   connection.release();
-                  console.error("Error committing transaction:", err);
                   reject(new Error("Error committing transaction"));
                 });
               }
@@ -474,7 +463,6 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
           if (err) {
             return connection.rollback(() => {
               connection.release();
-              console.error("Error resolving assigned users:", err);
               reject(new Error("Error resolving assigned users"));
             });
           }
@@ -494,15 +482,15 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
   return new Promise((resolve, reject) => {
     executeTaskCreation(resolve, reject);
   })
-  .then((result) => {
-    res.status(201).json({
-      message: "Task created and assignments completed successfully",
-      ...result
+    .then((result) => {
+      res.status(201).json({
+        message: "Task created and assignments completed successfully",
+        ...result
+      });
+    })
+    .catch((error) => {
+      res.status(500).json({ error: error.message });
     });
-  })
-  .catch((error) => {
-    res.status(500).json({ error: error.message });
-  });
 }
 
 
@@ -511,11 +499,9 @@ router.get("/taskdropdown", async (req, res) => {
     const query = "SELECT id, title FROM tasks";
     db.query(query, (err, results) => {
       if (err) {
-        console.error("Error executing query:", err);
         return res.status(500).json({ error: "Failed to fetch tasks" });
       }
       if (!Array.isArray(results)) {
-        console.error("Query result is not an array:", results);
         return res
           .status(500)
           .json({ error: "Unexpected query result format" });
@@ -523,7 +509,6 @@ router.get("/taskdropdown", async (req, res) => {
       res.status(200).json(results);
     });
   } catch (error) {
-    console.error("Error fetching tasks:", error);
     res.status(500).json({ error: "Failed to fetch tasks" });
   }
 });
@@ -729,7 +714,248 @@ router.get('/', async (req, res) => {
 });
 
 // PUT /api/projects/tasks/:id - Update task
-router.put('/:id', requireRole(['Admin','Manager']), async (req, res) => {
+// router.put('/:id', requireRole(['Admin','Manager']), async (req, res) => {
+//   const { id: taskId } = req.params;
+//   const {
+//     stage,
+//     title,
+//     priority,
+//     description,
+//     client_id,
+//     projectId,
+//     projectPublicId,
+//     taskDate,
+//     time_alloted,
+//     assigned_to,
+//   } = req.body;
+
+//   logger.info(`[PUT /tasks/:id] Updating task: taskId=${taskId}`);
+
+//   try {
+//     db.getConnection((err, connection) => {
+//       if (err) {
+//         logger.error(`DB connection error: ${err}`);
+//         return res.status(500).json({ success: false, error: 'Database connection error' });
+//       }
+
+//       // Build dynamic update query (only update fields that are provided)
+//       const updates = [];
+//       const values = [];
+
+//       if (stage !== undefined) {
+//         updates.push('stage = ?');
+//         values.push(stage);
+//       }
+//       if (title !== undefined) {
+//         updates.push('title = ?');
+//         values.push(title);
+//       }
+//       if (priority !== undefined) {
+//         updates.push('priority = ?');
+//         values.push(priority);
+//       }
+//       if (description !== undefined) {
+//         updates.push('description = ?');
+//         values.push(description);
+//       }
+//       if (client_id !== undefined) {
+//         updates.push('client_id = ?');
+//         values.push(client_id);
+//       }
+//       if (taskDate !== undefined) {
+//         updates.push('taskDate = ?');
+//         values.push(taskDate);
+//       }
+//       if (time_alloted !== undefined) {
+//         updates.push('time_alloted = ?');
+//         values.push(time_alloted);
+//       }
+//       if (projectId !== undefined) {
+//         updates.push('project_id = ?');
+//         values.push(projectId);
+//       }
+//       if (projectPublicId !== undefined) {
+//         updates.push('project_public_id = ?');
+//         values.push(projectPublicId);
+//       }
+
+//       updates.push('updatedAt = ?');
+//       values.push(new Date().toISOString());
+//       values.push(taskId);
+
+//       if (updates.length === 1) {
+//         // Only updatedAt, nothing to update
+//         connection.release();
+//         return res.status(400).json({ success: false, error: 'No fields to update' });
+//       }
+
+//       const updateTaskQuery = `UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`;
+
+//       connection.query(updateTaskQuery, values, async (err, result) => {
+//         if (err) {
+//           connection.release();
+//           logger.error(`Error updating task: ${err.message}`);
+//           return res.status(500).json({ success: false, error: 'Database update error' });
+//         }
+
+//         if (result.affectedRows === 0) {
+//           connection.release();
+//           return res.status(404).json({ success: false, error: 'Task not found' });
+//         }
+
+//         let reassigned = false;
+//         try {
+//           // If assigned_to provided, resolve public_ids to internal _id and replace assignments
+//           if (Array.isArray(assigned_to)) {
+//             // delete existing
+//             await new Promise((resolve, reject) => connection.query('DELETE FROM taskassignments WHERE task_id = ?', [taskId], (e) => e ? reject(e) : resolve()));
+
+//             if (assigned_to.length > 0) {
+//               const numericIds = assigned_to.filter(v => /^\d+$/.test(String(v))).map(v => Number(v));
+//               const publicIds = assigned_to.filter(v => !/^\d+$/.test(String(v))).map(v => String(v));
+//               let finalIds = Array.from(new Set(numericIds));
+
+//               if (publicIds.length > 0) {
+//                 const rows = await new Promise((resolve, reject) => connection.query('SELECT _id, public_id FROM users WHERE public_id IN (?)', [publicIds], (e, r) => e ? reject(e) : resolve(r)));
+//                 if (Array.isArray(rows) && rows.length > 0) rows.forEach(r => { if (r && r._id) finalIds.push(r._id); });
+//               }
+
+//               finalIds = Array.from(new Set(finalIds));
+//               if (finalIds.length > 0) {
+//                 const insertVals = finalIds.map(uid => [taskId, uid]);
+//                 await new Promise((resolve, reject) => connection.query('INSERT INTO taskassignments (task_id, user_id) VALUES ?', [insertVals], (e) => e ? reject(e) : resolve()));
+//               }
+//             }
+//             reassigned = true;
+//           }
+
+//           // If DB has soft-delete flag, restore the task on update so it becomes visible in subsequent GETs
+//           try {
+//             const hasIsDeletedFlag = await hasColumn('tasks', 'isDeleted');
+//             if (hasIsDeletedFlag) {
+//               await new Promise((resolve, reject) => connection.query('UPDATE tasks SET isDeleted = 0, deleted_at = NULL WHERE id = ?', [taskId], (e) => e ? reject(e) : resolve()));
+//             }
+//           } catch (restoreErr) {
+//             // ignore restore errors, continue to return updated object
+//             logger.warn(`Failed to restore task isDeleted flag: ${restoreErr && restoreErr.message}`);
+//           }
+
+//           // Fetch and return the updated task object so client and subsequent GETs see consistent data
+//           const fetchSql = `
+//             SELECT
+//               t.id AS task_internal_id,
+//               t.public_id AS task_id,
+//               t.title,
+//               t.description,
+//               t.stage,
+//               t.taskDate,
+//               t.priority,
+//               t.time_alloted,
+//               t.estimated_hours,
+//               t.status,
+//               t.createdAt,
+//               t.updatedAt,
+//               c.id AS client_id,
+//               c.name AS client_name,
+//               GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
+//               GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
+//               GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names,
+//               t.project_id,
+//               t.project_public_id
+//             FROM tasks t
+//             LEFT JOIN clientss c ON t.client_id = c.id
+//             LEFT JOIN taskassignments ta ON ta.task_id = t.id
+//             LEFT JOIN users u ON u._id = ta.user_id
+//             WHERE t.id = ?
+//             GROUP BY t.id
+//             LIMIT 1
+//           `;
+
+//           const rows = await new Promise((resolve, reject) => connection.query(fetchSql, [taskId], (e, r) => e ? reject(e) : resolve(r)));
+//           let taskObj = { taskId };
+//           if (Array.isArray(rows) && rows.length > 0) {
+//             const r = rows[0];
+//             const assignedIds = r.assigned_user_ids ? String(r.assigned_user_ids).split(',') : [];
+//             const assignedPublic = r.assigned_user_public_ids ? String(r.assigned_user_public_ids).split(',') : [];
+//             const assignedNames = r.assigned_user_names ? String(r.assigned_user_names).split(',') : [];
+//             const assignedUsers = assignedIds.map((uid, i) => ({ id: assignedPublic[i] || uid, internalId: String(uid), name: assignedNames[i] || null }));
+
+//             taskObj = {
+//               id: r.task_id ? String(r.task_id) : String(r.task_internal_id),
+//               title: r.title || null,
+//               description: r.description || null,
+//               stage: r.stage || null,
+//               taskDate: r.taskDate ? new Date(r.taskDate).toISOString() : null,
+//               priority: r.priority || null,
+//               timeAlloted: r.time_alloted != null ? Number(r.time_alloted) : null,
+//               estimatedHours: r.estimated_hours != null ? Number(r.estimated_hours) : (r.time_alloted != null ? Number(r.time_alloted) : null),
+//               status: r.status || null,
+//               createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null,
+//               updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
+//               client: r.client_id ? { id: String(r.client_id), name: r.client_name } : null,
+//               assignedUsers,
+//               projectId: r.project_id,
+//               projectPublicId: r.project_public_id
+//             };
+//           }
+
+//           // Send reassignment email if applicable
+//           let emailStatus = null;
+//           if (reassigned && Array.isArray(assigned_to) && assigned_to.length > 0) {
+//             try {
+//               // Optionally fetch project name if needed
+//               let projectName = '';
+//               if (taskObj.projectId) {
+//                 try {
+//                   const [projRows] = await new Promise((resolve, reject) => connection.query('SELECT name FROM projects WHERE id = ?', [taskObj.projectId], (err, rows) => err ? reject(err) : resolve([rows])));
+//                   projectName = (projRows && projRows[0] && projRows[0].name) || '';
+//                 } catch {}
+//               }
+//               // Compose task link (customize as needed)
+//               const baseUrl = process.env.FRONTEND_URL || 'http://localhost:4000';
+//               const taskLink = `${baseUrl}/tasks/${taskId}`;
+//               // Get assigner name (from req.user)
+//               const assignedBy = req.user && (req.user.name || req.user.email || 'Manager');
+//               // Use emailService to send notification
+//               emailStatus = await emailService.sendTaskAssignmentEmails({
+//                 finalAssigned: assigned_to,
+//                 taskTitle: taskObj.title,
+//                 taskId,
+//                 priority: taskObj.priority,
+//                 taskDate: taskObj.taskDate,
+//                 description: taskObj.description,
+//                 projectName,
+//                 projectPublicId: taskObj.projectPublicId,
+//                 assignedBy,
+//                 taskLink,
+//                 connection,
+//               });
+//             } catch (mailErr) {
+//               logger.warn(`Failed to send reassignment email for taskId=${taskId}: ${mailErr && mailErr.message}`);
+//               emailStatus = { sent: false, error: mailErr && mailErr.message };
+//             }
+//           }
+
+//           connection.release();
+//           logger.info(`Task updated successfully: taskId=${taskId}`);
+//           return res.status(200).json({ success: true, message: 'Task updated successfully', data: taskObj, emailStatus });
+//         } catch (e) {
+//           connection.release();
+//           logger.error(`Error post-updating task assignments/fetch: ${e && e.message}`);
+//           return res.status(500).json({ success: false, error: 'Post-update processing failed', details: e && e.message });
+//         }
+//       });
+//     });
+//   } catch (error) {
+//     logger.error(`Unexpected error updating task: taskId=${taskId}, error=${error.message}`);
+//     res.status(500).json({
+//       success: false,
+//       error: 'Unexpected server error',
+//       details: error.message,
+//     });
+//   }
+// });
+router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
   const { id: taskId } = req.params;
   const {
     stage,
@@ -753,53 +979,24 @@ router.put('/:id', requireRole(['Admin','Manager']), async (req, res) => {
         return res.status(500).json({ success: false, error: 'Database connection error' });
       }
 
-      // Build dynamic update query (only update fields that are provided)
       const updates = [];
       const values = [];
 
-      if (stage !== undefined) {
-        updates.push('stage = ?');
-        values.push(stage);
-      }
-      if (title !== undefined) {
-        updates.push('title = ?');
-        values.push(title);
-      }
-      if (priority !== undefined) {
-        updates.push('priority = ?');
-        values.push(priority);
-      }
-      if (description !== undefined) {
-        updates.push('description = ?');
-        values.push(description);
-      }
-      if (client_id !== undefined) {
-        updates.push('client_id = ?');
-        values.push(client_id);
-      }
-      if (taskDate !== undefined) {
-        updates.push('taskDate = ?');
-        values.push(taskDate);
-      }
-      if (time_alloted !== undefined) {
-        updates.push('time_alloted = ?');
-        values.push(time_alloted);
-      }
-      if (projectId !== undefined) {
-        updates.push('project_id = ?');
-        values.push(projectId);
-      }
-      if (projectPublicId !== undefined) {
-        updates.push('project_public_id = ?');
-        values.push(projectPublicId);
-      }
+      if (stage !== undefined) { updates.push('stage = ?'); values.push(stage); }
+      if (title !== undefined) { updates.push('title = ?'); values.push(title); }
+      if (priority !== undefined) { updates.push('priority = ?'); values.push(priority); }
+      if (description !== undefined) { updates.push('description = ?'); values.push(description); }
+      if (client_id !== undefined) { updates.push('client_id = ?'); values.push(client_id); }
+      if (taskDate !== undefined) { updates.push('taskDate = ?'); values.push(taskDate); }
+      if (time_alloted !== undefined) { updates.push('time_alloted = ?'); values.push(time_alloted); }
+      if (projectId !== undefined) { updates.push('project_id = ?'); values.push(projectId); }
+      if (projectPublicId !== undefined) { updates.push('project_public_id = ?'); values.push(projectPublicId); }
 
       updates.push('updatedAt = ?');
       values.push(new Date().toISOString());
       values.push(taskId);
 
       if (updates.length === 1) {
-        // Only updatedAt, nothing to update
         connection.release();
         return res.status(400).json({ success: false, error: 'No fields to update' });
       }
@@ -818,42 +1015,55 @@ router.put('/:id', requireRole(['Admin','Manager']), async (req, res) => {
           return res.status(404).json({ success: false, error: 'Task not found' });
         }
 
+        let reassigned = false;
+        let finalAssignedUserIds = []; // INTERNAL user IDs for email
+
         try {
-          // If assigned_to provided, resolve public_ids to internal _id and replace assignments
           if (Array.isArray(assigned_to)) {
-            // delete existing
-            await new Promise((resolve, reject) => connection.query('DELETE FROM taskassignments WHERE task_id = ?', [taskId], (e) => e ? reject(e) : resolve()));
+            await new Promise((resolve, reject) =>
+              connection.query('DELETE FROM taskassignments WHERE task_id = ?', [taskId], (e) => e ? reject(e) : resolve())
+            );
 
             if (assigned_to.length > 0) {
-              const numericIds = assigned_to.filter(v => /^\d+$/.test(String(v))).map(v => Number(v));
-              const publicIds = assigned_to.filter(v => !/^\d+$/.test(String(v))).map(v => String(v));
-              let finalIds = Array.from(new Set(numericIds));
+              const numericIds = assigned_to.filter(v => /^\d+$/.test(String(v))).map(Number);
+              const publicIds = assigned_to.filter(v => !/^\d+$/.test(String(v))).map(String);
+              finalAssignedUserIds = Array.from(new Set(numericIds));
 
               if (publicIds.length > 0) {
-                const rows = await new Promise((resolve, reject) => connection.query('SELECT _id, public_id FROM users WHERE public_id IN (?)', [publicIds], (e, r) => e ? reject(e) : resolve(r)));
-                if (Array.isArray(rows) && rows.length > 0) rows.forEach(r => { if (r && r._id) finalIds.push(r._id); });
+                const rows = await new Promise((resolve, reject) =>
+                  connection.query('SELECT _id FROM users WHERE public_id IN (?)', [publicIds], (e, r) => e ? reject(e) : resolve(r))
+                );
+                if (rows.length > 0) {
+                  rows.forEach(r => { if (r && r._id) finalAssignedUserIds.push(r._id); });
+                }
               }
 
-              finalIds = Array.from(new Set(finalIds));
-              if (finalIds.length > 0) {
-                const insertVals = finalIds.map(uid => [taskId, uid]);
-                await new Promise((resolve, reject) => connection.query('INSERT INTO taskassignments (task_id, user_id) VALUES ?', [insertVals], (e) => e ? reject(e) : resolve()));
+              finalAssignedUserIds = Array.from(new Set(finalAssignedUserIds));
+
+              if (finalAssignedUserIds.length > 0) {
+                const insertVals = finalAssignedUserIds.map(uid => [taskId, uid]);
+                await new Promise((resolve, reject) =>
+                  connection.query('INSERT INTO taskassignments (task_id, user_id) VALUES ?', [insertVals], (e) => e ? reject(e) : resolve())
+                );
               }
             }
+
+            reassigned = true;
           }
 
-          // If DB has soft-delete flag, restore the task on update so it becomes visible in subsequent GETs
+          // Restore task if soft-deleted
           try {
             const hasIsDeletedFlag = await hasColumn('tasks', 'isDeleted');
             if (hasIsDeletedFlag) {
-              await new Promise((resolve, reject) => connection.query('UPDATE tasks SET isDeleted = 0, deleted_at = NULL WHERE id = ?', [taskId], (e) => e ? reject(e) : resolve()));
+              await new Promise((resolve, reject) =>
+                connection.query('UPDATE tasks SET isDeleted = 0, deleted_at = NULL WHERE id = ?', [taskId], (e) => e ? reject(e) : resolve())
+              );
             }
           } catch (restoreErr) {
-            // ignore restore errors, continue to return updated object
-            logger.warn(`Failed to restore task isDeleted flag: ${restoreErr && restoreErr.message}`);
+            logger.warn(`Failed to restore task isDeleted flag: ${restoreErr?.message}`);
           }
 
-          // Fetch and return the updated task object so client and subsequent GETs see consistent data
+          // Fetch updated task
           const fetchSql = `
             SELECT
               t.id AS task_internal_id,
@@ -872,7 +1082,10 @@ router.put('/:id', requireRole(['Admin','Manager']), async (req, res) => {
               c.name AS client_name,
               GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
               GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
-              GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names
+              GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names,
+              GROUP_CONCAT(DISTINCT u.email) AS assigned_user_emails,
+              t.project_id,
+              t.project_public_id
             FROM tasks t
             LEFT JOIN clientss c ON t.client_id = c.id
             LEFT JOIN taskassignments ta ON ta.task_id = t.id
@@ -884,59 +1097,105 @@ router.put('/:id', requireRole(['Admin','Manager']), async (req, res) => {
 
           const rows = await new Promise((resolve, reject) => connection.query(fetchSql, [taskId], (e, r) => e ? reject(e) : resolve(r)));
           let taskObj = { taskId };
-          if (Array.isArray(rows) && rows.length > 0) {
+
+          if (rows.length > 0) {
             const r = rows[0];
-            const assignedIds = r.assigned_user_ids ? String(r.assigned_user_ids).split(',') : [];
-            const assignedPublic = r.assigned_user_public_ids ? String(r.assigned_user_public_ids).split(',') : [];
-            const assignedNames = r.assigned_user_names ? String(r.assigned_user_names).split(',') : [];
-            const assignedUsers = assignedIds.map((uid, i) => ({ id: assignedPublic[i] || uid, internalId: String(uid), name: assignedNames[i] || null }));
+            const assignedIds = r.assigned_user_ids?.split(',') || [];
+            const assignedPublic = r.assigned_user_public_ids?.split(',') || [];
+            const assignedNames = r.assigned_user_names?.split(',') || [];
+            const assignedEmails = r.assigned_user_emails?.split(',') || [];
+            const assignedUsers = assignedIds.map((uid, i) => ({
+              id: assignedPublic[i] || uid,
+              internalId: String(uid),
+              name: assignedNames[i] || null,
+              email: assignedEmails[i] || null
+            }));
 
             taskObj = {
-              id: r.task_id ? String(r.task_id) : String(r.task_internal_id),
-              title: r.title || null,
-              description: r.description || null,
-              stage: r.stage || null,
+              id: r.task_id || String(r.task_internal_id),
+              title: r.title,
+              description: r.description,
+              stage: r.stage,
               taskDate: r.taskDate ? new Date(r.taskDate).toISOString() : null,
-              priority: r.priority || null,
+              priority: r.priority,
               timeAlloted: r.time_alloted != null ? Number(r.time_alloted) : null,
               estimatedHours: r.estimated_hours != null ? Number(r.estimated_hours) : (r.time_alloted != null ? Number(r.time_alloted) : null),
-              status: r.status || null,
+              status: r.status,
               createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null,
               updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
               client: r.client_id ? { id: String(r.client_id), name: r.client_name } : null,
-              assignedUsers
+              assignedUsers,
+              projectId: r.project_id,
+              projectPublicId: r.project_public_id
             };
           }
 
+          // Send emails
+          // Send emails after reassignment
+          let emailStatus = null;
+          if (reassigned && Array.isArray(taskObj.assignedUsers) && taskObj.assignedUsers.length > 0) {
+            try {
+              const baseUrl = process.env.FRONTEND_URL || 'http://localhost:4000';
+              const taskLink = `${baseUrl}/tasks/${taskId}`;
+              const assignedBy = req.user?.name || req.user?.email || 'Manager';
+
+              // Use public_ids for email notification
+              const assignedPublicIds = taskObj.assignedUsers.map(u => u.id).filter(Boolean);
+
+              logger.info(`Sending task assignment email: taskId=${taskId}`, { assignedPublicIds });
+
+              emailStatus = await emailService.sendTaskAssignmentEmails({
+                finalAssigned: assignedPublicIds,
+                taskTitle: taskObj.title,
+                taskId,
+                priority: taskObj.priority,
+                taskDate: taskObj.taskDate,
+                description: taskObj.description,
+                projectName: taskObj.projectId ? '' : '',
+                projectPublicId: taskObj.projectPublicId,
+                assignedBy,
+                taskLink,
+                connection,
+              });
+            } catch (mailErr) {
+              logger.warn(`Email sending failed for taskId=${taskId}: ${mailErr?.message}`);
+              emailStatus = { sent: false, error: mailErr?.message };
+            }
+          }
+
           connection.release();
-          logger.info(`Task updated successfully: taskId=${taskId}`);
-          return res.status(200).json({ success: true, message: 'Task updated successfully', data: taskObj });
+          return res.status(200).json({
+            success: true,
+            message: 'Task updated successfully',
+            data: taskObj,
+            emailStatus,
+            reassigned,
+            assignedToCount: finalAssignedUserIds.length
+          });
+
         } catch (e) {
           connection.release();
-          logger.error(`Error post-updating task assignments/fetch: ${e && e.message}`);
-          return res.status(500).json({ success: false, error: 'Post-update processing failed', details: e && e.message });
+          logger.error(`Post-update processing failed: ${e?.message}`);
+          return res.status(500).json({ success: false, error: 'Post-update processing failed', details: e?.message });
         }
+
       });
     });
+
   } catch (error) {
-    logger.error(`Unexpected error updating task: taskId=${taskId}, error=${error.message}`);
-    res.status(500).json({
-      success: false,
-      error: 'Unexpected server error',
-      details: error.message,
-    });
+    logger.error(`Unexpected server error: ${error?.message}`);
+    return res.status(500).json({ success: false, error: 'Unexpected server error', details: error?.message });
   }
 });
 
 // DELETE /api/projects/tasks/:id - Delete task
-router.delete('/:id', requireRole(['Admin','Manager']), (req, res) => {
+router.delete('/:id', requireRole(['Admin', 'Manager']), (req, res) => {
   const { id: taskId } = req.params;
 
   logger.info(`[DELETE /tasks/:id] Deleting task: taskId=${taskId}`);
 
   db.getConnection((err, connection) => {
     if (err) {
-      console.error('DB connection error on delete:', err);
       return res.status(500).json({ success: false, error: 'DB connection error' });
     }
 
@@ -948,7 +1207,6 @@ router.delete('/:id', requireRole(['Admin','Manager']), (req, res) => {
           connection.query('UPDATE tasks SET isDeleted = 1, deleted_at = NOW() WHERE id = ?', [taskId], (uErr) => {
             connection.release();
             if (uErr) {
-              console.error('Error soft-deleting task:', uErr);
               return res.status(500).json({ success: false, error: 'Soft-delete failed', details: uErr.message });
             }
             logger.info(`Task soft-deleted successfully: taskId=${taskId}`);
@@ -961,7 +1219,6 @@ router.delete('/:id', requireRole(['Admin','Manager']), (req, res) => {
         connection.beginTransaction((err) => {
           if (err) {
             connection.release();
-            console.error('Error starting transaction for delete:', err);
             return res.status(500).json({ success: false, error: 'Transaction error' });
           }
 
@@ -980,7 +1237,6 @@ router.delete('/:id', requireRole(['Admin','Manager']), (req, res) => {
                 if (err) {
                   return connection.rollback(() => {
                     connection.release();
-                    console.error('Error committing delete transaction:', err);
                     return res.status(500).json({ success: false, error: 'Commit error' });
                   });
                 }
@@ -996,7 +1252,6 @@ router.delete('/:id', requireRole(['Admin','Manager']), (req, res) => {
               if (qErr) {
                 return connection.rollback(() => {
                   connection.release();
-                  console.error('Error during delete step:', qErr);
                   return res.status(500).json({ success: false, error: 'Delete failed', details: qErr.message });
                 });
               }
@@ -1008,7 +1263,6 @@ router.delete('/:id', requireRole(['Admin','Manager']), (req, res) => {
         });
       } catch (e) {
         connection.release();
-        console.error('Unexpected error during delete handling:', e);
         return res.status(500).json({ success: false, error: 'Unexpected error', details: e && e.message });
       }
     })();
@@ -1027,11 +1281,9 @@ router.get("/taskdropdownfortaskHrs", async (req, res) => {
 
     db.query(query, [userId], (err, results) => {
       if (err) {
-        console.error("Error executing query:", err);
         return res.status(500).json({ error: "Failed to fetch tasks" });
       }
       if (!Array.isArray(results)) {
-        console.error("Query result is not an array:", results);
         return res
           .status(500)
           .json({ error: "Unexpected query result format" });
@@ -1039,7 +1291,6 @@ router.get("/taskdropdownfortaskHrs", async (req, res) => {
       res.status(200).json(results);
     });
   } catch (error) {
-    console.error("Error fetching tasks:", error);
     res.status(500).json({ error: "Failed to fetch tasks" });
   }
 });
@@ -1171,7 +1422,6 @@ router.get("/gettaskss", (req, res) => {
 
     db.query(query, queryParams, (err, results) => {
       if (err) {
-        console.error("Error fetching tasks:", err);
         return res.status(500).send("Error fetching tasks");
       }
 
@@ -1200,7 +1450,7 @@ router.get("/gettaskss", (req, res) => {
           });
         }
       });
-  
+
       // map assigned user internal ids to external public_id when available
       try {
         const userIds = new Set();
@@ -1208,13 +1458,13 @@ router.get("/gettaskss", (req, res) => {
         if (userIds.size > 0) {
           const idsArr = Array.from(userIds);
           db.query('SELECT _id, public_id FROM users WHERE _id IN (?)', [idsArr], (errU, rowsU) => {
-                if (!errU && Array.isArray(rowsU)) {
-                  const map = {};
-                  rowsU.forEach(r => { if (r && r._id) map[r._id] = r.public_id || r._id; });
-                  Object.values(tasks).forEach(t => {
-                    t.assigned_users = t.assigned_users.map(u => ({ user_id: map[u.user_id] || u.user_id, user_name: u.user_name, user_role: u.user_role }));
-                  });
-                }
+            if (!errU && Array.isArray(rowsU)) {
+              const map = {};
+              rowsU.forEach(r => { if (r && r._id) map[r._id] = r.public_id || r._id; });
+              Object.values(tasks).forEach(t => {
+                t.assigned_users = t.assigned_users.map(u => ({ user_id: map[u.user_id] || u.user_id, user_name: u.user_name, user_role: u.user_role }));
+              });
+            }
             // continue sorting and response regardless of mapping errors
             const sortedTasks = Object.values(tasks).sort((a, b) => {
               const priorityOrder = { HIGH: 1, MEDIUM: 2, LOW: 3 };
@@ -1348,13 +1598,12 @@ router.get("/gettasks", (req, res) => {
         }
         query += ` ORDER BY t.createdAt`;
       }
-    } catch (err) {}
+    } catch (err) { }
 
     const params = role === 'Employee' ? [resolvedUserId] : (resolvedUserId ? [resolvedUserId] : []);
 
     db.query(query, params, (err, results) => {
       if (err) {
-        console.error("Error fetching tasks:", err);
         return res.status(500).send("Error fetching tasks");
       }
 
@@ -1471,69 +1720,65 @@ router.get("/gettaskbyId/:task_id", (req, res) => {
       }
 
       db.query(finalQuery, [task_id], (err, results) => {
-            if (err) {
-              console.error("Error fetching task:", err);
-              return res.status(500).send("Error fetching task");
-            }
-
-            if (results.length === 0) {
-              return res.status(404).send("Task not found");
-            }
-
-            // Group the results by task
-            const task = {
-              task_id: results[0].task_id,
-              title: results[0].title,
-              client_name: results[0].client_name,
-              description: results[0].description,
-              stage: results[0].stage,
-              taskDate: results[0].taskDate,
-              priority: results[0].priority,
-              createdAt: results[0].createdAt,
-              updatedAt: results[0].updatedAt,
-              time_alloted: results[0].time_alloted, // Include time_alloted in response
-              assigned_users: [],
-            };
-
-            results.forEach((row) => {
-              if (row.user_id) {
-                task.assigned_users.push({
-                  user_id: row.user_id,
-                  user_name: row.user_name,
-                  user_role: row.user_role,
-                });
-              }
-            });
-
-            // If employee, ensure the task is assigned to them
-            if (role === 'Employee') {
-              const assigned = task.assigned_users.some(u => String(u.user_id) === String(userId));
-              if (!assigned) return res.status(403).json({ message: 'Forbidden' });
-            }
-
-            res.status(200).json(task);
-          });
-        } catch (err) {
-          console.error('Error processing gettaskbyId:', err);
-          return res.status(500).send('Error fetching task');
+        if (err) {
+          return res.status(500).send("Error fetching task");
         }
-      })();
-  
+
+        if (results.length === 0) {
+          return res.status(404).send("Task not found");
+        }
+
+        // Group the results by task
+        const task = {
+          task_id: results[0].task_id,
+          title: results[0].title,
+          client_name: results[0].client_name,
+          description: results[0].description,
+          stage: results[0].stage,
+          taskDate: results[0].taskDate,
+          priority: results[0].priority,
+          createdAt: results[0].createdAt,
+          updatedAt: results[0].updatedAt,
+          time_alloted: results[0].time_alloted, // Include time_alloted in response
+          assigned_users: [],
+        };
+
+        results.forEach((row) => {
+          if (row.user_id) {
+            task.assigned_users.push({
+              user_id: row.user_id,
+              user_name: row.user_name,
+              user_role: row.user_role,
+            });
+          }
+        });
+
+        // If employee, ensure the task is assigned to them
+        if (role === 'Employee') {
+          const assigned = task.assigned_users.some(u => String(u.user_id) === String(userId));
+          if (!assigned) return res.status(403).json({ message: 'Forbidden' });
+        }
+
+        res.status(200).json(task);
+      });
+    } catch (err) {
+      return res.status(500).send('Error fetching task');
+    }
+  })();
+
 });
 
-router.delete("/deltask/:task_id", requireRole(['Admin','Manager']), (req, res) => {
+router.delete("/deltask/:task_id", requireRole(['Admin', 'Manager']), (req, res) => {
   const { task_id } = req.params;
 
   db.getConnection((err, connection) => {
     if (err) {
-      console.error('DB connection error on delete:', err);
       return res.status(500).json({ success: false, message: 'DB connection error' });
     }
 
     connection.beginTransaction((err) => {
       if (err) {
         connection.release();
-        console.error('Error starting transaction for delete:', err);
         return res.status(500).json({ success: false, message: 'Transaction error' });
       }
 
@@ -1552,7 +1797,6 @@ router.delete("/deltask/:task_id", requireRole(['Admin','Manager']), (req, res) 
             if (err) {
               return connection.rollback(() => {
                 connection.release();
-                console.error('Error committing delete transaction:', err);
                 return res.status(500).json({ success: false, message: 'Commit error' });
               });
             }
@@ -1567,7 +1811,6 @@ router.delete("/deltask/:task_id", requireRole(['Admin','Manager']), (req, res) 
           if (qErr) {
             return connection.rollback(() => {
               connection.release();
-              console.error('Error during delete step:', qErr);
               return res.status(500).json({ success: false, message: 'Delete failed', error: qErr.message });
             });
           }
@@ -1580,7 +1823,7 @@ router.delete("/deltask/:task_id", requireRole(['Admin','Manager']), (req, res) 
   });
 });
 
-router.post("/createsub/:task_id", requireRole(['Admin','Manager','Employee']), (req, res) => {
+router.post("/createsub/:task_id", requireRole(['Admin', 'Manager', 'Employee']), (req, res) => {
   const { task_id } = req.params;
   const { title, due_date, tag } = req.body;
   const createdAt = new Date().toISOString();
@@ -1645,7 +1888,6 @@ router.get("/getsubtasks/:task_id", (req, res) => {
       res.status(201).json(results);
     });
   } catch (err) {
-    console.error(err.message);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -1662,7 +1904,6 @@ router.get("/total-working-hours/:task_id", async (req, res) => {
 
     db.query(query, [task_id], (err, results) => {
       if (err) {
-        console.error("Error executing query:", err);
         return res.status(500).json({ error: "Failed to execute query" });
       }
 
@@ -1677,12 +1918,11 @@ router.get("/total-working-hours/:task_id", async (req, res) => {
       res.status(200).json({ total_working_hours: totalWorkingHours });
     });
   } catch (error) {
-    console.error("Error calculating total working hours:", error);
     res.status(500).json({ error: "Failed to calculate total working hours" });
   }
 });
 
-router.post("/working-hours", requireRole(['Admin','Manager','Employee']), async (req, res) => {
+router.post("/working-hours", requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const { task_id, date, start_time, end_time } = req.body;
 
@@ -1706,7 +1946,6 @@ router.post("/working-hours", requireRole(['Admin','Manager','Employee']), async
 
     res.status(201).json({ message: "Working hours added successfully" });
   } catch (error) {
-    console.error("Error adding working hours:", error);
     res.status(500).json({ error: "Failed to add working hours" });
   }
 });
@@ -1739,7 +1978,6 @@ router.get("/report", async (req, res) => {
 
     db.query(query, [task_name, start_date, end_date], (err, results) => {
       if (err) {
-        console.error("Error executing query:", err);
         return res.status(500).json({ error: "Failed to execute query" });
       }
 
@@ -1752,12 +1990,11 @@ router.get("/report", async (req, res) => {
       res.status(200).json(results);
     });
   } catch (error) {
-    console.error("Error fetching report:", error);
     res.status(500).json({ error: "Failed to fetch report" });
   }
 });
 
-router.post("/taskhours", requireRole(['Admin','Manager','Employee']), async (req, res) => {
+router.post("/taskhours", requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   const { encryptedData } = req.body;
 
   // Check for missing encrypted data
@@ -1791,7 +2028,6 @@ router.post("/taskhours", requireRole(['Admin','Manager','Employee']), async (re
     // Execute the SQL query
     db.query(query, [taskId, userId, date, hours], (err, results) => {
       if (err) {
-        console.error("Error executing query:", err);
         return res.status(500).json({ error: "Failed to save hours" });
       }
 
@@ -1800,12 +2036,11 @@ router.post("/taskhours", requireRole(['Admin','Manager','Employee']), async (re
       res.status(200).json(response);
     });
   } catch (error) {
-    console.error("Error processing request:", error);
     res.status(500).json({ error: "Failed to process request" });
   }
 });
 
-router.put("/updatetask/:id", requireRole(['Admin','Manager']), async (req, res) => {
+router.put("/updatetask/:id", requireRole(['Admin', 'Manager']), async (req, res) => {
   const { id: taskId } = req.params;
   const {
     stage,
@@ -1958,7 +2193,6 @@ router.get("/fetchtaskhours", async (req, res) => {
 
     db.query(query, [user_id], (err, results) => {
       if (err) {
-        console.error("Error executing query:", err);
         return res.status(500).json({ error: "Failed to execute query" });
       }
 
@@ -1970,7 +2204,6 @@ router.get("/fetchtaskhours", async (req, res) => {
       res.status(200).json(results);
     });
   } catch (error) {
-    console.error("Database query error:", error);
     res.status(500).json({ error: "Failed to fetch task hours" });
   }
 });
@@ -2076,7 +2309,6 @@ router.get("/taskdetail/getactivity/:id", async (req, res) => {
     // Execute the SQL query
     db.query(sql, [id], (err, result) => {
       if (err) {
-        console.error("Error retrieving task activities:", err);
         return res
           .status(500)
           .json({ error: "Failed to fetch task activities." });
@@ -2086,7 +2318,6 @@ router.get("/taskdetail/getactivity/:id", async (req, res) => {
       res.status(200).json(result);
     });
   } catch (error) {
-    console.error("Unexpected error:", error);
     res.status(500).json({ error: "An unexpected error occurred." });
   }
 });

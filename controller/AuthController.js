@@ -74,6 +74,8 @@ function slugifyModule(name) {
 
 function modulePathFor(role, name) {
   const map = MODULE_ROUTE_MAP[role] || {};
+  // Special case: Manager 'User Management' should be '/manager/users'
+  if (role === 'Manager' && name === 'User Management') return '/manager/users';
   if (map[name]) return map[name];
   const base = role ? `/${role.toLowerCase()}` : '';
   const slug = slugifyModule(name);
@@ -109,7 +111,7 @@ function normalizeStoredModules(user) {
 function getDefaultModules(role) {
   function mk(name, access) { return { moduleId: crypto.randomBytes(8).toString('hex'), name, access }; }
   if (role === 'Admin') return [ mk('User Management','full'), mk('Dashboard','full'), mk('Clients','full'), mk('Departments','full'), mk('Tasks','full'), mk('Projects','full'), mk('Workflow (Project & Task Flow)','full'), mk('Notifications','full'), mk('Reports & Analytics','full'), mk('Document & File Management','full'), mk('Chat / Real-Time Collaboration','full'), mk('Approval Workflows','full'), mk('Settings & Master Configuration','full') ];
-  if (role === 'Manager') return [ mk('Dashboard','full'), mk('Clients','full'), mk('Tasks','full'), mk('Projects','full'), mk('Workflow (Project & Task Flow)','full'), mk('Notifications','limited'), mk('Reports & Analytics','full'), mk('Document & File Management','limited'), mk('Chat / Real-Time Collaboration','full'), mk('Approval Workflows','limited') ];
+  if (role === 'Manager') return [ mk('User Management','view'), mk('Dashboard','full'), mk('Clients','full'), mk('Tasks','full'), mk('Projects','full'), mk('Workflow (Project & Task Flow)','full'), mk('Notifications','limited'), mk('Reports & Analytics','full'), mk('Document & File Management','limited'), mk('Chat / Real-Time Collaboration','full'), mk('Approval Workflows','limited') ];
   if (role === 'Employee') return [ mk('Dashboard','view'), mk('Tasks','limited'), mk('Notifications','limited'), mk('Reports & Analytics','limited'), mk('Document & File Management','limited'), mk('Chat / Real-Time Collaboration','full') ];
   if (role === 'Client-Viewer') return [ mk('Dashboard','view'), mk('Assigned Tasks','view'), mk('Document & File Management','view') ];
   return [];

@@ -159,14 +159,14 @@ async function getAccessibleResources(userId, userRole, tenantId, userExternalId
           return {
             canViewAllClients: false,
             canCreateClients: true,
-            canManageUsers: false,
+            canManageUsers: true,
             canViewAnalytics: true,
             canManageDepartments: false,
             canViewAllTasks: false,
             canCreateProjects: true,
             canApprove: false,
             assignedClientIds: clientIds,
-            features: ['Assigned Clients', 'Tasks', 'Projects', 'Dashboard', 'Reports'],
+            features: ['User Management', 'Assigned Clients', 'Tasks', 'Projects', 'Dashboard', 'Reports'],
             restrictions: 'Can only view assigned clients and their tasks'
           };
         },
@@ -246,6 +246,7 @@ function getSidebarForRole(role) {
     ],
 
     Manager: [
+      { id: 'users', label: 'User Management', icon: 'people', path: '/manager/users' },
       { id: 'dashboard', label: 'Dashboard', icon: 'dashboard', path: '/manager/dashboard' },
       { id: 'clients', label: 'My Clients', icon: 'business', path: '/manager/clients' },
       { id: 'tasks', label: 'Tasks', icon: 'task', path: '/manager/tasks' },

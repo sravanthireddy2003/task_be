@@ -13,7 +13,7 @@ require('dotenv').config();
 router.use(requireAuth);
 
 // Get all users
-router.get("/getusers", requireRole('Admin'), (req, res) => {
+router.get("/getusers", requireRole('Admin','Manager'), (req, res) => {
   const query = `
     SELECT 
       u._id, u.public_id, u.name, u.title, u.email, u.role, u.isActive, u.phone, u.isGuest,
@@ -289,7 +289,7 @@ router.put("/update/:id", requireRole('Admin'), async (req, res) => {
 });
 
 // Get user by ID
-router.get("/getuserbyid/:id", requireRole('Admin'), (req, res) => {
+router.get("/getuserbyid/:id", requireRole('Admin','Manager'), (req, res) => {
   const { id } = req.params;
   const isNumeric = /^\d+$/.test(String(id));
   const query = `

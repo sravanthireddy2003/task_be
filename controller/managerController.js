@@ -122,7 +122,9 @@ async function gatherManagerProjects(req) {
   const columnMeta = await fetchColumnTypes('projects', ['manager_id', 'project_manager_id']);
   const clause = buildAccessClause(columnMeta, req.user);
   if (!clause) return [];
+
   const clientFields = await clientFieldSelects('c');
+
   const sql = `
     SELECT
       p.id,
@@ -133,12 +135,23 @@ async function gatherManagerProjects(req) {
       p.start_date,
       p.end_date,
       p.client_id,
+
+      -- ✅ THIS WAS MISSING
+      p.project_manager_id,
+      u.public_id AS project_manager_public_id,
+      u.name AS project_manager_name,
+
       ${clientFields.join(', ')}
+
     FROM projects p
     LEFT JOIN clientss c ON c.id = p.client_id
+    -- ✅ JOIN USERS TABLE
+    LEFT JOIN users u ON u._id = p.project_manager_id
+
     WHERE (${clause.expression})
     ORDER BY p.updated_at DESC, p.created_at DESC
   `;
+
   return await queryAsync(sql, clause.params);
 }
 
@@ -172,26 +185,36 @@ async function countRelatedTasks(projectIds = [], projectPublicIds = []) {
   return (await queryAsync(sql, params))[0]?.total || 0;
 }
 
-async function buildTaskFilter(projectIds, projectPublicIds) {
-  const clauses = [];
+async function buildTaskFilter(projectIds = [], projectPublicIds = []) {
+  const expressions = [];
   const params = [];
-  if (projectIds.length && (await cachedHasColumn('tasks', 'project_id'))) {
-    clauses.push('t.project_id IN (?)');
+
+  if (projectIds.length) {
+    expressions.push(`t.project_id IN (?)`);
     params.push(projectIds);
   }
-  if (projectPublicIds.length && (await cachedHasColumn('tasks', 'project_public_id'))) {
-    clauses.push('t.project_public_id IN (?)');
+
+  if (projectPublicIds.length) {
+    expressions.push(`t.project_public_id IN (?)`);
     params.push(projectPublicIds);
   }
-  if (!clauses.length) return null;
-  return { expression: clauses.join(' OR '), params };
+
+  if (!expressions.length) return null;
+
+  return {
+    expression: expressions.join(' OR '),
+    params
+  };
 }
 
-async function fetchTaskTimeline(projectIds, projectPublicIds) {
+
+async function fetchTaskTimeline(projectIds = [], projectPublicIds = []) {
   const filter = await buildTaskFilter(projectIds, projectPublicIds);
   if (!filter) return [];
+
   const clientFields = await clientFieldSelects('c');
   const hasIsDeletedFlag = await cachedHasColumn('tasks', 'isDeleted');
+
   const sql = `
     SELECT
       t.id AS task_internal_id,
@@ -202,7 +225,9 @@ async function fetchTaskTimeline(projectIds, projectPublicIds) {
       t.priority,
       t.status,
       t.time_alloted,
+
       ${clientFields.join(', ')},
+
       p.id AS project_internal_id,
       p.public_id AS project_public_id,
       p.name AS project_name,
@@ -211,19 +236,32 @@ async function fetchTaskTimeline(projectIds, projectPublicIds) {
       p.start_date AS project_start_date,
       p.end_date AS project_end_date,
       p.client_id AS project_client_id,
-      GROUP_CONCAT(DISTINCT u._id) AS assigned_user_internal_ids,
-      GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
-      GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names
+
+      GROUP_CONCAT(DISTINCT u._id ORDER BY u._id) AS assigned_user_internal_ids,
+      GROUP_CONCAT(DISTINCT u.public_id ORDER BY u._id) AS assigned_user_public_ids,
+      GROUP_CONCAT(DISTINCT u.name ORDER BY u._id) AS assigned_user_names
+
     FROM tasks t
-    LEFT JOIN clientss c ON c.id = t.client_id
-    LEFT JOIN projects p ON (p.id = t.project_id OR (t.project_public_id IS NOT NULL AND p.public_id = t.project_public_id))
-    LEFT JOIN taskassignments ta ON ta.task_id = t.id
-    LEFT JOIN users u ON u._id = ta.user_id
-    WHERE (${filter.expression})${hasIsDeletedFlag ? `
-     AND (t.isDeleted IS NULL OR t.isDeleted != 1)` : ''}
+    LEFT JOIN clientss c 
+      ON c.id = t.client_id
+
+    LEFT JOIN projects p 
+      ON p.id = t.project_id
+      OR (t.project_public_id IS NOT NULL AND p.public_id = t.project_public_id)
+
+    LEFT JOIN taskassignments ta 
+      ON ta.task_id = t.id
+
+    LEFT JOIN users u 
+      ON u._id = ta.user_id
+
+    WHERE (${filter.expression})
+    ${hasIsDeletedFlag ? `AND (t.isDeleted IS NULL OR t.isDeleted != 1)` : ''}
+
     GROUP BY t.id
     ORDER BY t.taskDate ASC, t.updatedAt DESC
   `;
+
   return await queryAsync(sql, filter.params);
 }
 
@@ -385,26 +423,45 @@ module.exports = {
     }
   },
 
-  getAssignedProjects: async (req, res) => {
-    try {
-      await requireFeatureAccess(req, 'Projects');
-      const projects = await gatherManagerProjects(req);
-      const payload = projects.map((project) => ({
-        id: project.public_id || String(project.id),
-        name: project.name,
-        status: project.status,
-        priority: project.priority,
-        startDate: project.start_date,
-        endDate: project.end_date,
-        client: project.client_id
-          ? { id: project.client_public_id || String(project.client_id), name: project.client_name }
-          : null
-      }));
-      return res.json({ success: true, data: payload });
-    } catch (error) {
-      return res.status(error.status || 500).json({ success: false, error: error.message });
-    }
-  },
+getAssignedProjects: async (req, res) => {
+  try {
+    await requireFeatureAccess(req, 'Projects');
+
+    const projects = await gatherManagerProjects(req);
+
+    const payload = projects.map((project) => ({
+      id: project.public_id || String(project.id),
+      name: project.name,
+      status: project.status,
+      priority: project.priority,
+      startDate: project.start_date,
+      endDate: project.end_date,
+
+      client: project.client_id
+        ? {
+            id: project.client_public_id || String(project.client_id),
+            name: project.client_name,
+          }
+        : null,
+
+      // ✅ Added project manager info
+      manager: project.project_manager_id
+        ? {
+            id:
+              project.project_manager_public_id ||
+              String(project.project_manager_id),
+            name: project.project_manager_name,
+          }
+        : null,
+    }));
+console.log('Assigned Projects Payload:', payload); // Debug log
+    return res.json({ success: true, data: payload });
+  } catch (error) {
+    return res
+      .status(error.status || 500)
+      .json({ success: false, error: error.message });
+  }
+},
 
   getTaskTimeline: async (req, res) => {
     try {
@@ -428,7 +485,7 @@ module.exports = {
             ? lookupById.get(String(projectFilter.value))
             : lookupByPublicId.get(String(projectFilter.value));
         if (!selectedProject) {
-          return res
+          return res``
             .status(404)
             .json({ success: false, error: 'Project not found or not assigned to this manager' });
         }
