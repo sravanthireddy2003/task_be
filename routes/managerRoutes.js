@@ -12,5 +12,6 @@ router.get('/projects', Manager.getAssignedProjects);
 router.get('/timeline', Manager.getTaskTimeline);
 router.get('/tasks', Manager.getTaskTimeline);
 router.get('/employees', Manager.getDepartmentEmployees);
+router.get('/employees/all', Manager.listEmployees);
 
 module.exports = router;

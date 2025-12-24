@@ -330,6 +330,7 @@ module.exports = {
     }
   },
 
+
   getAssignedClients: async (req, res) => {
     try {
       const resources = await requireFeatureAccess(req, 'Assigned Clients');
@@ -627,6 +628,31 @@ console.log('Assigned Projects Payload:', payload); // Debug log
         phone: row.phone || null,
         title: row.title || null,
         role: row.role || null,
+        isActive: row.isActive !== undefined ? Boolean(row.isActive) : null,
+        isGuest: row.isGuest !== undefined ? Boolean(row.isGuest) : null,
+        departmentPublicId: row.department_public_id || null
+      }));
+      return res.json({ success: true, data: employees, meta: { count: employees.length } });
+    } catch (error) {
+      return res.status(error.status || 500).json({ success: false, error: error.message });
+    }
+  },
+
+  listEmployees: async (req, res) => {
+    try {
+      await requireFeatureAccess(req, 'Tasks');
+      const rows = await queryAsync(
+        `SELECT _id, public_id, name, email, phone, title, isActive, isGuest, department_public_id
+         FROM users
+         WHERE role = 'Employee'`
+      );
+      const employees = (rows || []).map((row) => ({
+        id: row.public_id || String(row._id),
+        internalId: row._id ? String(row._id) : null,
+        name: row.name || null,
+        email: row.email || null,
+        phone: row.phone || null,
+        title: row.title || null,
         isActive: row.isActive !== undefined ? Boolean(row.isActive) : null,
         isGuest: row.isGuest !== undefined ? Boolean(row.isGuest) : null,
         departmentPublicId: row.department_public_id || null

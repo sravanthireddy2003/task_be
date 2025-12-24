@@ -685,16 +685,72 @@ router.put('/:id', requireRole(['Admin','Manager']), async (req, res) => {
   }
 });
  
+async function permanentlyDeleteClientById(id) {
+  const viewerRows = await q('SELECT user_id FROM client_viewers WHERE client_id = ?', [id]).catch(() => []);
+  const candidateIds = new Set();
+  (viewerRows || []).forEach(row => { if (row && row.user_id) candidateIds.add(Number(row.user_id)); });
+  const clientUserRows = await q('SELECT user_id FROM clientss WHERE id = ? LIMIT 1', [id]).catch(() => []);
+  if (Array.isArray(clientUserRows) && clientUserRows.length && clientUserRows[0].user_id) {
+    candidateIds.add(Number(clientUserRows[0].user_id));
+  }
+  const resolvedIds = Array.from(candidateIds).filter(v => Number.isFinite(v) && v > 0);
+  if (resolvedIds.length) {
+    const matchingUsers = await q('SELECT _id FROM users WHERE _id IN (?) AND role = ?', [resolvedIds, 'Client-Viewer']).catch(() => []);
+    const deleteIds = Array.isArray(matchingUsers)
+      ? Array.from(new Set(matchingUsers.map(u => Number(u._id)).filter(v => Number.isFinite(v) && v > 0)))
+      : [];
+    if (deleteIds.length) {
+      await q('DELETE FROM client_viewers WHERE user_id IN (?)', [deleteIds]).catch(() => {});
+      await q('DELETE FROM users WHERE _id IN (?)', [deleteIds]).catch(() => {});
+    }
+  }
+  await q('DELETE FROM client_documents WHERE client_id = ?', [id]).catch(()=>{});
+  await q('DELETE FROM client_contacts WHERE client_id = ?', [id]).catch(()=>{});
+  await q('DELETE FROM client_activity_logs WHERE client_id = ?', [id]).catch(()=>{});
+  await q('DELETE FROM clientss WHERE id = ?', [id]);
+  await q('DELETE FROM client_viewers WHERE client_id = ?', [id]).catch(() => {});
+}
+
 router.delete('/:id', requireRole('Admin'), async (req, res) => {
-  try { const id = req.params.id; await q('UPDATE clientss SET isDeleted = 1, deleted_at = NOW() WHERE id = ?', [id]); await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'soft-delete', 'soft deleted']).catch(()=>{}); return res.json({ success: true, message: 'Client soft-deleted' }); } catch (e) { logger.error('Error soft deleting client: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
-});
- 
-router.post('/:id/restore', requireRole('Admin'), async (req, res) => {
-  try { const id = req.params.id; await q('UPDATE clientss SET isDeleted = 0, deleted_at = NULL WHERE id = ?', [id]); await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'restore', 'restored']).catch(()=>{}); return res.json({ success: true, message: 'Client restored' }); } catch (e) { logger.error('Error restoring client: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
+  try {
+    const id = req.params.id;
+    await permanentlyDeleteClientById(id);
+    await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'deleted', 'permanently deleted']).catch(()=>{});
+    return res.json({ success: true, message: 'Client permanently deleted' });
+  } catch (e) {
+    logger.error('Error deleting client: ' + e.message);
+    return res.status(500).json({ success: false, error: e.message });
+  }
 });
  
 router.delete('/:id/permanent', requireRole('Admin'), async (req, res) => {
-  try { const id = req.params.id; await q('DELETE FROM client_documents WHERE client_id = ?', [id]).catch(()=>{}); await q('DELETE FROM client_contacts WHERE client_id = ?', [id]).catch(()=>{}); await q('DELETE FROM client_activity_logs WHERE client_id = ?', [id]).catch(()=>{}); await q('DELETE FROM clientss WHERE id = ?', [id]); return res.json({ success: true, message: 'Client permanently deleted' }); } catch (e) { logger.error('Error permanently deleting client: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
+  try {
+    const id = req.params.id;
+    const viewerRows = await q('SELECT user_id FROM client_viewers WHERE client_id = ?', [id]).catch(() => []);
+    const candidateIds = new Set();
+    (viewerRows || []).forEach(row => { if (row && row.user_id) candidateIds.add(Number(row.user_id)); });
+    const clientUserRows = await q('SELECT user_id FROM clientss WHERE id = ? LIMIT 1', [id]).catch(() => []);
+    if (Array.isArray(clientUserRows) && clientUserRows.length && clientUserRows[0].user_id) {
+      candidateIds.add(Number(clientUserRows[0].user_id));
+    }
+    const resolvedIds = Array.from(candidateIds).filter(v => Number.isFinite(v) && v > 0);
+    if (resolvedIds.length) {
+      const matchingUsers = await q('SELECT _id FROM users WHERE _id IN (?) AND role = ?', [resolvedIds, 'Client-Viewer']).catch(() => []);
+      const deleteIds = Array.isArray(matchingUsers)
+        ? Array.from(new Set(matchingUsers.map(u => Number(u._id)).filter(v => Number.isFinite(v) && v > 0)))
+        : [];
+      if (deleteIds.length) {
+        await q('DELETE FROM client_viewers WHERE user_id IN (?)', [deleteIds]).catch(() => {});
+        await q('DELETE FROM users WHERE _id IN (?)', [deleteIds]).catch(() => {});
+      }
+    }
+    await q('DELETE FROM client_documents WHERE client_id = ?', [id]).catch(()=>{});
+    await q('DELETE FROM client_contacts WHERE client_id = ?', [id]).catch(()=>{});
+    await q('DELETE FROM client_activity_logs WHERE client_id = ?', [id]).catch(()=>{});
+    await q('DELETE FROM clientss WHERE id = ?', [id]);
+    await q('DELETE FROM client_viewers WHERE client_id = ?', [id]).catch(() => {});
+    return res.json({ success: true, message: 'Client permanently deleted' });
+  } catch (e) { logger.error('Error permanently deleting client: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
 });
  
 router.post('/:id/assign-manager', requireRole('Admin'), async (req, res) => {
