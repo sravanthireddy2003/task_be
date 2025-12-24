@@ -43,6 +43,7 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
 
     const ids = taskIds.map(id => Number(id)).filter(Boolean);
     if (ids.length === 0) return res.status(400).json({ success: false, error: 'No valid task IDs provided' });
+    const subtaskCreatorColumnExists = await hasColumn('subtasks', 'created_by');
 
     const sql = `
       SELECT
@@ -79,14 +80,25 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
       }
 
       // fetch subtasks (checklist)
+      const creatorSelect = subtaskCreatorColumnExists
+        ? ', creator._id AS creator_internal_id, creator.public_id AS creator_public_id, creator.name AS creator_name'
+        : '';
+      const creatorJoin = subtaskCreatorColumnExists ? 'LEFT JOIN users creator ON creator._id = s.created_by' : '';
+      const subtaskQuery = `
+        SELECT s.*${creatorSelect}
+        FROM subtasks s
+        ${creatorJoin}
+        WHERE s.task_id IN (?)
+        ORDER BY s.created_at ASC
+      `;
       const subtasks = await new Promise((resolve, reject) => db.query(
-        'SELECT * FROM subtasks WHERE task_id IN (?)',
+        subtaskQuery,
         [ids], (e, r) => e ? reject(e) : resolve(r)
       ));
 
       // fetch activities (what employees added)
       const activities = await new Promise((resolve, reject) => db.query(
-        `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt, u._id AS user_id, u.name AS user_name
+        `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt, u._id AS user_id, u.public_id AS user_public_id, u.name AS user_name
          FROM task_activities ta
          LEFT JOIN users u ON ta.user_id = u._id
          WHERE ta.task_id IN (?)
@@ -100,18 +112,58 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
         [ids], (e, r) => e ? reject(e) : resolve(r)
       ));
 
-      const subtasksMap = {};
-      (subtasks || []).forEach(s => {
-        const k = String(s.task_id);
-        if (!subtasksMap[k]) subtasksMap[k] = [];
-        subtasksMap[k].push({ id: s.id, title: s.title, description: s.description || null, dueDate: s.due_date ? new Date(s.due_date).toISOString() : null, tag: s.tag || null, createdAt: s.created_at ? new Date(s.created_at).toISOString() : null, updatedAt: s.updated_at ? new Date(s.updated_at).toISOString() : null });
+      const checklistMap = {};
+      (subtasks || []).forEach((s) => {
+        if (!s || s.task_id === undefined || s.task_id === null) return;
+        const key = String(s.task_id);
+        if (!checklistMap[key]) checklistMap[key] = [];
+        const checklistItem = {
+          id: s.id != null ? String(s.id) : null,
+          title: s.title || null,
+          description: s.description || null,
+          status: s.status || null,
+          tag: s.tag || null,
+          dueDate: s.due_date ? new Date(s.due_date).toISOString() : null,
+          estimatedHours: s.estimated_hours != null ? Number(s.estimated_hours) : null,
+          completedAt: s.completed_at ? new Date(s.completed_at).toISOString() : null,
+          createdAt: s.created_at ? new Date(s.created_at).toISOString() : null,
+          updatedAt: s.updated_at ? new Date(s.updated_at).toISOString() : null
+        };
+        if (subtaskCreatorColumnExists) {
+          const creatorInternalId = s.creator_internal_id != null ? String(s.creator_internal_id) : (s.created_by != null ? String(s.created_by) : null);
+          const creatorPublicId = s.creator_public_id || null;
+          const creatorName = s.creator_name || null;
+          if (creatorInternalId || creatorPublicId || creatorName) {
+            checklistItem.user = {
+              id: creatorPublicId || creatorInternalId || null,
+              internalId: creatorInternalId,
+              name: creatorName
+            };
+          } else {
+            checklistItem.user = null;
+          }
+        }
+        checklistMap[key].push(checklistItem);
       });
 
       const activitiesMap = {};
-      (activities || []).forEach(a => {
-        const k = String(a.task_id);
-        if (!activitiesMap[k]) activitiesMap[k] = [];
-        activitiesMap[k].push({ type: a.type, activity: a.activity, createdAt: a.createdAt ? new Date(a.createdAt).toISOString() : null, user: a.user_id ? { id: String(a.user_id), name: a.user_name } : null });
+      (activities || []).forEach(activity => {
+        if (!activity || activity.task_id === undefined || activity.task_id === null) return;
+        const key = String(activity.task_id);
+        if (!activitiesMap[key]) activitiesMap[key] = [];
+        const userInfo = activity.user_id
+          ? {
+              id: activity.user_public_id || String(activity.user_id),
+              internalId: String(activity.user_id),
+              name: activity.user_name || null
+            }
+          : null;
+        activitiesMap[key].push({
+          type: activity.type || null,
+          activity: activity.activity || null,
+          createdAt: activity.createdAt ? new Date(activity.createdAt).toISOString() : null,
+          user: userInfo
+        });
       });
 
       const hoursMap = {};
@@ -140,7 +192,7 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
           updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
           client: r.client_id ? { id: String(r.client_id), name: r.client_name } : null,
           assignedUsers,
-          checklist: subtasksMap[key] || [],
+          checklist: checklistMap[key] || [],
           activities: activitiesMap[key] || [],
           totalHours: hoursMap[key] != null ? hoursMap[key] : 0
         };

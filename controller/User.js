@@ -10,10 +10,15 @@ const emailService = require(__root + 'utils/emailService');
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 require('dotenv').config();
 
+const queryAsync = (sql, params = []) =>
+  new Promise((resolve, reject) =>
+    db.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)))
+  );
+
 router.use(requireAuth);
 
 // Get all users
-router.get("/getusers", requireRole('Admin','Manager'), (req, res) => {
+router.get("/getusers", requireRole('Admin','Manager'), async (req, res) => {
   const query = `
     SELECT 
       u._id, u.public_id, u.name, u.title, u.email, u.role, u.isActive, u.phone, u.isGuest,
@@ -22,27 +27,111 @@ router.get("/getusers", requireRole('Admin','Manager'), (req, res) => {
     LEFT JOIN departments d ON d.public_id = u.department_public_id
   `;
 
-  db.query(query, [], (err, results) => {
-    if (err) {
-      logger.error(`Error fetching users: ${err.message}`);
-      return res.status(500).json({ error: "Failed to fetch users" });
+  try {
+    const results = await queryAsync(query);
+    const employeeIds = (results || [])
+      .filter(r => r.role === 'Employee' && r._id)
+      .map(r => r._id);
+
+    let taskRows = [];
+    if (employeeIds.length) {
+      const placeholders = employeeIds.map(() => '?').join(',');
+      const taskQuery = `
+        SELECT
+          ta.user_id,
+          t.id AS task_internal_id,
+          t.public_id AS task_public_id,
+          t.title,
+          t.status,
+          t.stage,
+          t.priority,
+          t.taskDate,
+          t.project_id AS task_project_internal_id,
+          t.project_public_id AS task_project_public_id,
+          p.id AS project_internal_id,
+          p.public_id AS project_public_id,
+          p.name AS project_name
+        FROM taskassignments ta
+        JOIN tasks t ON t.id = ta.task_id
+        LEFT JOIN projects p ON p.id = t.project_id
+        WHERE ta.user_id IN (${placeholders})
+        ORDER BY t.updatedAt DESC
+      `;
+      taskRows = await queryAsync(taskQuery, employeeIds);
     }
 
-    const out = (results || []).map(r => ({
-      id: r.public_id || r._id,
-      name: r.name,
-      title: r.title,
-      email: r.email,
-      role: r.role,
-      isActive: Boolean(r.isActive),
-      isGuest: Boolean(r.isGuest),
-      phone: r.phone,
-      departmentPublicId: r.department_public_id,
-      departmentName: r.department_name
-    }));
+    const tasksByUser = {};
+    const projectTrackers = {};
+    taskRows.forEach(row => {
+      if (!row || row.user_id === undefined || row.user_id === null) return;
+      const userKey = String(row.user_id);
+      if (!tasksByUser[userKey]) tasksByUser[userKey] = [];
+      const taskPayload = {
+        id: row.task_public_id ? String(row.task_public_id) : (row.task_internal_id != null ? String(row.task_internal_id) : null),
+        internalId: row.task_internal_id != null ? String(row.task_internal_id) : null,
+        title: row.title || null,
+        status: row.status || null,
+        stage: row.stage || null,
+        priority: row.priority || null,
+        taskDate: row.taskDate ? new Date(row.taskDate).toISOString() : null,
+        project: null
+      };
+      const projectId = row.project_internal_id != null
+        ? String(row.project_internal_id)
+        : (row.task_project_internal_id != null ? String(row.task_project_internal_id) : null);
+      const projectPublicId = row.project_public_id || row.task_project_public_id || null;
+      if (projectId || projectPublicId) {
+        taskPayload.project = {
+          internalId: projectId,
+          publicId: projectPublicId || null,
+          name: row.project_name || null
+        };
+      }
+      tasksByUser[userKey].push(taskPayload);
+
+      if (!projectId && !projectPublicId) return;
+      if (!projectTrackers[userKey]) {
+        projectTrackers[userKey] = { set: new Set(), list: [] };
+      }
+      const key = projectPublicId || projectId;
+      if (key && !projectTrackers[userKey].set.has(key)) {
+        projectTrackers[userKey].set.add(key);
+        projectTrackers[userKey].list.push({
+          internalId: projectId,
+          publicId: projectPublicId || null,
+          name: row.project_name || null
+        });
+      }
+    });
+
+    const out = (results || []).map(r => {
+      const isEmployee = r.role === 'Employee';
+      const key = r._id ? String(r._id) : null;
+      const userTasks = isEmployee && key ? (tasksByUser[key] || []) : [];
+      const userProjects = isEmployee && key && projectTrackers[key]
+        ? projectTrackers[key].list
+        : [];
+      return {
+        id: r.public_id || r._id,
+        name: r.name,
+        title: r.title,
+        email: r.email,
+        role: r.role,
+        isActive: Boolean(r.isActive),
+        isGuest: Boolean(r.isGuest),
+        phone: r.phone,
+        departmentPublicId: r.department_public_id,
+        departmentName: r.department_name,
+        projects: userProjects,
+        tasks: userTasks
+      };
+    });
 
     res.status(200).json(out);
-  });
+  } catch (err) {
+    logger.error(`Error fetching users: ${err.message}`);
+    res.status(500).json({ error: "Failed to fetch users" });
+  }
 });
 
 // ✅ FIXED: Create user - Supports BOTH departmentId AND departmentName
