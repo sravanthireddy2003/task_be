@@ -11,6 +11,29 @@ const emailService = require(__root + 'utils/emailService');
 // tenantMiddleware available if endpoints need explicit tenant enforcement; most auth flows derive tenant from email/token
 const { requireAuth } = require(__root + 'middleware/roles');
 require('dotenv').config();
+
+// Directly use expiresIn format from .env
+const ACCESS_TOKEN_EXPIRES_IN = process.env.ACCESS_TOKEN_EXPIRY_DAYS || '7d';
+const REFRESH_TOKEN_EXPIRES_IN = process.env.REFRESH_TOKEN_EXPIRY_DAYS || '30d';
+
+// Parse PASSWORD_EXPIRE_DAYS (it's still a number of days)
+const PASSWORD_EXPIRE_DAYS = parseInt(process.env.PASSWORD_EXPIRE_DAYS || '60', 10);
+
+// Parse OTP resend configuration (these are still numbers)
+const RESEND_MIN_INTERVAL = parseInt(process.env.OTP_RESEND_MIN_SECONDS || '60', 10);
+const RESEND_MAX_PER_WINDOW = parseInt(process.env.OTP_RESEND_MAX || '3', 10);
+const RESEND_WINDOW_SECONDS = parseInt(process.env.OTP_RESEND_WINDOW_SECONDS || '600', 10);
+
+console.log('=== AUTH CONTROLLER LOADED ===');
+console.log('🔧 Token Configuration:');
+console.log(`   ACCESS_TOKEN_EXPIRES_IN: ${ACCESS_TOKEN_EXPIRES_IN}`);
+console.log(`   REFRESH_TOKEN_EXPIRES_IN: ${REFRESH_TOKEN_EXPIRES_IN}`);
+console.log(`   PASSWORD_EXPIRE_DAYS: ${PASSWORD_EXPIRE_DAYS} days`);
+console.log('🔧 OTP Resend Configuration:');
+console.log(`   RESEND_MIN_INTERVAL: ${RESEND_MIN_INTERVAL} seconds`);
+console.log(`   RESEND_MAX_PER_WINDOW: ${RESEND_MAX_PER_WINDOW} per window`);
+console.log(`   RESEND_WINDOW_SECONDS: ${RESEND_WINDOW_SECONDS} seconds`);
+
 const upload = require(__root + 'multer');
 const fs = require('fs');
 const path = require('path');
@@ -34,6 +57,7 @@ const MODULE_ROUTE_MAP = {
   },
   Manager: {
     'Dashboard': '/manager/dashboard',
+    'User Management': '/manager/users',
     'Clients': '/manager/clients',
     'Departments': '/manager/departments',
     'Tasks': '/manager/tasks',
@@ -107,7 +131,6 @@ function normalizeStoredModules(user) {
     })
     .filter(m => (m.name || '').toLowerCase() !== 'team & employees');
 }
-
 
 function getDefaultModules(role) {
   function mk(name, access) { return { moduleId: crypto.randomBytes(8).toString('hex'), name, access }; }
@@ -214,10 +237,6 @@ async function isLocked(key) {
 }
 
 // OTP resend rate limiting configuration
-const RESEND_MIN_INTERVAL = parseInt(process.env.OTP_RESEND_MIN_SECONDS || '60', 10); // seconds between resends
-const RESEND_MAX_PER_WINDOW = parseInt(process.env.OTP_RESEND_MAX || '3', 10); // max resends per window
-const RESEND_WINDOW_SECONDS = parseInt(process.env.OTP_RESEND_WINDOW_SECONDS || '600', 10); // window length in seconds
-
 async function canResendOtp(userId) {
   if (redis) {
     const lastKey = `otp:last:${userId}`;
@@ -274,7 +293,7 @@ async function noteResendOtp(userId) {
 // Login: prefer tenant from header/body/query; if missing, attempt to infer tenant by email.
 router.post('/login', async (req, res) => {
   const { email, password } = req.body;
-  let tenantId = req.headers['x-tenant-id'] || req.body && req.body.tenantId || req.query && req.query.tenantId;
+  let tenantId = req.headers['x-tenant-id'] || (req.body && req.body.tenantId) || (req.query && req.query.tenantId);
 
   if (!email || !password) return res.status(400).json({ message: 'email and password required' });
 
@@ -305,10 +324,9 @@ router.post('/login', async (req, res) => {
         if (user.is_locked) return res.status(423).json({ message: 'Account locked. Contact admin.' });
 
         if (user.password_changed_at) {
-          const maxDays = parseInt(process.env.PASSWORD_EXPIRE_DAYS || '60', 10);
           const changed = new Date(user.password_changed_at).getTime();
           const ageDays = (Date.now() - changed) / (1000 * 60 * 60 * 24);
-          if (ageDays > maxDays) return res.status(403).json({ message: 'Password expired. Please reset your password.' });
+          if (ageDays > PASSWORD_EXPIRE_DAYS) return res.status(403).json({ message: 'Password expired. Please reset your password.' });
         }
 
         // If user has TOTP-based 2FA enabled, require OTP in this login call and verify
@@ -376,10 +394,9 @@ router.post('/login', async (req, res) => {
 
     // optional: password expiry check (requires password_changed_at column)
     if (user.password_changed_at) {
-      const maxDays = parseInt(process.env.PASSWORD_EXPIRE_DAYS || '60', 10);
       const changed = new Date(user.password_changed_at).getTime();
       const ageDays = (Date.now() - changed) / (1000 * 60 * 60 * 24);
-      if (ageDays > maxDays) return res.status(403).json({ message: 'Password expired. Please reset your password.' });
+      if (ageDays > PASSWORD_EXPIRE_DAYS) return res.status(403).json({ message: 'Password expired. Please reset your password.' });
     }
 
     // If user has TOTP-based 2FA enabled, require OTP in this login call and verify
@@ -422,8 +439,8 @@ router.post('/login', async (req, res) => {
 async function completeLoginForUser(user, req, res) {
   try {
     const tokenIdForJwt = user.public_id || String(user._id);
-    const token = jwt.sign({ id: tokenIdForJwt }, process.env.SECRET || 'secret', { expiresIn: '7d' });
-    const refreshToken = jwt.sign({ id: tokenIdForJwt, type: 'refresh' }, process.env.SECRET || 'secret', { expiresIn: '30d' });
+    const token = jwt.sign({ id: tokenIdForJwt }, process.env.SECRET || 'secret', { expiresIn: ACCESS_TOKEN_EXPIRES_IN });
+    const refreshToken = jwt.sign({ id: tokenIdForJwt, type: 'refresh' }, process.env.SECRET || 'secret', { expiresIn: REFRESH_TOKEN_EXPIRES_IN });
 
     const storedModules = normalizeStoredModules(user);
     const modulesToReturn = storedModules && storedModules.length ? storedModules : getDefaultModules(user.role);
@@ -451,6 +468,12 @@ async function completeLoginForUser(user, req, res) {
       db.query(insert, [user._id, user.tenant_id || null, ip, ua, 1], () => {});
     } catch (e) {}
 
+    // Get user photo URL
+    let photoUrl = user.photo || null;
+    if (photoUrl && !photoUrl.startsWith('http')) {
+      photoUrl = `${req.protocol}://${req.get('host')}${photoUrl.startsWith('/') ? '' : '/'}${photoUrl}`;
+    }
+
     return res.json({ 
       token, 
       refreshToken, 
@@ -463,7 +486,8 @@ async function completeLoginForUser(user, req, res) {
         modules: modulesWithPaths,
         phone: user.phone || null,
         title: user.title || null,
-        department: user.department || null
+        department: user.department || null,
+        photo: photoUrl
       },
       ...roleBasedData
     });
@@ -498,37 +522,118 @@ router.post('/verify-otp', (req, res) => {
   }
 });
 
-
 // Refresh access token using a refresh token. Accepts `refreshToken` in body
 // or as a Bearer token in `Authorization` header. Returns new access token
 // and a rotated refresh token (stateless rotation - no server-side storage).
 router.post('/refresh', (req, res) => {
-  const incoming = req.body && req.body.refreshToken
+  console.log('=== REFRESH ENDPOINT CALLED ===');
+  
+  const incoming = (req.body && req.body.refreshToken)
     || (req.headers.authorization && req.headers.authorization.split(' ')[1]);
-  if (!incoming) return res.status(400).json({ message: 'refreshToken required' });
+  
+  if (!incoming) {
+    console.log('❌ No refresh token provided');
+    return res.status(400).json({ message: 'refreshToken required' });
+  }
+
+  console.log('🔧 Token Configuration:');
+  console.log(`   ACCESS_TOKEN_EXPIRES_IN: ${ACCESS_TOKEN_EXPIRES_IN}`);
+  console.log(`   REFRESH_TOKEN_EXPIRES_IN: ${REFRESH_TOKEN_EXPIRES_IN}`);
+  console.log('📝 Incoming token (first 50 chars):', incoming.substring(0, 50));
 
   try {
-    const payload = jwt.verify(incoming, process.env.SECRET || 'secret');
-    if (!payload || payload.type !== 'refresh' || !payload.id) return res.status(401).json({ message: 'Invalid refresh token' });
+    const secret = process.env.SECRET || 'secret';
+    console.log('🔐 Verifying token with secret...');
+    
+    const payload = jwt.verify(incoming, secret);
+    console.log('✅ Token payload verified:', JSON.stringify(payload, null, 2));
+    
+    if (!payload || payload.type !== 'refresh' || !payload.id) {
+      console.log('❌ Token missing required fields:', { 
+        hasPayload: !!payload, 
+        type: payload?.type, 
+        id: payload?.id 
+      });
+      return res.status(401).json({ message: 'Invalid refresh token' });
+    }
 
     const tokenIdForJwt = payload.id;
-    // issue a new access token (7 days)
-    const token = jwt.sign({ id: tokenIdForJwt }, process.env.SECRET || 'secret', { expiresIn: '7d' });
-    // rotate refresh token (30 days)
-    const refreshToken = jwt.sign({ id: tokenIdForJwt, type: 'refresh' }, process.env.SECRET || 'secret', { expiresIn: '30d' });
+    console.log('🔄 Token ID:', tokenIdForJwt);
+    
+    console.log('⏰ Access token expires in:', ACCESS_TOKEN_EXPIRES_IN);
+    console.log('⏰ Refresh token expires in:', REFRESH_TOKEN_EXPIRES_IN);
+    
+    // issue a new access token
+    const token = jwt.sign({ 
+      id: tokenIdForJwt 
+    }, secret, { 
+      expiresIn: ACCESS_TOKEN_EXPIRES_IN 
+    });
+    
+    // rotate refresh token
+    const refreshToken = jwt.sign({ 
+      id: tokenIdForJwt, 
+      type: 'refresh' 
+    }, secret, { 
+      expiresIn: REFRESH_TOKEN_EXPIRES_IN 
+    });
+
+    console.log('✅ New tokens generated');
+    console.log('📝 New access token (first 50 chars):', token.substring(0, 50));
+    console.log('📝 New refresh token (first 50 chars):', refreshToken.substring(0, 50));
 
     // attempt to return user info if we can resolve the id to a user row
     const isNumeric = /^\d+$/.test(String(tokenIdForJwt));
     const sqlFind = isNumeric ? 'SELECT * FROM users WHERE _id = ? LIMIT 1' : 'SELECT * FROM users WHERE public_id = ? LIMIT 1';
+    
+    console.log('🔍 Querying user with ID:', tokenIdForJwt);
+    console.log('🔍 SQL:', sqlFind);
+    
     db.query(sqlFind, [tokenIdForJwt], (err, rows) => {
-      if (err) return res.status(500).json({ message: 'DB error', error: err.message });
-      if (!rows || rows.length === 0) return res.json({ token, refreshToken });
+      if (err) {
+        console.error('❌ Database error:', err.message);
+        return res.status(500).json({ message: 'DB error', error: err.message });
+      }
+      
+      console.log('🔍 User query result:', rows ? `Found ${rows.length} rows` : 'No rows');
+      
+      if (!rows || rows.length === 0) {
+        console.log('⚠️ No user found, returning tokens only');
+        return res.json({ token, refreshToken });
+      }
+      
       const user = rows[0];
-      const userResp = { id: user.public_id || String(user._id), email: user.email, name: user.name, role: user.role };
+      console.log('✅ User found:', user.email);
+      
+      const userResp = { 
+        id: user.public_id || String(user._id), 
+        email: user.email, 
+        name: user.name, 
+        role: user.role 
+      };
+      
+      console.log('✅ Sending response with tokens and user info');
       return res.json({ token, refreshToken, user: userResp });
     });
   } catch (e) {
-    if (e && e.name === 'TokenExpiredError') return res.status(401).json({ message: 'Refresh token expired' });
+    console.error('❌ JWT Verification Error:', e.name, '-', e.message);
+    console.error('❌ Stack trace:', e.stack);
+    
+    if (e && e.name === 'TokenExpiredError') {
+      console.log('⏰ Token expired at:', e.expiredAt);
+      return res.status(401).json({ message: 'Refresh token expired' });
+    }
+    
+    if (e && e.name === 'JsonWebTokenError') {
+      console.log('❌ JWT Error details:', e.message);
+      console.log('❌ Possible causes:');
+      console.log('   - Wrong secret key');
+      console.log('   - Malformed token');
+      console.log('   - Token signed with different algorithm');
+      return res.status(401).json({ message: 'Invalid refresh token', error: e.message });
+    }
+    
+    console.log('❌ Other error:', e);
     return res.status(401).json({ message: 'Invalid refresh token', error: e.message });
   }
 });
@@ -536,7 +641,7 @@ router.post('/refresh', (req, res) => {
 // Forgot password: sends OTP to email. If tenant header missing, infer by email.
 router.post('/forgot-password', (req, res) => {
   const { email } = req.body;
-  let tenantId = req.headers['x-tenant-id'] || req.body && req.body.tenantId || req.query && req.query.tenantId;
+  let tenantId = req.headers['x-tenant-id'] || (req.body && req.body.tenantId) || (req.query && req.query.tenantId);
   if (!email) return res.status(400).json({ message: 'email required' });
 
   if (!tenantId) {
@@ -611,7 +716,7 @@ router.post('/resend-otp', async (req, res) => {
 // Reset password using OTP; infer tenant by email if header missing
 router.post('/reset-password', (req, res) => {
   const { email, otp, newPassword } = req.body;
-  let tenantId = req.headers['x-tenant-id'] || req.body && req.body.tenantId || req.query && req.query.tenantId;
+  let tenantId = req.headers['x-tenant-id'] || (req.body && req.body.tenantId) || (req.query && req.query.tenantId);
   if (!email || !otp || !newPassword) return res.status(400).json({ message: 'email, otp and newPassword required' });
 
   const handleResetForUser = async (user) => {
@@ -725,7 +830,7 @@ router.get('/profile', requireAuth, async (req, res) => {
       '_id', 'public_id', 'name', 'email', 'role', 'tenant_id', 'phone', 
       'isActive', 'created_at', 'createdAt', 'last_login', 'last_login_at',
       'email_verified', 'is_email_verified', 'twofa_secret', 'is2fa_enabled',
-      'photo' // Profile photo
+      'photo', 'title', 'department' // Profile photo and additional fields
     ];
     
     const infoSql = `SELECT COLUMN_NAME FROM information_schema.COLUMNS 
@@ -749,7 +854,7 @@ router.get('/profile', requireAuth, async (req, res) => {
         .concat([
           'phone', 'isActive', 'created_at', 'createdAt', 'last_login', 
           'last_login_at', 'email_verified', 'is_email_verified', 
-          'twofa_secret', 'is2fa_enabled', 'photo'
+          'twofa_secret', 'is2fa_enabled', 'photo', 'title', 'department'
         ].filter(c => present.includes(c)));
       
       const sql = `SELECT ${selectCols.join(', ')} FROM users WHERE _id = ? LIMIT 1`;
@@ -779,6 +884,8 @@ router.get('/profile', requireAuth, async (req, res) => {
           role: row.role || 'user',
           tenant_id: row.tenant_id || null,
           phone: row.phone || null,
+          title: row.title || null,
+          department: row.department || null,
           photo: photoUrl, // ✅ Full URL: http://localhost:3000/uploads/profiles/...
           accountStatus: Boolean(row.isActive) ? 'Active' : 'Inactive',
           memberSince: (row.created_at || row.createdAt) 
@@ -815,7 +922,7 @@ router.get('/profile', requireAuth, async (req, res) => {
 // PUT /api/profile
 router.put("/profile", requireAuth, upload.single("photo"), async (req, res) => {
   const user = req.user;
-  const { name, email, phone, title } = req.body;
+  const { name, email, phone, title, department } = req.body;
 
   try {
     // Ensure upload directory exists
@@ -850,14 +957,15 @@ router.put("/profile", requireAuth, upload.single("photo"), async (req, res) => 
     const newName = name || user.name;
     const newPhone = phone ?? user.phone;
     const newTitle = title ?? user.title;
+    const newDepartment = department ?? user.department;
 
     const sql = `
       UPDATE users 
-      SET name = ?, email = ?, phone = ?, title = ?, photo = ?
+      SET name = ?, email = ?, phone = ?, title = ?, department = ?, photo = ?
       WHERE _id = ?
     `;
 
-    const values = [newName, newEmail, newPhone, newTitle, photoPath, user._id];
+    const values = [newName, newEmail, newPhone, newTitle, newDepartment, photoPath, user._id];
 
     db.query(sql, values, (err) => {
       if (err) {
@@ -868,7 +976,7 @@ router.put("/profile", requireAuth, upload.single("photo"), async (req, res) => 
       }
 
       db.query(
-        `SELECT _id, public_id, email, name, phone, title, photo, role, tenant_id 
+        `SELECT _id, public_id, email, name, phone, title, department, photo, role, tenant_id 
          FROM users 
          WHERE _id = ? LIMIT 1`,
         [user._id],
@@ -890,6 +998,7 @@ router.put("/profile", requireAuth, upload.single("photo"), async (req, res) => 
               name: updated.name,
               phone: updated.phone,
               title: updated.title,
+              department: updated.department,
               role: updated.role,
               tenant_id: updated.tenant_id,
               photo: fullPhotoURL,
@@ -903,7 +1012,6 @@ router.put("/profile", requireAuth, upload.single("photo"), async (req, res) => 
     return res.status(500).json({ message: "Upload failed", error: e.message });
   }
 });
-
 
 // Change password for authenticated user
 router.post('/change-password', requireAuth, async (req, res) => {

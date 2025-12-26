@@ -37,224 +37,175 @@ router.use(tenantMiddleware);
 // POST /api/projects/tasks/selected-details
 // Body: { "taskIds": [1,2,3] }
 // Returns tasks with assigned users, subtasks (checklist), activities, and total hours
-router.post(
-  '/selected-details',
-  requireRole(['Admin', 'Manager', 'Employee']),
-  async (req, res) => {
-    try {
-      const taskIds = req.body.taskIds || req.body.task_ids || [];
+router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
+  try {
+    const taskIds = req.body.taskIds || req.body.task_ids || [];
+    if (!Array.isArray(taskIds) || taskIds.length === 0) return res.status(400).json({ success: false, error: 'taskIds (array) required' });
 
-      if (!Array.isArray(taskIds) || taskIds.length === 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'taskIds (array) required'
-        });
+    const ids = taskIds.map(id => Number(id)).filter(Boolean);
+    if (ids.length === 0) return res.status(400).json({ success: false, error: 'No valid task IDs provided' });
+    const subtaskCreatorColumnExists = await hasColumn('subtasks', 'created_by');
+
+    const sql = `
+      SELECT
+        t.id AS task_internal_id,
+        t.public_id AS task_id,
+        t.title,
+        t.description,
+        t.stage,
+        t.taskDate,
+        t.priority,
+        t.time_alloted,
+        t.estimated_hours,
+        t.status,
+        t.createdAt,
+        t.updatedAt,
+        c.id AS client_id,
+        c.name AS client_name,
+        GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
+        GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
+        GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names
+      FROM tasks t
+      LEFT JOIN clientss c ON t.client_id = c.id
+      LEFT JOIN taskassignments ta ON ta.task_id = t.id
+      LEFT JOIN users u ON u._id = ta.user_id
+      WHERE t.id IN (?)
+      GROUP BY t.id
+      ORDER BY t.createdAt DESC
+    `;
+
+    db.query(sql, [ids], async (err, rows) => {
+      if (err) {
+        logger.error('selected-details fetch error: ' + (err && err.message));
+        return res.status(500).json({ success: false, error: err.message });
       }
 
-      // IMPORTANT: task_Id in subtasks = tasks.id (internal id)
-      const ids = taskIds.map(id => Number(id)).filter(Boolean);
-      if (!ids.length) {
-        return res.status(400).json({
-          success: false,
-          error: 'No valid task IDs provided'
-        });
-      }
-
-      /* =======================
-         1️⃣ FETCH TASK CORE DATA
-         ======================= */
-      const sql = `
-        SELECT
-          t.id AS task_internal_id,
-          t.public_id AS task_id,
-          t.title,
-          t.description,
-          t.stage,
-          t.taskDate,
-          t.priority,
-          t.time_alloted,
-          t.estimated_hours,
-          t.status,
-          t.createdAt,
-          t.updatedAt,
-          c.id AS client_id,
-          c.name AS client_name,
-          GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
-          GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
-          GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names
-        FROM tasks t
-        LEFT JOIN clientss c ON t.client_id = c.id
-        LEFT JOIN taskassignments ta ON ta.task_id = t.id
-        LEFT JOIN users u ON u._id = ta.user_id
-        WHERE t.id IN (?)
-        GROUP BY t.id
-        ORDER BY t.createdAt DESC
+      // fetch subtasks (checklist)
+      const creatorSelect = subtaskCreatorColumnExists
+        ? ', creator._id AS creator_internal_id, creator.public_id AS creator_public_id, creator.name AS creator_name'
+        : '';
+      const creatorJoin = subtaskCreatorColumnExists ? 'LEFT JOIN users creator ON creator._id = s.created_by' : '';
+      const subtaskQuery = `
+        SELECT s.*${creatorSelect}
+        FROM subtasks s
+        ${creatorJoin}
+        WHERE s.task_id IN (?)
+        ORDER BY s.created_at ASC
       `;
+      const subtasks = await new Promise((resolve, reject) => db.query(
+        subtaskQuery,
+        [ids], (e, r) => e ? reject(e) : resolve(r)
+      ));
 
-      db.query(sql, [ids], async (err, rows) => {
-        if (err) {
-          logger.error('selected-details fetch error: ' + err.message);
-          return res.status(500).json({ success: false, error: err.message });
+      // fetch activities (what employees added)
+      const activities = await new Promise((resolve, reject) => db.query(
+        `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt, u._id AS user_id, u.public_id AS user_public_id, u.name AS user_name
+         FROM task_activities ta
+         LEFT JOIN users u ON ta.user_id = u._id
+         WHERE ta.task_id IN (?)
+         ORDER BY ta.createdAt DESC`,
+        [ids], (e, r) => e ? reject(e) : resolve(r)
+      ));
+
+      // fetch total hours per task
+      const hours = await new Promise((resolve, reject) => db.query(
+        'SELECT task_id, SUM(hours) AS total_hours FROM task_hours WHERE task_id IN (?) GROUP BY task_id',
+        [ids], (e, r) => e ? reject(e) : resolve(r)
+      ));
+
+      const checklistMap = {};
+      (subtasks || []).forEach((s) => {
+        if (!s || s.task_id === undefined || s.task_id === null) return;
+        const key = String(s.task_id);
+        if (!checklistMap[key]) checklistMap[key] = [];
+        const checklistItem = {
+          id: s.id != null ? String(s.id) : null,
+          title: s.title || null,
+          description: s.description || null,
+          status: s.status || null,
+          tag: s.tag || null,
+          dueDate: s.due_date ? new Date(s.due_date).toISOString() : null,
+          estimatedHours: s.estimated_hours != null ? Number(s.estimated_hours) : null,
+          completedAt: s.completed_at ? new Date(s.completed_at).toISOString() : null,
+          createdAt: s.created_at ? new Date(s.created_at).toISOString() : null,
+          updatedAt: s.updated_at ? new Date(s.updated_at).toISOString() : null
+        };
+        if (subtaskCreatorColumnExists) {
+          const creatorInternalId = s.creator_internal_id != null ? String(s.creator_internal_id) : (s.created_by != null ? String(s.created_by) : null);
+          const creatorPublicId = s.creator_public_id || null;
+          const creatorName = s.creator_name || null;
+          if (creatorInternalId || creatorPublicId || creatorName) {
+            checklistItem.user = {
+              id: creatorPublicId || creatorInternalId || null,
+              internalId: creatorInternalId,
+              name: creatorName
+            };
+          } else {
+            checklistItem.user = null;
+          }
         }
+        checklistMap[key].push(checklistItem);
+      });
 
-        const subtasks = await new Promise((resolve, reject) =>
-          db.query(
-            `
-            SELECT
-            id,
-            task_Id AS task_id,
-            title,
-            due_date,
-            tag,
-            created_at,
-            updated_at,
-            estimated_hours
-          FROM subtasks
-          WHERE task_Id IN (?)
-          `,
-            [ids],
-            (e, r) => (e ? reject(e) : resolve(r))
-          )
-        );
-        const activities = await new Promise((resolve, reject) =>
-          db.query(
-            `
-            SELECT
-              ta.task_id,
-              ta.type,
-              ta.activity,
-              ta.createdAt,
-              u._id AS user_id,
-              u.name AS user_name
-            FROM task_activities ta
-            LEFT JOIN users u ON ta.user_id = u._id
-            WHERE ta.task_id IN (?)
-            ORDER BY ta.createdAt DESC
-            `,
-            [ids],
-            (e, r) => (e ? reject(e) : resolve(r))
-          )
-        );
-
-        const hours = await new Promise((resolve, reject) =>
-          db.query(
-            `
-            SELECT task_id, SUM(hours) AS total_hours
-            FROM task_hours
-            WHERE task_id IN (?)
-            GROUP BY task_id
-            `,
-            [ids],
-            (e, r) => (e ? reject(e) : resolve(r))
-          )
-        );
-
-        const checklistMap = {};
-        (subtasks || []).forEach(s => {
-          const key = String(s.task_id);
-          if (!checklistMap[key]) checklistMap[key] = [];
-          checklistMap[key].push({
-            id: s.id,
-            title: s.title || null,
-            dueDate: s.due_date ? new Date(s.due_date).toISOString() : null,
-            tag: s.tag || null,
-            estimatedHours:
-              s.estimated_hours != null ? Number(s.estimated_hours) : null,
-            createdAt: s.created_at
-              ? new Date(s.created_at).toISOString()
-              : null,
-            updatedAt: s.updated_at
-              ? new Date(s.updated_at).toISOString()
-              : null
-          });
-        });
-
-        const activityMap = {};
-        (activities || []).forEach(a => {
-          const key = String(a.task_id);
-          if (!activityMap[key]) activityMap[key] = [];
-          activityMap[key].push({
-            type: a.type || null,
-            activity: a.activity || null,
-            createdAt: a.createdAt
-              ? new Date(a.createdAt).toISOString()
-              : null,
-            user: a.user_id
-              ? { id: String(a.user_id), name: a.user_name }
-              : null
-          });
-        });
-
-        const hoursMap = {};
-        (hours || []).forEach(h => {
-          hoursMap[String(h.task_id)] = Number(h.total_hours || 0);
-        });
-
-        const tasks = (rows || []).map(r => {
-          const assignedIds = r.assigned_user_ids
-            ? String(r.assigned_user_ids).split(',')
-            : [];
-          const assignedPublic = r.assigned_user_public_ids
-            ? String(r.assigned_user_public_ids).split(',')
-            : [];
-          const assignedNames = r.assigned_user_names
-            ? String(r.assigned_user_names).split(',')
-            : [];
-
-          const assignedUsers = assignedIds.map((uid, i) => ({
-            id: assignedPublic[i] || uid,
-            internalId: String(uid),
-            name: assignedNames[i] || null
-          }));
-
-          const key = String(r.task_internal_id);
-
-          return {
-            id: r.task_id ? String(r.task_id) : String(r.task_internal_id),
-            title: r.title || null,
-            description: r.description || null,
-            stage: r.stage || null,
-            taskDate: r.taskDate
-              ? new Date(r.taskDate).toISOString()
-              : null,
-            priority: r.priority || null,
-            timeAlloted:
-              r.time_alloted != null ? Number(r.time_alloted) : null,
-            estimatedHours:
-              r.estimated_hours != null
-                ? Number(r.estimated_hours)
-                : r.time_alloted != null
-                  ? Number(r.time_alloted)
-                  : null,
-            status: r.status || null,
-            createdAt: r.createdAt
-              ? new Date(r.createdAt).toISOString()
-              : null,
-            updatedAt: r.updatedAt
-              ? new Date(r.updatedAt).toISOString()
-              : null,
-            client: r.client_id
-              ? { id: String(r.client_id), name: r.client_name }
-              : null,
-            assignedUsers,
-            checklist: checklistMap[key] || [],
-            activities: activityMap[key] || [],
-            totalHours: hoursMap[key] || 0
-          };
-        });
-
-        return res.json({
-          success: true,
-          data: tasks,
-          meta: { count: tasks.length }
+      const activitiesMap = {};
+      (activities || []).forEach(activity => {
+        if (!activity || activity.task_id === undefined || activity.task_id === null) return;
+        const key = String(activity.task_id);
+        if (!activitiesMap[key]) activitiesMap[key] = [];
+        const userInfo = activity.user_id
+          ? {
+              id: activity.user_public_id || String(activity.user_id),
+              internalId: String(activity.user_id),
+              name: activity.user_name || null
+            }
+          : null;
+        activitiesMap[key].push({
+          type: activity.type || null,
+          activity: activity.activity || null,
+          createdAt: activity.createdAt ? new Date(activity.createdAt).toISOString() : null,
+          user: userInfo
         });
       });
-    } catch (e) {
-      logger.error('Error in selected-details endpoint: ' + e.message);
-      return res.status(500).json({ success: false, error: e.message });
-    }
+
+      const hoursMap = {};
+      (hours || []).forEach(h => { hoursMap[String(h.task_id)] = Number(h.total_hours || 0); });
+
+      const tasks = (rows || []).map(r => {
+        const assignedIds = r.assigned_user_ids ? String(r.assigned_user_ids).split(',') : [];
+        const assignedPublic = r.assigned_user_public_ids ? String(r.assigned_user_public_ids).split(',') : [];
+        const assignedNames = r.assigned_user_names ? String(r.assigned_user_names).split(',') : [];
+
+        const assignedUsers = assignedIds.map((uid, i) => ({ id: assignedPublic[i] || uid, internalId: String(uid), name: assignedNames[i] || null }));
+
+        const key = String(r.task_internal_id || r.task_id);
+
+        return {
+          id: r.task_id ? String(r.task_id) : String(r.task_internal_id),
+          title: r.title || null,
+          description: r.description || null,
+          stage: r.stage || null,
+          taskDate: r.taskDate ? new Date(r.taskDate).toISOString() : null,
+          priority: r.priority || null,
+          timeAlloted: r.time_alloted != null ? Number(r.time_alloted) : null,
+          estimatedHours: r.estimated_hours != null ? Number(r.estimated_hours) : (r.time_alloted != null ? Number(r.time_alloted) : null),
+          status: r.status || null,
+          createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null,
+          updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
+          client: r.client_id ? { id: String(r.client_id), name: r.client_name } : null,
+          assignedUsers,
+          checklist: checklistMap[key] || [],
+          activities: activitiesMap[key] || [],
+          totalHours: hoursMap[key] != null ? hoursMap[key] : 0
+        };
+      });
+
+      return res.json({ success: true, data: tasks, meta: { count: tasks.length } });
+    });
+  } catch (e) {
+    logger.error('Error in selected-details endpoint: ' + (e && e.message));
+    return res.status(500).json({ success: false, error: e && e.message });
   }
-);
+});
 
 async function createJsonHandler(req, res) {
   try {
