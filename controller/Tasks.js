@@ -18,7 +18,8 @@ const cron = require("node-cron");
 const winston = require("winston");
 const { google } = require("googleapis");
 const dayjs = require('dayjs');
-
+router.use(requireAuth);        // ✅ Sets req.user from JWT
+router.use(tenantMiddleware); 
 // helper: check if a column exists on a table (promise)
 const hasColumn = (table, column) => new Promise((resolve) => {
   db.query(
@@ -2420,6 +2421,267 @@ router.get("/taskdetail/getactivity/:id", async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: "An unexpected error occurred." });
+  }
+});
+
+// POST /tasks/:id/request-reassignment
+// Employee requests reassignment for a task
+router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, res) => {
+  const { id: taskId } = req.params;
+  const employee = req.user;
+  const { reason } = req.body;
+  
+  try {
+    // 1. Fetch task details WITH project info
+    const [taskRows] = await new Promise((resolve, reject) =>
+      db.query(`
+        SELECT 
+          t.id, t.title, t.project_id, t.project_public_id,
+          p.id as project_internal_id, p.name as project_name
+        FROM tasks t 
+        LEFT JOIN projects p ON t.project_id = p.id 
+        WHERE t.id = ?
+      `, [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+    
+    if (!taskRows || taskRows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Task not found' });
+    }
+    const task = taskRows[0];
+
+    // 2. Project details
+    const project = {
+      id: task.project_id || task.project_internal_id,
+      public_id: task.project_public_id,
+      name: task.project_name || null
+    };
+
+    // 3. Find manager (task assignments first, then fallback)
+    let manager = null;
+    
+    const [assignedMgrRows] = await new Promise((resolve, reject) =>
+      db.query(`
+        SELECT DISTINCT u._id, u.name, u.public_id 
+        FROM taskassignments ta 
+        JOIN users u ON ta.user_id = u._id 
+        WHERE ta.task_id = ? AND u.role = 'Manager'
+        LIMIT 1
+      `, [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+    
+    if (assignedMgrRows && assignedMgrRows.length > 0) {
+      manager = { 
+        id: assignedMgrRows[0].public_id || assignedMgrRows[0]._id, 
+        name: assignedMgrRows[0].name 
+      };
+    }
+    
+    if (!manager) {
+      const [fallbackMgrRows] = await new Promise((resolve, reject) =>
+        db.query('SELECT _id, name, public_id FROM users WHERE role = "Manager" LIMIT 1', [], (err, rows) => err ? reject(err) : resolve([rows]))
+      );
+      if (fallbackMgrRows && fallbackMgrRows.length > 0) {
+        manager = { 
+          id: fallbackMgrRows[0].public_id || fallbackMgrRows[0]._id, 
+          name: fallbackMgrRows[0].name 
+        };
+      }
+    }
+
+    if (!manager) {
+      return res.status(400).json({ success: false, error: 'No manager found' });
+    }
+
+    // 4. Insert request and get the created record ID
+    const [insertResult] = await new Promise((resolve, reject) =>
+      db.query(
+        'INSERT INTO task_resign_requests (task_id, requested_by, reason, status, requested_at) VALUES (?, ?, ?, ?, ?)',
+        [taskId, employee._id, reason, 'PENDING', new Date().toISOString()],
+        (err, result) => err ? reject(err) : resolve([result])
+      )
+    );
+
+    const requestId = insertResult.insertId;
+
+    // 5. Fetch the created request with full details
+    const [requestRows] = await new Promise((resolve, reject) =>
+      db.query(`
+        SELECT 
+          id as request_id,
+          task_id,
+          requested_by,
+          reason,
+          status,
+          requested_at,
+          responded_at
+        FROM task_resign_requests 
+        WHERE id = ?
+      `, [requestId], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+
+    const request = requestRows[0] || {};
+
+    // Notify manager by email (if email exists)
+    try {
+      if (manager && manager.id) {
+        // Fetch manager email
+        const [mgrRows] = await new Promise((resolve, reject) =>
+          db.query('SELECT email FROM users WHERE public_id = ? OR _id = ? LIMIT 1', [manager.id, manager.id], (err, rows) => err ? reject(err) : resolve([rows]))
+        );
+        if (mgrRows && mgrRows[0] && mgrRows[0].email) {
+          await emailService.sendEmail({
+            to: mgrRows[0].email,
+            subject: `Task Reassignment Request for Task: ${task.title}`,
+            text: `${employee.name} has requested reassignment for task "${task.title}" (ID: ${task.id}). Reason: ${reason}`,
+            html: `<p><strong>${employee.name}</strong> has requested reassignment for task <strong>${task.title}</strong> (ID: ${task.id}).</p><p><strong>Reason:</strong> ${reason}</p>`
+          });
+        }
+      }
+    } catch (e) {
+      logger.warn('Failed to send reassignment request email to manager:', e && e.message);
+    }
+
+    return res.json({
+      success: true,
+      request: {
+        id: request.request_id,
+        task_id: request.task_id,
+        status: request.status || 'PENDING',
+        requested_at: request.requested_at,
+        responded_at: request.responded_at || null
+      },
+      employee: { 
+        id: employee.public_id || employee._id, 
+        name: employee.name 
+      },
+      manager,
+      project,
+      task: { 
+        id: task.id, 
+        name: task.title 
+      },
+      message: 'Reassignment request sent to manager.'
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
+// Manager: Accept or Reject Task Reassignment Request
+// Accept: POST /tasks/reassignment/:request_id/accept
+// For manager to approve/reject
+router.post('/:id/request-reassignment/:requestId/respond', requireRole(['Manager']), async (req, res) => {
+  const { id: taskId, requestId } = req.params;
+  const { action } = req.body; // 'APPROVE' or 'REJECT'
+  
+  try {
+    const [result] = await new Promise((resolve, reject) =>
+      db.query(
+        'UPDATE task_resign_requests SET status = ?, responded_at = ? WHERE id = ? AND task_id = ?',
+        [action, new Date().toISOString(), requestId, taskId],
+        (err, result) => err ? reject(err) : resolve([result])
+      )
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, error: 'Request not found' });
+    }
+
+    // Fetch request and employee details for notification
+    const [reqRows] = await new Promise((resolve, reject) =>
+      db.query('SELECT requested_by, reason FROM task_resign_requests WHERE id = ?', [requestId], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+    const requestedBy = reqRows && reqRows[0] && reqRows[0].requested_by;
+    // Fetch employee email
+    let employeeEmail = null;
+    let employeeName = null;
+    if (requestedBy) {
+      const [empRows] = await new Promise((resolve, reject) =>
+        db.query('SELECT email, name FROM users WHERE _id = ? OR public_id = ? LIMIT 1', [requestedBy, requestedBy], (err, rows) => err ? reject(err) : resolve([rows]))
+      );
+      if (empRows && empRows[0]) {
+        employeeEmail = empRows[0].email;
+        employeeName = empRows[0].name;
+      }
+    }
+    // Fetch task info
+    const [taskRows] = await new Promise((resolve, reject) =>
+      db.query('SELECT title, id FROM tasks WHERE id = ?', [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+    const taskTitle = taskRows && taskRows[0] && taskRows[0].title;
+
+    // Notify employee by email
+    if (employeeEmail) {
+      try {
+        await emailService.sendEmail({
+          to: employeeEmail,
+          subject: `Your Task Reassignment Request for "${taskTitle}" was ${action}`,
+          text: `Your request to be reassigned from task "${taskTitle}" (ID: ${taskId}) was ${action.toLowerCase()} by the manager.`,
+          html: `<p>Your request to be reassigned from task <strong>${taskTitle}</strong> (ID: ${taskId}) was <strong>${action.toLowerCase()}</strong> by the manager.</p>`
+        });
+      } catch (e) {
+        logger.warn('Failed to send reassignment response email to employee:', e && e.message);
+      }
+    }
+
+    res.json({ 
+      success: true, 
+      status: action, 
+      message: `Request ${action.toLowerCase()}d successfully` 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+// GET /api/tasks/:id/reassign-requests
+// Returns all reassignment requests for a specific task
+router.get('/:id/reassign-requests', requireRole(['Employee', 'Manager']), async (req, res) => {
+  const { id: taskId } = req.params;
+  const user = req.user;
+  
+  try {
+    // Fetch requests with employee and manager details
+    const [requests] = await new Promise((resolve, reject) =>
+      db.query(`
+        SELECT 
+          r.id as request_id,
+          r.task_id,
+          r.requested_by,
+          r.reason,
+          r.status,
+          r.requested_at,
+          r.responded_at,
+          e.public_id as employee_public_id,
+          e.name as employee_name,
+          m.public_id as manager_public_id,
+          m.name as manager_name
+        FROM task_resign_requests r
+        LEFT JOIN users e ON r.requested_by = e._id
+        LEFT JOIN users m ON r.requested_by = m._id  -- Update this if you track manager separately
+        WHERE r.task_id = ?
+        ORDER BY r.requested_at DESC
+      `, [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+
+    return res.json({
+      success: true,
+      requests: requests.map(r => ({
+        id: r.request_id,
+        task_id: r.task_id,
+        status: r.status,
+        reason: r.reason,
+        requested_at: r.requested_at,
+        responded_at: r.responded_at,
+        employee: {
+          id: r.employee_public_id || r.requested_by,
+          name: r.employee_name
+        }
+      })),
+      count: requests.length
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 
