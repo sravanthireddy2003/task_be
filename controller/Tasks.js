@@ -33,6 +33,14 @@ const hasColumn = (table, column) => new Promise((resolve) => {
   );
 });
 
+// helper: promisified db.query
+const q = (sql, params = []) => new Promise((resolve, reject) => {
+  db.query(sql, params, (err, results) => {
+    if (err) reject(err);
+    else resolve(results);
+  });
+});
+
 // enforce tenant + auth for all task routes
 router.use(tenantMiddleware);
 
@@ -1096,6 +1104,128 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
   } catch (error) {
     logger.error(`Unexpected server error: ${error?.message}`);
     return res.status(500).json({ success: false, error: 'Unexpected server error', details: error?.message });
+  }
+});
+
+// ==================== UPDATE TASK STATUS (EMPLOYEE KANBAN) ====================
+// PATCH /api/tasks/:id/status
+// Allows employees to move tasks through Kanban workflow
+router.patch('/:id/status', requireRole(['Employee']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, projectId, taskId } = req.body;
+
+    // Validate required fields
+    if (!status) {
+      return res.status(400).json({ success: false, message: 'Status is required' });
+    }
+
+    if (!projectId) {
+      return res.status(400).json({ success: false, message: 'projectId is required' });
+    }
+
+    if (!taskId) {
+      return res.status(400).json({ success: false, message: 'taskId is required' });
+    }
+
+    // Validate status values
+    const validStatuses = ['PENDING', 'To Do', 'In Progress', 'On Hold', 'Review', 'Completed'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status. Must be one of: ${validStatuses.join(', ')}`
+      });
+    }
+
+    // Resolve project ID (handle both numeric ID and public_id string)
+    let resolvedProjectId = projectId;
+    if (isNaN(projectId)) {
+      // If projectId is not a number, treat it as public_id
+      const projectRows = await q('SELECT id FROM projects WHERE public_id = ? LIMIT 1', [projectId]);
+      if (!projectRows || projectRows.length === 0) {
+        return res.status(404).json({ success: false, message: 'Project not found' });
+      }
+      resolvedProjectId = projectRows[0].id;
+    }
+
+    // Verify task belongs to the specified project and employee is assigned
+    const taskQuery = `
+      SELECT t.*, ta.user_id, p.public_id as project_public_id
+      FROM tasks t
+      JOIN taskassignments ta ON t.id = ta.task_id
+      LEFT JOIN projects p ON t.project_id = p.id
+      WHERE t.id = ? AND ta.user_id = ? AND t.project_id = ?
+      LIMIT 1
+    `;
+    const tasks = await q(taskQuery, [id, req.user._id, resolvedProjectId]);
+
+    if (!tasks || tasks.length === 0) {
+      return res.status(404).json({ success: false, message: 'Task not found, not assigned to you, or does not belong to the specified project' });
+    }
+
+    const task = tasks[0];
+    const currentStatus = task.status || task.stage;
+
+    // Validate status transitions
+    const allowedTransitions = {
+      'PENDING': ['To Do', 'In Progress'],
+      'To Do': ['In Progress'],
+      'In Progress': ['On Hold', 'Review', 'Completed'],
+      'On Hold': ['In Progress'],
+      'Review': ['Completed'],
+      'Completed': [] // No transitions from completed
+    };
+
+    if (!allowedTransitions[currentStatus]?.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status transition from '${currentStatus}' to '${status}'`
+      });
+    }
+
+    // Update task status
+    await q('UPDATE tasks SET status = ?, updatedAt = NOW() WHERE id = ?', [status, id]);
+
+    // Handle time tracking based on status changes
+    const now = new Date();
+
+    if (status === 'In Progress' && currentStatus !== 'In Progress') {
+      // Start timer
+      await q('UPDATE tasks SET started_at = ? WHERE id = ?', [now, id]);
+      await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?)', 
+        [id, req.user._id, 'start', now]);
+    } else if (status === 'On Hold' && currentStatus === 'In Progress') {
+      // Pause timer
+      await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?)', 
+        [id, req.user._id, 'pause', now]);
+    } else if (status === 'Completed') {
+      // Complete task and calculate duration
+      await q('UPDATE tasks SET completed_at = ? WHERE id = ?', [now, id]);
+      await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?)', 
+        [id, req.user._id, 'complete', now]);
+    }
+
+    // Get updated task
+    const updatedTask = await q('SELECT * FROM tasks WHERE id = ? LIMIT 1', [id]);
+
+    res.json({
+      success: true,
+      message: `Task status updated to ${status}`,
+      data: {
+        projectId: task.project_public_id || resolvedProjectId,
+        taskId: taskId,
+        id: updatedTask[0].id,
+        public_id: updatedTask[0].public_id,
+        status: updatedTask[0].status,
+        started_at: updatedTask[0].started_at,
+        completed_at: updatedTask[0].completed_at,
+        updated_at: updatedTask[0].updatedAt || new Date().toISOString()
+      }
+    });
+
+  } catch (e) {
+    logger.error('Update task status error:', e.message);
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 
@@ -2514,6 +2644,11 @@ router.post('/:id/start', requireRole(['Admin', 'Manager', 'Employee']), async (
     const taskId = task[0].id;
     const currentStatus = task[0].status;
 
+    // Kanban Rules: Only Pending tasks can be started
+    if (currentStatus !== 'Pending') {
+      return res.status(400).json({ success: false, error: `Cannot start task with status '${currentStatus}'. Only 'Pending' tasks can be started.` });
+    }
+
     if (currentStatus === 'Completed') {
       return res.status(400).json({ success: false, error: 'Task already completed' });
     }
@@ -2552,8 +2687,9 @@ router.post('/:id/pause', requireRole(['Admin', 'Manager', 'Employee']), async (
     if (task.length === 0) return res.status(404).json({ success: false, error: 'Task not found' });
     const taskId = task[0].id;
 
+    // Kanban Rules: Only In Progress tasks can be paused
     if (task[0].status !== 'In Progress') {
-      return res.status(400).json({ success: false, error: 'Task not in progress' });
+      return res.status(400).json({ success: false, error: `Cannot pause task with status '${task[0].status}'. Only 'In Progress' tasks can be paused.` });
     }
 
     // Calculate duration from last start/resume
@@ -2593,6 +2729,11 @@ router.post('/:id/complete', requireRole(['Admin', 'Manager', 'Employee']), asyn
     if (task.length === 0) return res.status(404).json({ success: false, error: 'Task not found' });
     const taskId = task[0].id;
 
+    // Kanban Rules: Only In Progress tasks can be completed
+    if (task[0].status !== 'In Progress') {
+      return res.status(400).json({ success: false, error: `Cannot complete task with status '${task[0].status}'. Only 'In Progress' tasks can be completed.` });
+    }
+
     if (task[0].status === 'Completed') {
       return res.status(400).json({ success: false, error: 'Task already completed' });
     }
@@ -2613,6 +2754,40 @@ router.post('/:id/complete', requireRole(['Admin', 'Manager', 'Employee']), asyn
     res.json({ success: true, message: 'Task completed' });
   } catch (e) {
     logger.error('Complete task error:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /tasks/:id/resume
+router.post('/:id/resume', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+
+    // Check assignment
+    const assignment = await db.query('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [id, userId]);
+    if (assignment.length === 0 && req.user.role !== 'Admin' && req.user.role !== 'Manager') {
+      return res.status(403).json({ success: false, error: 'Not assigned to this task' });
+    }
+
+    const task = await db.query('SELECT id, status FROM tasks WHERE id = ? OR public_id = ?', [id, id]);
+    if (task.length === 0) return res.status(404).json({ success: false, error: 'Task not found' });
+    const taskId = task[0].id;
+
+    // Kanban Rules: Only On Hold tasks can be resumed
+    if (task[0].status !== 'On Hold') {
+      return res.status(400).json({ success: false, error: `Cannot resume task with status '${task[0].status}'. Only 'On Hold' tasks can be resumed.` });
+    }
+
+    // Insert resume log
+    await db.query('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, NOW())', [taskId, userId, 'resume']);
+
+    // Update status to In Progress
+    await db.query('UPDATE tasks SET status = ? WHERE id = ?', ['In Progress', taskId]);
+
+    res.json({ success: true, message: 'Task resumed' });
+  } catch (e) {
+    logger.error('Resume task error:', e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });

@@ -682,11 +682,11 @@ router.get('/:id/summary', async (req, res) => {
     });
 
     // Completed tasks
-    const completedTasks = await q('SELECT COUNT(*) as count FROM tasks WHERE project_id = ? AND status = ?', [projectId, 'Completed']);
+    const completedTasks = await q('SELECT COUNT(*) as count FROM tasks WHERE project_id = ? AND status IN (?, ?)', [projectId, 'Completed', 'Review']);
     const completedCount = completedTasks[0].count;
 
     // In-progress tasks
-    const inProgressTasks = await q('SELECT COUNT(*) as count FROM tasks WHERE project_id = ? AND status = ?', [projectId, 'In Progress']);
+    const inProgressTasks = await q('SELECT COUNT(*) as count FROM tasks WHERE project_id = ? AND status IN (?, ?, ?)', [projectId, 'In Progress', 'On Hold', 'Review']);
     const inProgressCount = inProgressTasks[0].count;
 
     // Total hours
@@ -716,6 +716,116 @@ router.get('/:id/summary', async (req, res) => {
     });
   } catch (e) {
     logger.error('Get project summary error:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ==================== GET PROJECT TASKS (KANBAN) ====================
+// GET /api/projects/:id/tasks
+// Returns tasks for Kanban board - only assigned tasks for employees, all tasks for managers/admins
+router.get('/:id/tasks', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const project = await q('SELECT id FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
+
+    if (!project || project.length === 0) {
+      return res.status(404).json({ success: false, message: 'Project not found' });
+    }
+
+    const projectId = project[0].id;
+    let tasks;
+
+    if (req.user.role === 'Admin' || req.user.role === 'Manager') {
+      // Admins and Managers see all tasks in the project
+      tasks = await q(`
+        SELECT
+          t.id,
+          t.public_id,
+          t.title,
+          t.description,
+          t.priority,
+          t.status,
+          t.stage,
+          t.taskDate,
+          t.time_alloted,
+          t.total_duration,
+          t.started_at,
+          t.completed_at,
+          t.createdAt,
+          GROUP_CONCAT(DISTINCT u.name) as assigned_users,
+          GROUP_CONCAT(DISTINCT u._id) as assigned_user_ids
+        FROM tasks t
+        LEFT JOIN taskassignments ta ON t.id = ta.task_id
+        LEFT JOIN users u ON ta.user_id = u._id
+        WHERE t.project_id = ?
+        GROUP BY t.id
+        ORDER BY t.createdAt DESC
+      `, [projectId]);
+    } else if (req.user.role === 'Employee') {
+      // Employees only see tasks assigned to them in this project
+      tasks = await q(`
+        SELECT
+          t.id,
+          t.public_id,
+          t.title,
+          t.description,
+          t.priority,
+          t.status,
+          t.stage,
+          t.taskDate,
+          t.time_alloted,
+          t.total_duration,
+          t.started_at,
+          t.completed_at,
+          t.createdAt,
+          GROUP_CONCAT(DISTINCT u.name) as assigned_users,
+          GROUP_CONCAT(DISTINCT u._id) as assigned_user_ids
+        FROM tasks t
+        JOIN taskassignments ta ON t.id = ta.task_id
+        LEFT JOIN users u ON ta.user_id = u._id
+        WHERE t.project_id = ? AND ta.user_id = ?
+        GROUP BY t.id
+        ORDER BY t.createdAt DESC
+      `, [projectId, req.user._id]);
+    } else {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+
+    // Format response for Kanban board
+    const formattedTasks = tasks.map(task => ({
+      id: task.id,
+      public_id: task.public_id,
+      title: task.title,
+      description: task.description,
+      priority: task.priority,
+      status: task.status,
+      stage: task.stage,
+      taskDate: task.taskDate,
+      time_alloted: task.time_alloted,
+      total_duration: task.total_duration || 0,
+      started_at: task.started_at,
+      completed_at: task.completed_at,
+      created_at: task.created_at,
+      assigned_users: task.assigned_users ? task.assigned_users.split(',') : [],
+      assigned_user_ids: task.assigned_user_ids ? task.assigned_user_ids.split(',').map(id => parseInt(id)) : []
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        project_id: projectId,
+        tasks: formattedTasks,
+        kanban_columns: {
+          'To Do': formattedTasks.filter(t => t.status === 'To Do' || t.status === 'Pending'),
+          'In Progress': formattedTasks.filter(t => t.status === 'In Progress'),
+          'On Hold': formattedTasks.filter(t => t.status === 'On Hold'),
+          'Review': formattedTasks.filter(t => t.status === 'Review'),
+          'Completed': formattedTasks.filter(t => t.status === 'Completed')
+        }
+      }
+    });
+  } catch (e) {
+    logger.error('Get project tasks error:', e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
