@@ -192,7 +192,7 @@ router.get('/', async (req, res) => {
         LEFT JOIN departments d ON pd.department_id = d.id
         WHERE (
           p.project_manager_id = ? OR
-          d.id IN (SELECT department_id FROM users u WHERE u._id = ?)
+          d.public_id = (SELECT department_public_id FROM users u WHERE u._id = ?)
         )
         ORDER BY p.created_at DESC
       `, [req.user._id, req.user._id]);
@@ -202,7 +202,7 @@ router.get('/', async (req, res) => {
         SELECT DISTINCT p.* FROM projects p
         JOIN project_departments pd ON p.id = pd.project_id
         JOIN departments d ON pd.department_id = d.id
-        WHERE d.id = (SELECT department_id FROM users u WHERE u._id = ? LIMIT 1)
+        WHERE d.public_id = (SELECT department_public_id FROM users u WHERE u._id = ? LIMIT 1)
         ORDER BY p.created_at DESC
       `, [req.user._id]);
     } else {
@@ -249,7 +249,120 @@ router.get('/', async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
- 
+
+// ==================== GET STATS ====================
+// GET /api/projects/stats
+router.get('/stats', async (req, res) => {
+  try {
+    let projectIds = [];
+    let taskIds = [];
+    let subtaskIds = [];
+
+    if (req.user.role === 'Admin') {
+      // All projects
+      const projects = await q('SELECT id FROM projects');
+      projectIds = projects.map(p => p.id);
+    } else if (req.user.role === 'Manager') {
+      // Projects managed by user or from user's departments
+      const projects = await q(`
+        SELECT DISTINCT p.id FROM projects p
+        LEFT JOIN project_departments pd ON p.id = pd.project_id
+        LEFT JOIN departments d ON pd.department_id = d.id
+        WHERE p.project_manager_id = ? OR d.public_id = (SELECT department_public_id FROM users WHERE _id = ?)
+      `, [req.user._id, req.user._id]);
+      projectIds = projects.map(p => p.id);
+    } else if (req.user.role === 'Employee') {
+      // Projects from user's department
+      const projects = await q(`
+        SELECT DISTINCT p.id FROM projects p
+        JOIN project_departments pd ON p.id = pd.project_id
+        JOIN departments d ON pd.department_id = d.id
+        WHERE d.public_id = (SELECT department_public_id FROM users WHERE _id = ? LIMIT 1)
+      `, [req.user._id]);
+      projectIds = projects.map(p => p.id);
+    }
+
+    if (projectIds.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          projects: { total: 0, byStatus: {} },
+          tasks: { total: 0, byStage: {}, totalHours: 0 },
+          subtasks: { total: 0, byStatus: {} }
+        }
+      });
+    }
+
+    // Get task IDs
+    if (req.user.role === 'Employee') {
+      // Only tasks assigned to employee
+      const tasks = projectIds.length > 0 ? await q('SELECT t.id FROM tasks t JOIN taskassignments ta ON t.id = ta.task_id WHERE ta.user_id = ? AND t.project_id IN (?)', [req.user._id, projectIds]) : [];
+      taskIds = tasks.map(t => t.id);
+    } else {
+      // All tasks in projects
+      const tasks = projectIds.length > 0 ? await q('SELECT id FROM tasks WHERE project_id IN (?)', [projectIds]) : [];
+      taskIds = tasks.map(t => t.id);
+    }
+
+    // Get subtask IDs
+    const subtasks = taskIds.length > 0 ? await q('SELECT id FROM subtasks WHERE task_id IN (?)', [taskIds]) : [];
+    subtaskIds = subtasks.map(s => s.id);
+
+    // Projects stats
+    const projectStats = projectIds.length > 0 ? await q('SELECT status, COUNT(*) as count FROM projects WHERE id IN (?) GROUP BY status', [projectIds]) : [];
+    const projectsByStatus = {};
+    let totalProjects = 0;
+    projectStats.forEach(ps => {
+      projectsByStatus[ps.status] = ps.count;
+      totalProjects += ps.count;
+    });
+
+    // Tasks stats
+    const taskStats = taskIds.length > 0 ? await q('SELECT stage, COUNT(*) as count FROM tasks WHERE id IN (?) GROUP BY stage', [taskIds]) : [];
+    const tasksByStage = {};
+    let totalTasks = 0;
+    taskStats.forEach(ts => {
+      tasksByStage[ts.stage] = ts.count;
+      totalTasks += ts.count;
+    });
+
+    // Subtasks stats
+    const subtaskStats = subtaskIds.length > 0 ? await q('SELECT status, COUNT(*) as count FROM subtasks WHERE id IN (?) GROUP BY status', [subtaskIds]) : [];
+    const subtasksByStatus = {};
+    let totalSubtasks = 0;
+    subtaskStats.forEach(ss => {
+      subtasksByStatus[ss.status] = ss.count;
+      totalSubtasks += ss.count;
+    });
+
+    // Total hours from tasks
+    const hoursResult = taskIds.length > 0 ? await q('SELECT SUM(total_duration) as totalHours FROM tasks WHERE id IN (?)', [taskIds]) : [{ totalHours: 0 }];
+    const totalHours = hoursResult[0].totalHours || 0;
+
+    res.json({
+      success: true,
+      data: {
+        projects: {
+          total: totalProjects,
+          byStatus: projectsByStatus
+        },
+        tasks: {
+          total: totalTasks,
+          byStage: tasksByStage,
+          totalHours: totalHours
+        },
+        subtasks: {
+          total: totalSubtasks,
+          byStatus: subtasksByStatus
+        }
+      }
+    });
+  } catch (e) {
+    logger.error('Get stats error:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ==================== GET PROJECT BY ID ====================
 // GET /api/projects/:id
 router.get('/:id', async (req, res) => {
@@ -547,7 +660,66 @@ router.delete('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
- 
+
+// ==================== GET PROJECT SUMMARY ====================
+// GET /api/projects/:id/summary
+router.get('/:id/summary', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const project = await q('SELECT * FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
+    if (!project || project.length === 0) {
+      return res.status(404).json({ success: false, message: 'Project not found' });
+    }
+    const projectId = project[0].id;
+
+    // Task counts
+    const taskStats = await q('SELECT stage, COUNT(*) as count FROM tasks WHERE project_id = ? GROUP BY stage', [projectId]);
+    const tasksByStage = {};
+    let totalTasks = 0;
+    taskStats.forEach(ts => {
+      tasksByStage[ts.stage] = ts.count;
+      totalTasks += ts.count;
+    });
+
+    // Completed tasks
+    const completedTasks = await q('SELECT COUNT(*) as count FROM tasks WHERE project_id = ? AND status = ?', [projectId, 'Completed']);
+    const completedCount = completedTasks[0].count;
+
+    // In-progress tasks
+    const inProgressTasks = await q('SELECT COUNT(*) as count FROM tasks WHERE project_id = ? AND status = ?', [projectId, 'In Progress']);
+    const inProgressCount = inProgressTasks[0].count;
+
+    // Total hours
+    const hoursResult = await q('SELECT SUM(total_duration) as totalHours FROM tasks WHERE project_id = ?', [projectId]);
+    const totalHours = hoursResult[0].totalHours || 0;
+
+    // Progress percentage
+    const progressPercentage = totalTasks > 0 ? Math.round((completedCount / totalTasks) * 100) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        project: {
+          id: project[0].public_id,
+          name: project[0].name,
+          status: project[0].status
+        },
+        tasks: {
+          total: totalTasks,
+          completed: completedCount,
+          inProgress: inProgressCount,
+          byStage: tasksByStage
+        },
+        totalHours: totalHours,
+        progressPercentage: progressPercentage
+      }
+    });
+  } catch (e) {
+    logger.error('Get project summary error:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 module.exports = router;
  
  

@@ -20,6 +20,7 @@ const { google } = require("googleapis");
 const dayjs = require('dayjs');
 router.use(requireAuth);        // ✅ Sets req.user from JWT
 router.use(tenantMiddleware); 
+
 // helper: check if a column exists on a table (promise)
 const hasColumn = (table, column) => new Promise((resolve) => {
   db.query(
@@ -34,6 +35,7 @@ const hasColumn = (table, column) => new Promise((resolve) => {
 
 // enforce tenant + auth for all task routes
 router.use(tenantMiddleware);
+
 // POST /api/projects/tasks/selected-details
 // Body: { "taskIds": [1,2,3] }
 // Returns tasks with assigned users, subtasks (checklist), activities, and total hours
@@ -42,9 +44,19 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
     const taskIds = req.body.taskIds || req.body.task_ids || [];
     if (!Array.isArray(taskIds) || taskIds.length === 0) return res.status(400).json({ success: false, error: 'taskIds (array) required' });
 
-    const ids = taskIds.map(id => Number(id)).filter(Boolean);
-    if (ids.length === 0) return res.status(400).json({ success: false, error: 'No valid task IDs provided' });
+    const numericIds = taskIds.filter(id => /^\d+$/.test(String(id))).map(Number);
+    const publicIds = taskIds.filter(id => !/^\d+$/.test(String(id)));
+    const allIds = [...numericIds, ...publicIds];
+    if (allIds.length === 0) return res.status(400).json({ success: false, error: 'No valid task IDs provided' });
     const subtaskCreatorColumnExists = await hasColumn('subtasks', 'created_by');
+
+    let internalIds = numericIds;
+    if (publicIds.length > 0) {
+      const publicToInternal = await new Promise((resolve, reject) => db.query('SELECT id FROM tasks WHERE public_id IN (?)', [publicIds], (e, r) => e ? reject(e) : resolve(r)));
+      internalIds = [...internalIds, ...publicToInternal.map(row => row.id)];
+    }
+    const whereClause = 'WHERE t.id IN (?)';
+    const queryParams = [internalIds];
 
     const sql = `
       SELECT
@@ -69,12 +81,12 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
       LEFT JOIN clientss c ON t.client_id = c.id
       LEFT JOIN taskassignments ta ON ta.task_id = t.id
       LEFT JOIN users u ON u._id = ta.user_id
-      WHERE t.id IN (?)
+      ${whereClause}
       GROUP BY t.id
       ORDER BY t.createdAt DESC
     `;
 
-    db.query(sql, [ids], async (err, rows) => {
+    db.query(sql, queryParams, async (err, rows) => {
       if (err) {
         logger.error('selected-details fetch error: ' + (err && err.message));
         return res.status(500).json({ success: false, error: err.message });
@@ -94,7 +106,7 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
       `;
       const subtasks = await new Promise((resolve, reject) => db.query(
         subtaskQuery,
-        [ids], (e, r) => e ? reject(e) : resolve(r)
+        [internalIds], (e, r) => e ? reject(e) : resolve(r)
       ));
 
       // fetch activities (what employees added)
@@ -104,13 +116,13 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
          LEFT JOIN users u ON ta.user_id = u._id
          WHERE ta.task_id IN (?)
          ORDER BY ta.createdAt DESC`,
-        [ids], (e, r) => e ? reject(e) : resolve(r)
+        [internalIds], (e, r) => e ? reject(e) : resolve(r)
       ));
 
       // fetch total hours per task
       const hours = await new Promise((resolve, reject) => db.query(
         'SELECT task_id, SUM(hours) AS total_hours FROM task_hours WHERE task_id IN (?) GROUP BY task_id',
-        [ids], (e, r) => e ? reject(e) : resolve(r)
+        [internalIds], (e, r) => e ? reject(e) : resolve(r)
       ));
 
       const checklistMap = {};
@@ -180,7 +192,7 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
         const key = String(r.task_internal_id || r.task_id);
 
         return {
-          id: r.task_id ? String(r.task_id) : String(r.task_internal_id),
+          id: String(r.task_internal_id),
           title: r.title || null,
           description: r.description || null,
           stage: r.stage || null,
@@ -207,6 +219,7 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
   }
 });
 
+// POST task creation handlers
 async function createJsonHandler(req, res) {
   try {
     const {
@@ -243,7 +256,7 @@ async function createJsonHandler(req, res) {
     // default stage to TODO when not provided by frontend
     const normalizedStage = stage || 'TODO';
     // normalize priority to uppercase so checks like === 'HIGH' work
-    const priorityNorm = priority ? String(priority).toUpperCase() : null;
+    const priorityNorm = priority ? String(priority).toUpperCase() : 'MEDIUM';
 
     if (!title) {
       return res.status(400).send("Missing required field: title");
@@ -255,36 +268,69 @@ async function createJsonHandler(req, res) {
 
     db.getConnection((err, connection) => {
       if (err) {
+        console.error('Database connection error:', err);
         return res.status(500).send("Database connection error");
       }
 
       // resolve client_id and project details from projectId or projectPublicId when missing
-      let finalProjectId = projectId || null;
-      let finalProjectPublicId = projectPublicId || null;
+      let finalProjectId = null;
+      let finalProjectPublicId = null;
+      if (projectId) {
+        if (/^\d+$/.test(String(projectId))) {
+          finalProjectId = Number(projectId);
+        } else {
+          finalProjectPublicId = projectId;
+        }
+      }
+      if (projectPublicId) {
+        finalProjectPublicId = projectPublicId;
+      }
 
-      const resolveClientId = (cb) => {
-        if (finalClientId) return cb(null, finalClientId);
-        if (!projectId && !projectPublicId) return cb(new Error('missing_client_and_project'));
+      const resolveProjectAndClient = (cb) => {
+        if (finalClientId && !finalProjectId && !finalProjectPublicId) return cb(null, finalClientId);
+        if (!finalProjectId && !finalProjectPublicId) return cb(new Error('missing_client_and_project'));
+        
+        console.log('Resolving project details:', { finalProjectId, finalProjectPublicId });
+        
         const q = `SELECT id, public_id, client_id FROM projects WHERE id = ? OR public_id = ? LIMIT 1`;
-        connection.query(q, [projectId || null, projectPublicId || null], (qErr, rows) => {
-          if (qErr) return cb(qErr);
+        connection.query(q, [finalProjectId || null, finalProjectPublicId || null], (qErr, rows) => {
+          if (qErr) {
+            console.error('Error resolving project:', qErr);
+            return cb(qErr);
+          }
+          console.log('Project resolution result:', rows);
           if (!rows || rows.length === 0) return cb(new Error('project_not_found'));
           finalProjectId = rows[0].id;
           finalProjectPublicId = rows[0].public_id;
-          return cb(null, rows[0].client_id);
+          finalClientId = finalClientId || rows[0].client_id;
+          return cb(null, finalClientId);
         });
       };
 
-      resolveClientId((resolveErr, resolvedCid) => {
+      resolveProjectAndClient((resolveErr, resolvedCid) => {
         if (resolveErr) {
           connection.release();
+          console.error('Client resolution error:', resolveErr);
           return res.status(400).send('Missing required fields: client_id or valid projectId/projectPublicId');
         }
         finalClientId = resolvedCid;
 
+        console.log('Resolved values:', {
+          finalClientId,
+          finalProjectId,
+          finalProjectPublicId,
+          finalAssigned,
+          title,
+          normalizedStage,
+          priorityNorm,
+          finalTaskDate,
+          finalTimeAlloted
+        });
+
         connection.beginTransaction((err) => {
           if (err) {
             connection.release();
+            console.error('Transaction error:', err);
             return res.status(500).send("Error starting transaction");
           }
 
@@ -296,15 +342,18 @@ async function createJsonHandler(req, res) {
 
           connection.query(checkHighPriorityQuery, [finalClientId], (checkErr, checkResults) => {
             if (checkErr) {
+              console.error('Error checking high priority tasks:', checkErr);
               return connection.rollback(() => {
                 connection.release();
                 return res.status(500).send("Error checking existing tasks");
               });
             }
 
-            const highPriorityCount = checkResults[0].highPriorityCount;
+            const highPriorityCount = checkResults[0]?.highPriorityCount || 0;
             let finalPriority = priorityNorm;
             let adjustedTaskDate = finalTaskDate;
+
+            console.log('High priority check:', { highPriorityCount, finalPriority, finalTaskDate });
 
             if (priorityNorm === "HIGH" && highPriorityCount > 0) {
               const existingTaskDate = new Date(checkResults[0].existingTaskDate);
@@ -329,30 +378,47 @@ async function createJsonHandler(req, res) {
 
               connection.query(updateExistingTaskQuery, [updatedAt, adjustedTaskDate.toISOString(), finalClientId], (updateErr) => {
                 if (updateErr) {
+                  console.error('Error updating existing tasks:', updateErr);
                   return connection.rollback(() => {
                     connection.release();
                     return res.status(500).send("Error managing task priorities");
                   });
                 }
 
-                continueTaskCreation(req, connection, { ...req.body, assigned_to: finalAssigned, stage: normalizedStage, taskDate: adjustedTaskDate.toISOString(), time_alloted: finalTimeAlloted, client_id: finalClientId, projectId: finalProjectId, projectPublicId: finalProjectPublicId }, createdAt, updatedAt, "HIGH", res);
+                console.log('Continuing task creation with adjusted date');
+                continueTaskCreation(req, connection, { 
+                  ...req.body, 
+                  assigned_to: finalAssigned, 
+                  stage: normalizedStage, 
+                  taskDate: adjustedTaskDate.toISOString(), 
+                  time_alloted: finalTimeAlloted, 
+                  client_id: finalClientId, 
+                  projectId: finalProjectId, 
+                  projectPublicId: finalProjectPublicId 
+                }, createdAt, updatedAt, "HIGH", res);
               });
             } else {
-              continueTaskCreation(req, connection, { ...req.body, assigned_to: finalAssigned, stage: normalizedStage, taskDate: adjustedTaskDate, time_alloted: finalTimeAlloted, client_id: finalClientId, projectId: finalProjectId, projectPublicId: finalProjectPublicId }, createdAt, updatedAt, finalPriority, res);
+              console.log('Continuing task creation without priority adjustment');
+              continueTaskCreation(req, connection, { 
+                ...req.body, 
+                assigned_to: finalAssigned, 
+                stage: normalizedStage, 
+                taskDate: adjustedTaskDate, 
+                time_alloted: finalTimeAlloted, 
+                client_id: finalClientId, 
+                projectId: finalProjectId, 
+                projectPublicId: finalProjectPublicId 
+              }, createdAt, updatedAt, finalPriority, res);
             }
           });
         });
       });
     });
   } catch (error) {
+    console.error('Error in task creation process:', error);
     return res.status(500).send("Error in task creation process");
   }
 }
-
-router.post('/createjson', requireRole(['Admin', 'Manager']), createJsonHandler);
-router.post('/', requireRole(['Admin', 'Manager']), createJsonHandler);
-
-
 
 async function continueTaskCreation(req, connection, body, createdAt, updatedAt, finalPriority, res) {
   const {
@@ -369,183 +435,218 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
     status,
   } = body;
 
+  console.log('continueTaskCreation called with:', {
+    title, stage, taskDate, client_id, projectId, projectPublicId, finalPriority
+  });
+
   // Build INSERT dynamically: only include project reference columns if they exist
   const checkColumn = (col) => new Promise((resolve) => {
     connection.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tasks' AND COLUMN_NAME = ?", [col], (err, rows) => {
-      if (err) return resolve(false);
-      return resolve(Array.isArray(rows) && rows.length > 0);
+      if (err) {
+        console.error(`Error checking column ${col}:`, err);
+        return resolve(false);
+      }
+      const exists = Array.isArray(rows) && rows.length > 0;
+      console.log(`Column ${col} exists:`, exists);
+      return resolve(exists);
     });
   });
 
-  const projectIdColExists = await checkColumn('project_id');
-  const projectPublicColExists = await checkColumn('project_public_id');
+  try {
+    // Generate public_id
+    const publicId = crypto.randomBytes(8).toString('hex');
 
-  const cols = ['title', 'description', 'stage', 'taskDate', 'priority', 'createdAt', 'updatedAt', 'time_alloted', 'estimated_hours', 'status', 'client_id'];
-  const placeholders = cols.map(() => '?');
-  const values = [title, description, stage, taskDate, finalPriority, createdAt, updatedAt, time_alloted, estimated_hours || time_alloted || null, status || null, client_id];
+    const cols = ['title', 'description', 'stage', 'taskDate', 'priority', 'createdAt', 'updatedAt', 'time_alloted', 'estimated_hours', 'status', 'client_id', 'public_id', 'project_id', 'project_public_id'];
+    const placeholders = cols.map(() => '?');
+    const values = [title, description, stage, taskDate, finalPriority, createdAt, updatedAt, time_alloted, estimated_hours || time_alloted || null, 'Pending', client_id, publicId, projectId ? projectId : null, projectPublicId ? projectPublicId : null];
 
-  if (projectIdColExists) {
-    cols.push('project_id');
-    placeholders.push('?');
-    values.push(projectId || null);
-  }
-  if (projectPublicColExists) {
-    cols.push('project_public_id');
-    placeholders.push('?');
-    values.push(projectPublicId || null);
-  }
+    console.log('Final INSERT columns:', cols);
+    console.log('Final INSERT values:', values);
 
-  const insertTaskQuery = `INSERT INTO tasks (${cols.join(', ')}) VALUES (${placeholders.join(', ')})`;
+    const insertTaskQuery = `INSERT INTO tasks (${cols.join(', ')}) VALUES (${placeholders.join(', ')})`;
 
-  // Helper function to handle the entire flow with proper closure
-  const executeTaskCreation = (resolve, reject) => {
-    let resolvedUserIds = []; // Declare at function scope
+    // Helper function to handle the entire flow with proper closure
+    const executeTaskCreation = (resolve, reject) => {
+      let resolvedUserIds = []; // Declare at function scope
 
-    connection.query(insertTaskQuery, values, (err, result) => {
-      if (err) {
-        return connection.rollback(() => {
-          connection.release();
-          reject(new Error("Error inserting task"));
-        });
-      }
+      connection.query(insertTaskQuery, values, (err, result) => {
+        if (err) {
+          console.error('Error inserting task:', err);
+          return connection.rollback(() => {
+            connection.release();
+            reject(new Error("Error inserting task: " + err.message));
+          });
+        }
 
-      const taskId = result.insertId;
+        const taskId = result.insertId;
+        console.log('Task inserted with ID:', taskId);
 
-      if (!taskId || !Array.isArray(assigned_to) || assigned_to.length === 0) {
-        return connection.rollback(() => {
-          connection.release();
-          reject(new Error("Invalid task assignment data"));
-        });
-      }
+        if (!taskId || !Array.isArray(assigned_to) || assigned_to.length === 0) {
+          return connection.rollback(() => {
+            connection.release();
+            reject(new Error("Invalid task assignment data"));
+          });
+        }
 
-      const rawAssigned = Array.isArray(assigned_to) ? assigned_to.slice() : [];
-      const numericIds = rawAssigned.filter(v => String(v).match(/^\d+$/)).map(v => Number(v));
-      const publicIds = rawAssigned.filter(v => !String(v).match(/^\d+$/));
+        const rawAssigned = Array.isArray(assigned_to) ? assigned_to.slice() : [];
+        const numericIds = rawAssigned.filter(v => String(v).match(/^\d+$/)).map(v => Number(v));
+        const publicIds = rawAssigned.filter(v => !String(v).match(/^\d+$/));
 
-      const resolveQueries = [];
-      const resolveParams = [];
-      if (publicIds.length > 0) {
-        resolveQueries.push(`SELECT _id, public_id FROM users WHERE public_id IN (?)`);
-        resolveParams.push([publicIds]);
-      }
-      if (numericIds.length > 0) {
-        resolveQueries.push(`SELECT _id, public_id FROM users WHERE _id IN (?)`);
-        resolveParams.push([numericIds]);
-      }
+        console.log('Resolving user assignments:', { numericIds, publicIds, rawAssigned });
 
-      if (resolveQueries.length === 0) {
-        return connection.rollback(() => {
-          connection.release();
-          reject(new Error("No assigned users provided or invalid format"));
-        });
-      }
+        const resolveQueries = [];
+        const resolveParams = [];
+        if (publicIds.length > 0) {
+          resolveQueries.push(`SELECT _id, public_id FROM users WHERE public_id IN (?)`);
+          resolveParams.push([publicIds]);
+        }
+        if (numericIds.length > 0) {
+          resolveQueries.push(`SELECT _id, public_id FROM users WHERE _id IN (?)`);
+          resolveParams.push([numericIds]);
+        }
 
-      // Sequential resolver with proper variable scope
-      const runResolveQuery = (idx) => {
-        if (idx >= resolveQueries.length) {
-          // dedupe resolvedUserIds
-          resolvedUserIds = Array.from(new Set(resolvedUserIds));
+        if (resolveQueries.length === 0) {
+          return connection.rollback(() => {
+            connection.release();
+            reject(new Error("No assigned users provided or invalid format"));
+          });
+        }
 
-          if (resolvedUserIds.length === 0) {
-            return connection.rollback(() => {
-              connection.release();
-              reject(new Error("Assigned users not found"));
-            });
-          }
+        // Sequential resolver with proper variable scope
+        const runResolveQuery = (idx) => {
+          if (idx >= resolveQueries.length) {
+            // dedupe resolvedUserIds
+            resolvedUserIds = Array.from(new Set(resolvedUserIds));
 
-          const taskAssignments = resolvedUserIds.map((userId) => [taskId, userId]);
-          const insertTaskAssignmentsQuery = `INSERT INTO taskassignments (task_id, user_id) VALUES ${taskAssignments.map(() => "(?, ?)").join(", ")}`;
-          const flattenedValues = taskAssignments.flat();
+            console.log('Resolved user IDs:', resolvedUserIds);
 
-          connection.query(insertTaskAssignmentsQuery, flattenedValues, (err) => {
-            if (err) {
+            if (resolvedUserIds.length === 0) {
               return connection.rollback(() => {
                 connection.release();
-                reject(new Error("Error inserting task assignments"));
+                reject(new Error("Assigned users not found"));
               });
             }
 
-            // Send emails asynchronously without blocking commit
-            const assignedBy = (req.user && req.user.name) || 'System';
-            const link = `${process.env.FRONTEND_URL || process.env.BASE_URL || 'http://localhost:3000'}/tasks/${taskId}`;
-            const projectName = null;
-            const priority = finalPriority;
-            const taskDateVal = taskDate || null;
-            const descriptionVal = description || null;
+            const taskAssignments = resolvedUserIds.map((userId) => [taskId, userId]);
+            const insertTaskAssignmentsQuery = `INSERT INTO taskassignments (task_id, user_id) VALUES ${taskAssignments.map(() => "(?, ?)").join(", ")}`;
+            const flattenedValues = taskAssignments.flat();
 
-            const sendEmails = require(__root + 'utils/emailService').sendTaskAssignmentEmails;
+            console.log('Inserting task assignments:', { taskAssignments });
 
-            // Fire and forget emails (don't await to avoid blocking)
-            sendEmails({
-              finalAssigned: rawAssigned,
-              taskTitle: title,
-              taskId,
-              priority,
-              taskDate: taskDateVal,
-              description: descriptionVal,
-              projectName,
-              projectPublicId: projectPublicId || null,
-              assignedBy,
-              taskLink: link,
-              connection
-            }).catch(emailError => {
-              console.error("Email sending failed:", emailError);
-            });
-
-            // Commit transaction regardless of email success
-            connection.commit((err) => {
+            connection.query(insertTaskAssignmentsQuery, flattenedValues, (err) => {
               if (err) {
+                console.error('Error inserting task assignments:', err);
                 return connection.rollback(() => {
                   connection.release();
-                  reject(new Error("Error committing transaction"));
+                  reject(new Error("Error inserting task assignments: " + err.message));
                 });
               }
 
-              connection.release();
-              resolve({
+              // Send emails asynchronously without blocking commit
+              const assignedBy = (req.user && req.user.name) || 'System';
+              const link = `${process.env.FRONTEND_URL || process.env.BASE_URL || 'http://localhost:3000'}/tasks/${taskId}`;
+              const projectName = null;
+              const priority = finalPriority;
+              const taskDateVal = taskDate || null;
+              const descriptionVal = description || null;
+
+              console.log('Preparing to send emails to users:', rawAssigned);
+
+              // Get the existing email service function
+              const sendEmails = require(__root + 'utils/emailService').sendTaskAssignmentEmails;
+              
+              // Fire and forget emails (don't await to avoid blocking)
+              sendEmails({
+                finalAssigned: rawAssigned,
+                taskTitle: title,
                 taskId,
-                message: "Task created successfully",
-                assignedUsers: assigned_to,
+                priority,
+                taskDate: taskDateVal,
+                description: descriptionVal,
+                projectName,
+                projectPublicId: projectPublicId || null,
+                assignedBy,
+                taskLink: link,
+                connection
+              }).catch(emailError => {
+                console.error("Email sending failed:", emailError);
+              });
+
+              // Commit transaction regardless of email success
+              connection.commit((err) => {
+                if (err) {
+                  console.error('Commit error:', err);
+                  return connection.rollback(() => {
+                    connection.release();
+                    reject(new Error("Error committing transaction: " + err.message));
+                  });
+                }
+
+                connection.release();
+                console.log('Transaction committed successfully');
+                resolve({
+                  taskId,
+                  publicId,
+                  message: "Task created and assignments completed successfully",
+                  assignedUsers: rawAssigned,
+                  projectId: projectId,
+                  projectPublicId: projectPublicId
+                });
               });
             });
-          });
-          return;
-        }
-
-        connection.query(resolveQueries[idx], resolveParams[idx], (err, rows) => {
-          if (err) {
-            return connection.rollback(() => {
-              connection.release();
-              reject(new Error("Error resolving assigned users"));
-            });
+            return;
           }
-          if (Array.isArray(rows) && rows.length > 0) {
-            for (const r of rows) {
-              resolvedUserIds.push(r._id);
+
+          console.log(`Running resolve query ${idx}:`, resolveQueries[idx], resolveParams[idx]);
+          
+          connection.query(resolveQueries[idx], resolveParams[idx], (err, rows) => {
+            if (err) {
+              console.error('Error resolving users:', err);
+              return connection.rollback(() => {
+                connection.release();
+                reject(new Error("Error resolving assigned users: " + err.message));
+              });
             }
-          }
-          runResolveQuery(idx + 1);
-        });
-      };
+            console.log(`Resolved ${rows?.length} users`);
+            if (Array.isArray(rows) && rows.length > 0) {
+              for (const r of rows) {
+                resolvedUserIds.push(r._id);
+              }
+            }
+            runResolveQuery(idx + 1);
+          });
+        };
 
-      runResolveQuery(0);
-    });
-  };
-
-  return new Promise((resolve, reject) => {
-    executeTaskCreation(resolve, reject);
-  })
-    .then((result) => {
-      res.status(201).json({
-        message: "Task created and assignments completed successfully",
-        ...result
+        runResolveQuery(0);
       });
+    };
+
+    return new Promise((resolve, reject) => {
+      executeTaskCreation(resolve, reject);
     })
-    .catch((error) => {
-      res.status(500).json({ error: error.message });
+      .then((result) => {
+        console.log('Task creation successful:', result);
+        res.status(201).json({
+          message: "Task created and assignments completed successfully",
+          ...result
+        });
+      })
+      .catch((error) => {
+        console.error('Task creation failed:', error);
+        res.status(500).json({ error: error.message });
+      });
+
+  } catch (error) {
+    console.error('Error in continueTaskCreation:', error);
+    return connection.rollback(() => {
+      connection.release();
+      res.status(500).json({ error: "Error in task creation process: " + error.message });
     });
+  }
 }
 
+router.post('/createjson', requireRole(['Admin', 'Manager']), createJsonHandler);
+router.post('/', requireRole(['Admin', 'Manager']), createJsonHandler);
 
 router.get("/taskdropdown", async (req, res) => {
   try {
@@ -575,7 +676,6 @@ router.get('/', async (req, res) => {
     if (!projectParam) return res.status(400).json({ success: false, error: 'project_id or projectPublicId query parameter required' });
 
     // use shared hasColumn helper
-
     const tasksHasProjectId = await hasColumn('tasks', 'project_id');
     const tasksHasProjectPublicId = await hasColumn('tasks', 'project_public_id');
     const hasIsDeleted = await hasColumn('tasks', 'isDeleted');
@@ -767,247 +867,6 @@ router.get('/', async (req, res) => {
 });
 
 // PUT /api/projects/tasks/:id - Update task
-// router.put('/:id', requireRole(['Admin','Manager']), async (req, res) => {
-//   const { id: taskId } = req.params;
-//   const {
-//     stage,
-//     title,
-//     priority,
-//     description,
-//     client_id,
-//     projectId,
-//     projectPublicId,
-//     taskDate,
-//     time_alloted,
-//     assigned_to,
-//   } = req.body;
-
-//   logger.info(`[PUT /tasks/:id] Updating task: taskId=${taskId}`);
-
-//   try {
-//     db.getConnection((err, connection) => {
-//       if (err) {
-//         logger.error(`DB connection error: ${err}`);
-//         return res.status(500).json({ success: false, error: 'Database connection error' });
-//       }
-
-//       // Build dynamic update query (only update fields that are provided)
-//       const updates = [];
-//       const values = [];
-
-//       if (stage !== undefined) {
-//         updates.push('stage = ?');
-//         values.push(stage);
-//       }
-//       if (title !== undefined) {
-//         updates.push('title = ?');
-//         values.push(title);
-//       }
-//       if (priority !== undefined) {
-//         updates.push('priority = ?');
-//         values.push(priority);
-//       }
-//       if (description !== undefined) {
-//         updates.push('description = ?');
-//         values.push(description);
-//       }
-//       if (client_id !== undefined) {
-//         updates.push('client_id = ?');
-//         values.push(client_id);
-//       }
-//       if (taskDate !== undefined) {
-//         updates.push('taskDate = ?');
-//         values.push(taskDate);
-//       }
-//       if (time_alloted !== undefined) {
-//         updates.push('time_alloted = ?');
-//         values.push(time_alloted);
-//       }
-//       if (projectId !== undefined) {
-//         updates.push('project_id = ?');
-//         values.push(projectId);
-//       }
-//       if (projectPublicId !== undefined) {
-//         updates.push('project_public_id = ?');
-//         values.push(projectPublicId);
-//       }
-
-//       updates.push('updatedAt = ?');
-//       values.push(new Date().toISOString());
-//       values.push(taskId);
-
-//       if (updates.length === 1) {
-//         // Only updatedAt, nothing to update
-//         connection.release();
-//         return res.status(400).json({ success: false, error: 'No fields to update' });
-//       }
-
-//       const updateTaskQuery = `UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`;
-
-//       connection.query(updateTaskQuery, values, async (err, result) => {
-//         if (err) {
-//           connection.release();
-//           logger.error(`Error updating task: ${err.message}`);
-//           return res.status(500).json({ success: false, error: 'Database update error' });
-//         }
-
-//         if (result.affectedRows === 0) {
-//           connection.release();
-//           return res.status(404).json({ success: false, error: 'Task not found' });
-//         }
-
-//         let reassigned = false;
-//         try {
-//           // If assigned_to provided, resolve public_ids to internal _id and replace assignments
-//           if (Array.isArray(assigned_to)) {
-//             // delete existing
-//             await new Promise((resolve, reject) => connection.query('DELETE FROM taskassignments WHERE task_id = ?', [taskId], (e) => e ? reject(e) : resolve()));
-
-//             if (assigned_to.length > 0) {
-//               const numericIds = assigned_to.filter(v => /^\d+$/.test(String(v))).map(v => Number(v));
-//               const publicIds = assigned_to.filter(v => !/^\d+$/.test(String(v))).map(v => String(v));
-//               let finalIds = Array.from(new Set(numericIds));
-
-//               if (publicIds.length > 0) {
-//                 const rows = await new Promise((resolve, reject) => connection.query('SELECT _id, public_id FROM users WHERE public_id IN (?)', [publicIds], (e, r) => e ? reject(e) : resolve(r)));
-//                 if (Array.isArray(rows) && rows.length > 0) rows.forEach(r => { if (r && r._id) finalIds.push(r._id); });
-//               }
-
-//               finalIds = Array.from(new Set(finalIds));
-//               if (finalIds.length > 0) {
-//                 const insertVals = finalIds.map(uid => [taskId, uid]);
-//                 await new Promise((resolve, reject) => connection.query('INSERT INTO taskassignments (task_id, user_id) VALUES ?', [insertVals], (e) => e ? reject(e) : resolve()));
-//               }
-//             }
-//             reassigned = true;
-//           }
-
-//           // If DB has soft-delete flag, restore the task on update so it becomes visible in subsequent GETs
-//           try {
-//             const hasIsDeletedFlag = await hasColumn('tasks', 'isDeleted');
-//             if (hasIsDeletedFlag) {
-//               await new Promise((resolve, reject) => connection.query('UPDATE tasks SET isDeleted = 0, deleted_at = NULL WHERE id = ?', [taskId], (e) => e ? reject(e) : resolve()));
-//             }
-//           } catch (restoreErr) {
-//             // ignore restore errors, continue to return updated object
-//             logger.warn(`Failed to restore task isDeleted flag: ${restoreErr && restoreErr.message}`);
-//           }
-
-//           // Fetch and return the updated task object so client and subsequent GETs see consistent data
-//           const fetchSql = `
-//             SELECT
-//               t.id AS task_internal_id,
-//               t.public_id AS task_id,
-//               t.title,
-//               t.description,
-//               t.stage,
-//               t.taskDate,
-//               t.priority,
-//               t.time_alloted,
-//               t.estimated_hours,
-//               t.status,
-//               t.createdAt,
-//               t.updatedAt,
-//               c.id AS client_id,
-//               c.name AS client_name,
-//               GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
-//               GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
-//               GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names,
-//               t.project_id,
-//               t.project_public_id
-//             FROM tasks t
-//             LEFT JOIN clientss c ON t.client_id = c.id
-//             LEFT JOIN taskassignments ta ON ta.task_id = t.id
-//             LEFT JOIN users u ON u._id = ta.user_id
-//             WHERE t.id = ?
-//             GROUP BY t.id
-//             LIMIT 1
-//           `;
-
-//           const rows = await new Promise((resolve, reject) => connection.query(fetchSql, [taskId], (e, r) => e ? reject(e) : resolve(r)));
-//           let taskObj = { taskId };
-//           if (Array.isArray(rows) && rows.length > 0) {
-//             const r = rows[0];
-//             const assignedIds = r.assigned_user_ids ? String(r.assigned_user_ids).split(',') : [];
-//             const assignedPublic = r.assigned_user_public_ids ? String(r.assigned_user_public_ids).split(',') : [];
-//             const assignedNames = r.assigned_user_names ? String(r.assigned_user_names).split(',') : [];
-//             const assignedUsers = assignedIds.map((uid, i) => ({ id: assignedPublic[i] || uid, internalId: String(uid), name: assignedNames[i] || null }));
-
-//             taskObj = {
-//               id: r.task_id ? String(r.task_id) : String(r.task_internal_id),
-//               title: r.title || null,
-//               description: r.description || null,
-//               stage: r.stage || null,
-//               taskDate: r.taskDate ? new Date(r.taskDate).toISOString() : null,
-//               priority: r.priority || null,
-//               timeAlloted: r.time_alloted != null ? Number(r.time_alloted) : null,
-//               estimatedHours: r.estimated_hours != null ? Number(r.estimated_hours) : (r.time_alloted != null ? Number(r.time_alloted) : null),
-//               status: r.status || null,
-//               createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null,
-//               updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
-//               client: r.client_id ? { id: String(r.client_id), name: r.client_name } : null,
-//               assignedUsers,
-//               projectId: r.project_id,
-//               projectPublicId: r.project_public_id
-//             };
-//           }
-
-//           // Send reassignment email if applicable
-//           let emailStatus = null;
-//           if (reassigned && Array.isArray(assigned_to) && assigned_to.length > 0) {
-//             try {
-//               // Optionally fetch project name if needed
-//               let projectName = '';
-//               if (taskObj.projectId) {
-//                 try {
-//                   const [projRows] = await new Promise((resolve, reject) => connection.query('SELECT name FROM projects WHERE id = ?', [taskObj.projectId], (err, rows) => err ? reject(err) : resolve([rows])));
-//                   projectName = (projRows && projRows[0] && projRows[0].name) || '';
-//                 } catch {}
-//               }
-//               // Compose task link (customize as needed)
-//               const baseUrl = process.env.FRONTEND_URL || 'http://localhost:4000';
-//               const taskLink = `${baseUrl}/tasks/${taskId}`;
-//               // Get assigner name (from req.user)
-//               const assignedBy = req.user && (req.user.name || req.user.email || 'Manager');
-//               // Use emailService to send notification
-//               emailStatus = await emailService.sendTaskAssignmentEmails({
-//                 finalAssigned: assigned_to,
-//                 taskTitle: taskObj.title,
-//                 taskId,
-//                 priority: taskObj.priority,
-//                 taskDate: taskObj.taskDate,
-//                 description: taskObj.description,
-//                 projectName,
-//                 projectPublicId: taskObj.projectPublicId,
-//                 assignedBy,
-//                 taskLink,
-//                 connection,
-//               });
-//             } catch (mailErr) {
-//               logger.warn(`Failed to send reassignment email for taskId=${taskId}: ${mailErr && mailErr.message}`);
-//               emailStatus = { sent: false, error: mailErr && mailErr.message };
-//             }
-//           }
-
-//           connection.release();
-//           logger.info(`Task updated successfully: taskId=${taskId}`);
-//           return res.status(200).json({ success: true, message: 'Task updated successfully', data: taskObj, emailStatus });
-//         } catch (e) {
-//           connection.release();
-//           logger.error(`Error post-updating task assignments/fetch: ${e && e.message}`);
-//           return res.status(500).json({ success: false, error: 'Post-update processing failed', details: e && e.message });
-//         }
-//       });
-//     });
-//   } catch (error) {
-//     logger.error(`Unexpected error updating task: taskId=${taskId}, error=${error.message}`);
-//     res.status(500).json({
-//       success: false,
-//       error: 'Unexpected server error',
-//       details: error.message,
-//     });
-//   }
-// });
 router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
   const { id: taskId } = req.params;
   const {
@@ -1183,7 +1042,6 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
             };
           }
 
-          // Send emails
           // Send emails after reassignment
           let emailStatus = null;
           if (reassigned && Array.isArray(taskObj.assignedUsers) && taskObj.assignedUsers.length > 0) {
@@ -1254,21 +1112,23 @@ router.delete('/:id', requireRole(['Admin', 'Manager']), (req, res) => {
 
     (async () => {
       try {
-        const hasIsDeleted = await hasColumn('tasks', 'isDeleted');
-        if (hasIsDeleted) {
-          // perform soft-delete
-          connection.query('UPDATE tasks SET isDeleted = 1, deleted_at = NOW() WHERE id = ?', [taskId], (uErr) => {
-            connection.release();
-            if (uErr) {
-              return res.status(500).json({ success: false, error: 'Soft-delete failed', details: uErr.message });
-            }
-            logger.info(`Task soft-deleted successfully: taskId=${taskId}`);
-            return res.status(200).json({ success: true, message: 'Task soft-deleted' });
+        // Find the internal task ID
+        const findTaskSql = 'SELECT id FROM tasks WHERE id = ? OR public_id = ?';
+        const taskResult = await new Promise((resolve, reject) => {
+          connection.query(findTaskSql, [taskId, taskId], (qErr, qRes) => {
+            if (qErr) reject(qErr);
+            else resolve(qRes);
           });
-          return;
+        });
+
+        if (!taskResult || taskResult.length === 0) {
+          connection.release();
+          return res.status(404).json({ success: false, error: 'Task not found' });
         }
 
-        // Fallback to hard delete when no soft-delete column exists
+        const internalTaskId = taskResult[0].id;
+
+        // Permanently delete the task and related data
         connection.beginTransaction((err) => {
           if (err) {
             connection.release();
@@ -1276,12 +1136,12 @@ router.delete('/:id', requireRole(['Admin', 'Manager']), (req, res) => {
           }
 
           const tasksToRun = [
-            { sql: 'DELETE FROM taskassignments WHERE task_id = ?', params: [taskId] },
-            { sql: 'DELETE FROM task_assignments WHERE task_id = ?', params: [taskId] },
-            { sql: 'DELETE FROM subtasks WHERE task_id = ?', params: [taskId] },
-            { sql: 'DELETE FROM task_hours WHERE task_id = ?', params: [taskId] },
-            { sql: 'DELETE FROM task_activities WHERE task_id = ?', params: [taskId] },
-            { sql: 'DELETE FROM tasks WHERE id = ?', params: [taskId] },
+            { sql: 'DELETE FROM taskassignments WHERE task_id = ?', params: [internalTaskId] },
+            { sql: 'DELETE FROM task_assignments WHERE task_id = ?', params: [internalTaskId] },
+            { sql: 'DELETE FROM subtasks WHERE task_id = ?', params: [internalTaskId] },
+            { sql: 'DELETE FROM task_hours WHERE task_id = ?', params: [internalTaskId] },
+            { sql: 'DELETE FROM task_activities WHERE task_id = ?', params: [internalTaskId] },
+            { sql: 'DELETE FROM tasks WHERE id = ?', params: [internalTaskId] },
           ];
 
           const runStep = (idx) => {
@@ -2518,7 +2378,6 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
   }
 });
 
-
 // Manager: Accept or Reject Task Reassignment Request
 // Accept: POST /tasks/reassignment/:request_id/accept
 // For manager to approve/reject
@@ -2585,6 +2444,7 @@ router.post('/:id/request-reassignment/:requestId/respond', requireRole(['Manage
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
 // GET /api/tasks/:id/reassign-requests
 // Returns all reassignment requests for a specific task
 router.get('/:id/reassign-requests', requireRole(['Employee', 'Manager']), async (req, res) => {
@@ -2633,6 +2493,158 @@ router.get('/:id/reassign-requests', requireRole(['Employee', 'Manager']), async
     });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /tasks/:id/start
+router.post('/:id/start', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+
+    // Check if user is assigned to the task
+    const assignment = await db.query('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [id, userId]);
+    if (assignment.length === 0 && req.user.role !== 'Admin' && req.user.role !== 'Manager') {
+      return res.status(403).json({ success: false, error: 'Not assigned to this task' });
+    }
+
+    // Get current task status
+    const task = await db.query('SELECT id, status FROM tasks WHERE id = ? OR public_id = ?', [id, id]);
+    if (task.length === 0) return res.status(404).json({ success: false, error: 'Task not found' });
+    const taskId = task[0].id;
+    const currentStatus = task[0].status;
+
+    if (currentStatus === 'Completed') {
+      return res.status(400).json({ success: false, error: 'Task already completed' });
+    }
+
+    // Insert start log
+    await db.query('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, NOW())', [taskId, userId, 'start']);
+
+    // Update task status and started_at if first start
+    const updateFields = ['status = ?'];
+    const params = ['In Progress'];
+    if (currentStatus === 'Pending') {
+      updateFields.push('started_at = NOW()');
+    }
+    await db.query(`UPDATE tasks SET ${updateFields.join(', ')} WHERE id = ?`, [...params, taskId]);
+
+    res.json({ success: true, message: 'Task started' });
+  } catch (e) {
+    logger.error('Start task error:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /tasks/:id/pause
+router.post('/:id/pause', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+
+    // Check assignment
+    const assignment = await db.query('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [id, userId]);
+    if (assignment.length === 0 && req.user.role !== 'Admin' && req.user.role !== 'Manager') {
+      return res.status(403).json({ success: false, error: 'Not assigned to this task' });
+    }
+
+    const task = await db.query('SELECT id, status FROM tasks WHERE id = ? OR public_id = ?', [id, id]);
+    if (task.length === 0) return res.status(404).json({ success: false, error: 'Task not found' });
+    const taskId = task[0].id;
+
+    if (task[0].status !== 'In Progress') {
+      return res.status(400).json({ success: false, error: 'Task not in progress' });
+    }
+
+    // Calculate duration from last start/resume
+    const lastLog = await db.query('SELECT timestamp FROM task_time_logs WHERE task_id = ? AND (action = ? OR action = ?) ORDER BY timestamp DESC LIMIT 1', [taskId, 'start', 'resume']);
+    if (lastLog.length > 0) {
+      const duration = Math.floor((new Date() - new Date(lastLog[0].timestamp)) / 1000); // seconds
+      await db.query('INSERT INTO task_time_logs (task_id, user_id, action, timestamp, duration) VALUES (?, ?, ?, NOW(), ?)', [taskId, userId, 'pause', duration]);
+      // Update total_duration
+      await db.query('UPDATE tasks SET total_duration = COALESCE(total_duration, 0) + ? WHERE id = ?', [duration, taskId]);
+    } else {
+      await db.query('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, NOW())', [taskId, userId, 'pause']);
+    }
+
+    // Update status
+    await db.query('UPDATE tasks SET status = ? WHERE id = ?', ['On Hold', taskId]);
+
+    res.json({ success: true, message: 'Task paused' });
+  } catch (e) {
+    logger.error('Pause task error:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /tasks/:id/complete
+router.post('/:id/complete', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+
+    // Check assignment
+    const assignment = await db.query('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [id, userId]);
+    if (assignment.length === 0 && req.user.role !== 'Admin' && req.user.role !== 'Manager') {
+      return res.status(403).json({ success: false, error: 'Not assigned to this task' });
+    }
+
+    const task = await db.query('SELECT id, status FROM tasks WHERE id = ? OR public_id = ?', [id, id]);
+    if (task.length === 0) return res.status(404).json({ success: false, error: 'Task not found' });
+    const taskId = task[0].id;
+
+    if (task[0].status === 'Completed') {
+      return res.status(400).json({ success: false, error: 'Task already completed' });
+    }
+
+    // Calculate final duration
+    const lastLog = await db.query('SELECT timestamp FROM task_time_logs WHERE task_id = ? AND (action = ? OR action = ?) ORDER BY timestamp DESC LIMIT 1', [taskId, 'start', 'resume']);
+    if (lastLog.length > 0) {
+      const duration = Math.floor((new Date() - new Date(lastLog[0].timestamp)) / 1000);
+      await db.query('INSERT INTO task_time_logs (task_id, user_id, action, timestamp, duration) VALUES (?, ?, ?, NOW(), ?)', [taskId, userId, 'complete', duration]);
+      await db.query('UPDATE tasks SET total_duration = COALESCE(total_duration, 0) + ? WHERE id = ?', [duration, taskId]);
+    } else {
+      await db.query('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?, NOW())', [taskId, userId, 'complete']);
+    }
+
+    // Update status and completed_at
+    await db.query('UPDATE tasks SET status = ?, completed_at = NOW() WHERE id = ?', ['Completed', taskId]);
+
+    res.json({ success: true, message: 'Task completed' });
+  } catch (e) {
+    logger.error('Complete task error:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /tasks/:id/timeline
+router.get('/:id/timeline', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check access: assigned or admin/manager
+    if (req.user.role !== 'Admin' && req.user.role !== 'Manager') {
+      const assignment = await db.query('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [id, req.user._id]);
+      if (assignment.length === 0) {
+        return res.status(403).json({ success: false, error: 'Access denied' });
+      }
+    }
+
+    const task = await db.query('SELECT id FROM tasks WHERE id = ? OR public_id = ?', [id, id]);
+    if (task.length === 0) return res.status(404).json({ success: false, error: 'Task not found' });
+
+    const logs = await db.query(`
+      SELECT l.action, l.timestamp, l.duration, u.name AS user_name
+      FROM task_time_logs l
+      LEFT JOIN users u ON l.user_id = u._id
+      WHERE l.task_id = ?
+      ORDER BY l.timestamp DESC
+    `, [task[0].id]);
+
+    res.json({ success: true, data: logs });
+  } catch (e) {
+    logger.error('Get timeline error:', e.message);
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 
