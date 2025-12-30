@@ -9,7 +9,7 @@ const jwt = require('jsonwebtoken');
 const emailService = require(__root + 'utils/emailService');
 const tenantMiddleware = require(__root + 'middleware/tenant');
 const upload = require("../multer");
-const { storage } = require("./utils/Firestore");
+const { storage } = require(__root + 'controller/utils/Firestore');
 const cloudinary = require("cloudinary");
 const multer = require("multer");
 const { ref, uploadBytes, getDownloadURL } = require("firebase/storage");
@@ -1170,7 +1170,7 @@ router.patch('/:id/status', requireRole(['Employee']), async (req, res) => {
     }
 
     // Resolve task ID (handle both numeric ID and public_id string)
-    let resolvedTaskId = id;
+    let resolvedTaskId = req.params.id;
     if (isNaN(id)) {
       const taskRows = await q('SELECT id FROM tasks WHERE public_id = ? LIMIT 1', [id]);
       if (!taskRows || taskRows.length === 0) {
@@ -1180,7 +1180,7 @@ router.patch('/:id/status', requireRole(['Employee']), async (req, res) => {
     }
 
     // Resolve project ID (handle both numeric ID and public_id string)
-    let resolvedProjectId = projectId;
+    let resolvedProjectId = req.body.projectId;
     if (isNaN(projectId)) {
       // If projectId is not a number, treat it as public_id
       const projectRows = await q('SELECT id FROM projects WHERE public_id = ? LIMIT 1', [projectId]);
@@ -1257,31 +1257,77 @@ router.patch('/:id/status', requireRole(['Employee']), async (req, res) => {
       // Do NOT reset or nullify live_timer; keep it as the last started timestamp
       await q('UPDATE tasks SET total_duration = COALESCE(total_duration, 0) + ? WHERE id = ?', [duration, resolvedTaskId]);
     } else if (normalizedTarget === 'COMPLETED' && normalizedCurrent === 'IN PROGRESS') {
-      // Complete task
+      // Complete task: stop live timer and accumulate duration
       const lastLog = await q('SELECT timestamp FROM task_time_logs WHERE task_id = ? AND (action = ? OR action = ?) ORDER BY timestamp DESC LIMIT 1', [resolvedTaskId, 'start', 'resume']);
       let duration = 0;
       if (lastLog.length > 0) {
         duration = Math.floor((now - new Date(lastLog[0].timestamp)) / 1000);
       }
-      await q('UPDATE tasks SET completed_at = ?, total_duration = COALESCE(total_duration, 0) + ? WHERE id = ?', [now, duration, resolvedTaskId]);
+      // Set completed_at, add accumulated duration, and stop live_timer
+      await q('UPDATE tasks SET completed_at = ?, total_duration = COALESCE(total_duration, 0) + ?, live_timer = NULL WHERE id = ?', [now, duration, resolvedTaskId]);
       await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp, duration) VALUES (?, ?, ?, ?, ?)', 
         [resolvedTaskId, req.user._id, 'complete', now, duration]);
     }
 
     // Get updated task
     const updatedTask = await q('SELECT * FROM tasks WHERE id = ? LIMIT 1', [resolvedTaskId]);
+    const t = updatedTask[0] || {};
+    const totalSeconds = Number(t.total_duration || 0);
+    const totalHoursFloat = totalSeconds / 3600;
+    const hh = String(Math.floor(totalSeconds / 3600)).padStart(2, '0');
+    const mm = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, '0');
+    const ss = String(totalSeconds % 60).padStart(2, '0');
+    const humanDuration = `${hh}:${mm}:${ss}`;
+
+    // Project total hours from all its tasks
+    const projectIdForAgg = task.project_id || resolvedProjectId;
+    let projectHours = 0;
+    if (projectIdForAgg) {
+      const ph = await q('SELECT SUM(total_duration) as totalHours FROM tasks WHERE project_id = ?', [projectIdForAgg]);
+      projectHours = Number((ph && ph[0] && ph[0].totalHours) || 0);
+
+      // Persist project aggregate seconds if column exists
+      try {
+        const projHasTotalSec = await hasColumn('projects', 'total_hours_seconds');
+        if (projHasTotalSec) {
+          await q('UPDATE projects SET total_hours_seconds = ? WHERE id = ?', [projectHours, projectIdForAgg]);
+        }
+        const projHasTotalHours = await hasColumn('projects', 'total_hours');
+        if (projHasTotalHours) {
+          await q('UPDATE projects SET total_hours = ? WHERE id = ?', [Number((projectHours / 3600).toFixed(2)), projectIdForAgg]);
+        }
+      } catch (persistErr) {
+        logger.warn('Failed to persist project hours:', persistErr && persistErr.message);
+      }
+    }
 
     res.json({
       success: true,
-      message: `Task status updated to ${status}`,
+      message: normalizedTarget === 'COMPLETED' ? 'Task completed' : `Task status updated to ${status}`,
       data: {
         projectId: task.project_public_id || resolvedProjectId,
         taskId: task.public_id,
-        status: updatedTask[0].status,
-        total_time_seconds: updatedTask[0].total_duration,
-        started_at: updatedTask[0].started_at,
-        completed_at: updatedTask[0].completed_at,
-        live_timer: updatedTask[0].live_timer
+        status: t.status,
+        total_time_seconds: totalSeconds,
+        total_time_hours: Number(totalHoursFloat.toFixed(2)),
+        total_time_hhmmss: humanDuration,
+        started_at: t.started_at,
+        completed_at: t.completed_at,
+        live_timer: t.live_timer,
+        // Selected task details for convenience
+        task: {
+          id: t.id,
+          public_id: t.public_id,
+          title: t.title,
+          description: t.description,
+          priority: t.priority,
+          stage: t.stage,
+          status: t.status,
+          taskDate: t.taskDate,
+        },
+        // Project aggregate working hours
+        project_total_time_seconds: projectHours,
+        project_total_time_hours: Number((projectHours / 3600).toFixed(2))
       }
     });
   } catch (e) {

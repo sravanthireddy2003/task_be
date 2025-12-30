@@ -450,7 +450,7 @@ async function completeLoginForUser(user, req, res) {
     // Get role-based login response with dashboard metrics and accessible resources
     let roleBasedData = {};
     try {
-      const RoleBasedLoginResponse = require('./utils/RoleBasedLoginResponse');
+      const RoleBasedLoginResponse = require(__root + 'controller/utils/RoleBasedLoginResponse');
       const publicId = user.public_id || null;
       const metrics = await RoleBasedLoginResponse.getDashboardMetrics(user._id, user.role, user.tenant_id, publicId);
       const resources = await RoleBasedLoginResponse.getAccessibleResources(user._id, user.role, user.tenant_id, publicId);

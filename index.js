@@ -1,6 +1,6 @@
 require('dotenv').config();
 const Redis = require('ioredis');
-const app = require('./app');
+const app = require('./src/app');
 const port = process.env.PORT || 4000;
 const logger = require('./logger');
 

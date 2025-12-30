@@ -1,0 +1,2 @@
+// Task model
+module.exports = {};

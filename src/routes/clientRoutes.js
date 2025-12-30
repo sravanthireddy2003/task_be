@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const clientViewerAccessControl = require(__root + 'middleware/clientViewerAccess');
-const ClientsApi = require(__root + 'controller/ClientsApi');
+const ClientsApi = require(__root + 'controllers/ClientsApi');
 
 router.use(clientViewerAccessControl);
 router.use('/', ClientsApi);

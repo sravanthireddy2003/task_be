@@ -3,9 +3,9 @@ const router = express.Router();
 const { requireAuth } = require(__root + 'middleware/roles');
  
 // Import all routers (they export complete routers, not individual functions)
-const ProjectsRouter = require(__root + 'controller/Projects');
-const TasksRouter = require(__root + 'controller/Tasks');
-const SubtasksRouter = require(__root + 'controller/Subtasks');
+const ProjectsRouter = require(__root + 'controllers/Projects');
+const TasksRouter = require(__root + 'controllers/Tasks');
+const SubtasksRouter = require(__root + 'controllers/Subtasks');
  
 // Ensure authentication on all routes
 router.use(requireAuth);

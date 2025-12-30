@@ -58,6 +58,7 @@ async function buildProjectJoinClause() {
   const projectPublicIdExists = await hasColumn('tasks', 'project_public_id');
   const startedAtExists = await hasColumn('tasks', 'started_at');
   const liveTimerExists = await hasColumn('tasks', 'live_timer');
+  const totalDurationExists = await hasColumn('tasks', 'total_duration');
   const joinClauses = [];
   const selects = [];
   const joinConditions = [];
@@ -79,6 +80,9 @@ async function buildProjectJoinClause() {
   }
   if (liveTimerExists) {
     selects.push('t.live_timer');
+  }
+  if (totalDurationExists) {
+    selects.push('t.total_duration');
   }
   return { join: joinClauses.join(' '), selects };
 }
@@ -326,6 +330,15 @@ module.exports = {
           checklist: checklistMap[r.id] || [],
           started_at: r.started_at ? new Date(r.started_at).toISOString() : null,
           live_timer: r.live_timer ? new Date(r.live_timer).toISOString() : null,
+          total_time_seconds: r.total_duration != null ? Number(r.total_duration) : 0,
+          total_time_hours: r.total_duration != null ? Number((Number(r.total_duration) / 3600).toFixed(2)) : 0,
+          total_time_hhmmss: (() => {
+            const secs = Number(r.total_duration || 0);
+            const hh = String(Math.floor(secs / 3600)).padStart(2, '0');
+            const mm = String(Math.floor((secs % 3600) / 60)).padStart(2, '0');
+            const ss = String(secs % 60).padStart(2, '0');
+            return `${hh}:${mm}:${ss}`;
+          })(),
           summary
         };
       });

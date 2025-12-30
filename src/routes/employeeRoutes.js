@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const auth = require(__root + 'middleware/auth');
 const { allowRoles } = require(__root + 'middleware/role');
-const Employee = require(__root + 'controller/employeeController');
+const Employee = require(__root + 'controllers/employeeController');
 
 router.use(auth, allowRoles('Employee'));
 
