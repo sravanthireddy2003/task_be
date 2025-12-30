@@ -24,80 +24,128 @@ KanbanBoard/
 - **Local State**: Kanban board data, selected task, modal states
 - **Server State**: Tasks, time logs, project data
 
-## Implementation Steps
+## Kanban Workflow Rules (Strict)
 
-### 1. Project Selection Component
+The backend enforces a strict Kanban workflow. Any transition outside of this flow will return a `400 Bad Request`.
 
-```jsx
-// components/ProjectSelector.jsx
-import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+### Allowed Transitions
+- **To Do** → **In Progress**
+- **In Progress** → **On Hold**
+- **On Hold** → **In Progress**
+- **In Progress** → **Completed**
 
-const ProjectSelector = ({ onProjectSelect, userRole }) => {
-  const [projects, setProjects] = useState([]);
-  const [loading, setLoading] = useState(true);
+*Note: `Pending` is treated as `To Do` for the initial transition.*
 
-  useEffect(() => {
-    fetchProjects();
-  }, []);
+### Role Permissions
+- **Employees**: Can execute tasks (Start, Pause, Resume, Complete) and update status via Kanban.
+- **Managers/Admins**: Read-only access to task execution. They can view all tasks and timelines but cannot trigger time tracking actions.
 
-  const fetchProjects = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await axios.get('/api/projects', {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+## API Reference
 
-      // Filter projects based on role
-      let filteredProjects = response.data.data;
-      if (userRole === 'Employee') {
-        // Employees only see projects they have assigned tasks in
-        filteredProjects = filteredProjects.filter(project =>
-          project.has_assigned_tasks
-        );
-      }
+### 1. Get Project Tasks (Kanban)
+`GET /api/projects/:projectId/tasks`
 
-      setProjects(filteredProjects);
-    } catch (error) {
-      console.error('Error fetching projects:', error);
-    } finally {
-      setLoading(false);
+Returns tasks grouped by Kanban columns.
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "project_id": 123,
+    "tasks": [...],
+    "kanban_columns": {
+      "To Do": [...],
+      "In Progress": [...],
+      "On Hold": [...],
+      "Completed": [...]
     }
-  };
-
-  return (
-    <div className="project-selector">
-      <h3>Select Project</h3>
-      {loading ? (
-        <div>Loading projects...</div>
-      ) : (
-        <select onChange={(e) => onProjectSelect(e.target.value)}>
-          <option value="">Choose a project...</option>
-          {projects.map(project => (
-            <option key={project.id} value={project.id}>
-              {project.name}
-            </option>
-          ))}
-        </select>
-      )}
-    </div>
-  );
-};
-
-export default ProjectSelector;
+  }
+}
 ```
 
-### 2. Kanban Board Component
+### 2. Start Task
+`POST /api/tasks/:taskId/start`
 
-```jsx
-// components/KanbanBoard.jsx
-import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import KanbanColumn from './KanbanColumn';
-import TaskModal from './TaskModal';
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Task started",
+  "data": {
+    "taskId": "T-123",
+    "status": "In Progress",
+    "started_at": "2025-01-10T10:00:00Z"
+  }
+}
+```
 
-const KanbanBoard = ({ projectId, userRole }) => {
-  const [boardData, setBoardData] = useState(null);
+### 3. Pause Task
+`POST /api/tasks/:taskId/pause`
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Task paused",
+  "data": {
+    "taskId": "T-123",
+    "status": "On Hold",
+    "total_time_seconds": 3600
+  }
+}
+```
+
+### 4. Resume Task
+`POST /api/tasks/:taskId/resume`
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Task resumed",
+  "data": {
+    "taskId": "T-123",
+    "status": "In Progress"
+  }
+}
+```
+
+### 5. Complete Task
+`POST /api/tasks/:taskId/complete`
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Task completed",
+  "data": {
+    "taskId": "T-123",
+    "status": "Completed",
+    "total_time_seconds": 7200
+  }
+}
+```
+
+### 6. View Task Timeline
+`GET /api/tasks/:taskId/timeline`
+
+Returns the audit log of all time tracking actions.
+
+---
+
+## Frontend Implementation Tips
+
+### Disabling Buttons
+Always disable action buttons based on the current task status:
+- **Start**: Only enabled if status is `To Do` or `Pending`.
+- **Pause**: Only enabled if status is `In Progress`.
+- **Resume**: Only enabled if status is `On Hold`.
+- **Complete**: Only enabled if status is `In Progress`.
+
+### Time Display
+Use the `total_duration` (seconds) from the backend to display "Time Spent". For active tasks (`In Progress`), you can calculate the "Live" time on the frontend by adding the difference between `now` and `started_at` (from the last `start` or `resume` log) to the `total_duration`.
+
   const [selectedTask, setSelectedTask] = useState(null);
   const [loading, setLoading] = useState(true);
 

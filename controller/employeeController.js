@@ -56,6 +56,8 @@ async function buildSubtaskDeletedClause(alias = 's') {
 async function buildProjectJoinClause() {
   const projectIdExists = await hasColumn('tasks', 'project_id');
   const projectPublicIdExists = await hasColumn('tasks', 'project_public_id');
+  const startedAtExists = await hasColumn('tasks', 'started_at');
+  const liveTimerExists = await hasColumn('tasks', 'live_timer');
   const joinClauses = [];
   const selects = [];
   const joinConditions = [];
@@ -71,6 +73,12 @@ async function buildProjectJoinClause() {
   }
   if (projectPublicIdExists) {
     selects.push('t.project_public_id AS project_public_id');
+  }
+  if (startedAtExists) {
+    selects.push('t.started_at');
+  }
+  if (liveTimerExists) {
+    selects.push('t.live_timer');
   }
   return { join: joinClauses.join(' '), selects };
 }
@@ -117,6 +125,15 @@ async function fetchChecklistMap(taskIds = []) {
 }
 
 async function ensureAssignedTask(taskId, userId, tenantId) {
+  // Resolve taskId to internal id if it's public_id
+  let internalTaskId = taskId;
+  if (typeof taskId === 'string' && !/^\d+$/.test(taskId)) { // if not numeric, assume public_id
+    const taskRows = await queryAsync('SELECT id FROM tasks WHERE public_id = ?', [taskId]);
+    if (taskRows.length === 0) {
+      throw new Error('Task not found');
+    }
+    internalTaskId = taskRows[0].id;
+  }
   const { clause, params } = await buildTenantClause('t', tenantId);
   const rows = await queryAsync(
     `SELECT t.id
@@ -124,7 +141,7 @@ async function ensureAssignedTask(taskId, userId, tenantId) {
      INNER JOIN tasks t ON t.id = ta.task_id
      WHERE ta.task_id = ? AND ta.user_id = ? ${clause}
      LIMIT 1`,
-    [taskId, userId, ...params]
+    [internalTaskId, userId, ...params]
   );
   if (!Array.isArray(rows) || !rows.length) {
     throw accessDenied('Access denied: task not assigned to you');
@@ -169,9 +186,10 @@ async function insertChecklistItem({ taskId, title, description, dueDate, userId
     error.status = 400;
     throw error;
   }
-  await ensureAssignedTask(taskId, userId, tenantId);
+  const taskInfo = await ensureAssignedTask(taskId, userId, tenantId);
+  const internalTaskId = taskInfo.id;
   const { clause } = await buildSubtaskDeletedClause('s');
-  const countRows = await queryAsync(`SELECT COUNT(*) AS total FROM subtasks s WHERE s.task_id = ? ${clause}`, [taskId]);
+  const countRows = await queryAsync(`SELECT COUNT(*) AS total FROM subtasks s WHERE s.task_id = ? ${clause}`, [internalTaskId]);
   const existingCount = countRows && countRows[0] ? Number(countRows[0].total || 0) : 0;
   if (existingCount >= MAX_CHECKLIST_ITEMS) {
     const error = new Error(`Checklist cannot have more than ${MAX_CHECKLIST_ITEMS} items`);
@@ -189,7 +207,7 @@ async function insertChecklistItem({ taskId, title, description, dueDate, userId
     insertParams.push(value);
   };
 
-  pushParam('task_id', taskId);
+  pushParam('task_id', internalTaskId);
   pushParam('title', title);
   if (columnsPresence.description) {
     pushParam('description', description || null);
@@ -282,6 +300,18 @@ module.exports = {
           internalId: String(internalId),
           name: assignedNames[index] || null
         }));
+        // Overdue/on-time summary
+        let summary = {};
+        try {
+          const now = new Date();
+          let estDate = r.taskDate ? new Date(r.taskDate) : null;
+          if (estDate) {
+            summary.dueStatus = estDate < now ? 'Overdue' : 'On Time';
+            summary.dueDate = estDate.toISOString();
+          }
+        } catch (e) {
+          summary.error = 'Could not calculate summary';
+        }
         return {
           id: r.public_id ? String(r.public_id) : String(r.id),
           title: r.title || null,
@@ -293,10 +323,27 @@ module.exports = {
           client: buildClientPayload(r),
           project: buildProjectPayload(r),
           assignedUsers,
-          checklist: checklistMap[r.id] || []
+          checklist: checklistMap[r.id] || [],
+          started_at: r.started_at ? new Date(r.started_at).toISOString() : null,
+          live_timer: r.live_timer ? new Date(r.live_timer).toISOString() : null,
+          summary
         };
       });
-      return res.json({ success: true, data: tasks });
+      // Group tasks by status for kanban
+      const statusMap = {};
+      tasks.forEach(task => {
+        const status = (task.status || task.stage || 'PENDING').toUpperCase();
+        if (!statusMap[status]) statusMap[status] = [];
+        statusMap[status].push(task);
+      });
+      const possibleStatuses = ['PENDING', 'TO DO', 'IN PROGRESS', 'ON HOLD', 'REVIEW', 'COMPLETED'];
+      const kanban = possibleStatuses.map(status => ({
+        status,
+        count: (statusMap[status] || []).length,
+        tasks: statusMap[status] || [],
+        ...((statusMap[status] || []).length === 0 ? { message: `No tasks in ${status.replace('_', ' ').toLowerCase()}` } : {})
+      }));
+      return res.json({ success: true, data: tasks, kanban });
     } catch (error) {
       return res.status(error.status || 500).json({ success: false, error: error.message });
     }

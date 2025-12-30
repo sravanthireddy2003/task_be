@@ -41,6 +41,12 @@ const q = (sql, params = []) => new Promise((resolve, reject) => {
   });
 });
 
+// helper: get last action for task and user
+const getLastAction = async (taskId, userId) => {
+  const rows = await q('SELECT action FROM task_time_logs WHERE task_id = ? AND user_id = ? ORDER BY timestamp DESC LIMIT 1', [taskId, userId]);
+  return rows.length > 0 ? rows[0].action : null;
+};
+
 // enforce tenant + auth for all task routes
 router.use(tenantMiddleware);
 
@@ -634,9 +640,30 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
     })
       .then((result) => {
         console.log('Task creation successful:', result);
+        // Overdue/on-time summary logic
+        let summary = {};
+        try {
+          const now = new Date();
+          let estDate = null;
+          let estHours = null;
+          if (body.taskDate) estDate = new Date(body.taskDate);
+          if (body.estimated_hours != null) estHours = Number(body.estimated_hours);
+          else if (body.time_alloted != null) estHours = Number(body.time_alloted);
+          // If estimated date is in the past, it's overdue
+          if (estDate) {
+            summary.dueStatus = estDate < now ? 'Overdue' : 'On Time';
+            summary.dueDate = estDate.toISOString();
+          }
+          if (estHours != null) {
+            summary.estimatedHours = estHours;
+          }
+        } catch (e) {
+          summary.error = 'Could not calculate summary';
+        }
         res.status(201).json({
           message: "Task created and assignments completed successfully",
-          ...result
+          ...result,
+          summary
         });
       })
       .catch((error) => {
@@ -893,6 +920,11 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
   logger.info(`[PUT /tasks/:id] Updating task: taskId=${taskId}`);
 
   try {
+    const taskRow = await q('SELECT id FROM tasks WHERE public_id = ?', [taskId]);
+    if (taskRow.length === 0) {
+      return res.status(404).json({ success: false, error: 'Task not found' });
+    }
+    const internalTaskId = taskRow[0].id;
     db.getConnection((err, connection) => {
       if (err) {
         logger.error(`DB connection error: ${err}`);
@@ -914,7 +946,7 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
 
       updates.push('updatedAt = ?');
       values.push(new Date().toISOString());
-      values.push(taskId);
+      values.push(internalTaskId);
 
       if (updates.length === 1) {
         connection.release();
@@ -941,7 +973,7 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
         try {
           if (Array.isArray(assigned_to)) {
             await new Promise((resolve, reject) =>
-              connection.query('DELETE FROM taskassignments WHERE task_id = ?', [taskId], (e) => e ? reject(e) : resolve())
+              connection.query('DELETE FROM taskassignments WHERE task_id = ?', [internalTaskId], (e) => e ? reject(e) : resolve())
             );
 
             if (assigned_to.length > 0) {
@@ -961,7 +993,7 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
               finalAssignedUserIds = Array.from(new Set(finalAssignedUserIds));
 
               if (finalAssignedUserIds.length > 0) {
-                const insertVals = finalAssignedUserIds.map(uid => [taskId, uid]);
+                const insertVals = finalAssignedUserIds.map(uid => [internalTaskId, uid]);
                 await new Promise((resolve, reject) =>
                   connection.query('INSERT INTO taskassignments (task_id, user_id) VALUES ?', [insertVals], (e) => e ? reject(e) : resolve())
                 );
@@ -976,7 +1008,7 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
             const hasIsDeletedFlag = await hasColumn('tasks', 'isDeleted');
             if (hasIsDeletedFlag) {
               await new Promise((resolve, reject) =>
-                connection.query('UPDATE tasks SET isDeleted = 0, deleted_at = NULL WHERE id = ?', [taskId], (e) => e ? reject(e) : resolve())
+                connection.query('UPDATE tasks SET isDeleted = 0, deleted_at = NULL WHERE id = ?', [internalTaskId], (e) => e ? reject(e) : resolve())
               );
             }
           } catch (restoreErr) {
@@ -1015,7 +1047,7 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
             LIMIT 1
           `;
 
-          const rows = await new Promise((resolve, reject) => connection.query(fetchSql, [taskId], (e, r) => e ? reject(e) : resolve(r)));
+          const rows = await new Promise((resolve, reject) => connection.query(fetchSql, [internalTaskId], (e, r) => e ? reject(e) : resolve(r)));
           let taskObj = { taskId };
 
           if (rows.length > 0) {
@@ -1137,6 +1169,16 @@ router.patch('/:id/status', requireRole(['Employee']), async (req, res) => {
       });
     }
 
+    // Resolve task ID (handle both numeric ID and public_id string)
+    let resolvedTaskId = id;
+    if (isNaN(id)) {
+      const taskRows = await q('SELECT id FROM tasks WHERE public_id = ? LIMIT 1', [id]);
+      if (!taskRows || taskRows.length === 0) {
+        return res.status(404).json({ success: false, message: 'Task not found' });
+      }
+      resolvedTaskId = taskRows[0].id;
+    }
+
     // Resolve project ID (handle both numeric ID and public_id string)
     let resolvedProjectId = projectId;
     if (isNaN(projectId)) {
@@ -1157,72 +1199,91 @@ router.patch('/:id/status', requireRole(['Employee']), async (req, res) => {
       WHERE t.id = ? AND ta.user_id = ? AND t.project_id = ?
       LIMIT 1
     `;
-    const tasks = await q(taskQuery, [id, req.user._id, resolvedProjectId]);
+    const tasks = await q(taskQuery, [resolvedTaskId, req.user._id, resolvedProjectId]);
 
     if (!tasks || tasks.length === 0) {
       return res.status(404).json({ success: false, message: 'Task not found, not assigned to you, or does not belong to the specified project' });
     }
 
     const task = tasks[0];
-    const currentStatus = task.status || task.stage;
+    const currentStatusStr = task.status || task.stage || 'PENDING';
+    
+    // Normalize status for transition check
+    const normalizedCurrent = currentStatusStr.toUpperCase();
+    const normalizedTarget = status.toUpperCase();
 
-    // Validate status transitions
+    // Kanban Rules: Validate transition (Strict Spec Flow)
+    // To Do → In Progress → On Hold → In Progress → Completed
     const allowedTransitions = {
-      'PENDING': ['To Do', 'In Progress'],
-      'To Do': ['In Progress'],
-      'In Progress': ['On Hold', 'Review', 'Completed'],
-      'On Hold': ['In Progress'],
-      'Review': ['Completed'],
-      'Completed': [] // No transitions from completed
+      'PENDING': ['TO DO', 'IN PROGRESS'],
+      'TO DO': ['IN PROGRESS'],
+      'IN PROGRESS': ['ON HOLD', 'COMPLETED'],
+      'ON HOLD': ['IN PROGRESS'],
+      'COMPLETED': []
     };
 
-    if (!allowedTransitions[currentStatus]?.includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: `Invalid status transition from '${currentStatus}' to '${status}'`
+    const allowedNext = allowedTransitions[normalizedCurrent] || [];
+    if (!allowedNext.includes(normalizedTarget)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: `Invalid transition from '${currentStatusStr}' to '${status}'. Allowed: ${allowedNext.join(', ')}` 
       });
     }
 
     // Update task status
-    await q('UPDATE tasks SET status = ?, updatedAt = NOW() WHERE id = ?', [status, id]);
+    await q('UPDATE tasks SET status = ?, updatedAt = NOW() WHERE id = ?', [status, resolvedTaskId]);
 
-    // Handle time tracking based on status changes
+    // Handle time tracking and live timer
     const now = new Date();
-
-    if (status === 'In Progress' && currentStatus !== 'In Progress') {
-      // Start timer
-      await q('UPDATE tasks SET started_at = ? WHERE id = ?', [now, id]);
+    if (normalizedTarget === 'IN PROGRESS' && normalizedCurrent !== 'IN PROGRESS') {
+      // Start/Resume timer
+      const action = (normalizedCurrent === 'ON HOLD') ? 'resume' : 'start';
+      if (action === 'start') {
+        await q('UPDATE tasks SET started_at = ?, live_timer = ? WHERE id = ?', [now, now, resolvedTaskId]);
+      } else {
+        await q('UPDATE tasks SET live_timer = ? WHERE id = ?', [now, resolvedTaskId]);
+      }
       await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?)', 
-        [id, req.user._id, 'start', now]);
-    } else if (status === 'On Hold' && currentStatus === 'In Progress') {
+        [resolvedTaskId, req.user._id, action, now]);
+    } else if (normalizedTarget === 'ON HOLD' && normalizedCurrent === 'IN PROGRESS') {
       // Pause timer
-      await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?)', 
-        [id, req.user._id, 'pause', now]);
-    } else if (status === 'Completed') {
-      // Complete task and calculate duration
-      await q('UPDATE tasks SET completed_at = ? WHERE id = ?', [now, id]);
-      await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?)', 
-        [id, req.user._id, 'complete', now]);
+      const lastLog = await q('SELECT timestamp FROM task_time_logs WHERE task_id = ? AND (action = ? OR action = ?) ORDER BY timestamp DESC LIMIT 1', [resolvedTaskId, 'start', 'resume']);
+      let duration = 0;
+      if (lastLog.length > 0) {
+        duration = Math.floor((now - new Date(lastLog[0].timestamp)) / 1000);
+      }
+      await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp, duration) VALUES (?, ?, ?, ?, ?)', 
+        [resolvedTaskId, req.user._id, 'pause', now, duration]);
+      // Do NOT reset or nullify live_timer; keep it as the last started timestamp
+      await q('UPDATE tasks SET total_duration = COALESCE(total_duration, 0) + ? WHERE id = ?', [duration, resolvedTaskId]);
+    } else if (normalizedTarget === 'COMPLETED' && normalizedCurrent === 'IN PROGRESS') {
+      // Complete task
+      const lastLog = await q('SELECT timestamp FROM task_time_logs WHERE task_id = ? AND (action = ? OR action = ?) ORDER BY timestamp DESC LIMIT 1', [resolvedTaskId, 'start', 'resume']);
+      let duration = 0;
+      if (lastLog.length > 0) {
+        duration = Math.floor((now - new Date(lastLog[0].timestamp)) / 1000);
+      }
+      await q('UPDATE tasks SET completed_at = ?, total_duration = COALESCE(total_duration, 0) + ? WHERE id = ?', [now, duration, resolvedTaskId]);
+      await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp, duration) VALUES (?, ?, ?, ?, ?)', 
+        [resolvedTaskId, req.user._id, 'complete', now, duration]);
     }
 
     // Get updated task
-    const updatedTask = await q('SELECT * FROM tasks WHERE id = ? LIMIT 1', [id]);
+    const updatedTask = await q('SELECT * FROM tasks WHERE id = ? LIMIT 1', [resolvedTaskId]);
 
     res.json({
       success: true,
       message: `Task status updated to ${status}`,
       data: {
         projectId: task.project_public_id || resolvedProjectId,
-        taskId: taskId,
-        id: updatedTask[0].id,
-        public_id: updatedTask[0].public_id,
+        taskId: task.public_id,
         status: updatedTask[0].status,
+        total_time_seconds: updatedTask[0].total_duration,
         started_at: updatedTask[0].started_at,
         completed_at: updatedTask[0].completed_at,
-        updated_at: updatedTask[0].updatedAt || new Date().toISOString()
+        live_timer: updatedTask[0].live_timer
       }
     });
-
   } catch (e) {
     logger.error('Update task status error:', e.message);
     res.status(500).json({ success: false, error: e.message });
@@ -2368,7 +2429,18 @@ router.get("/taskdetail/getactivity/:id", async (req, res) => {
 // POST /tasks/:id/request-reassignment
 // Employee requests reassignment for a task
 router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, res) => {
-  const { id: taskId } = req.params;
+  // Accept public_id or internal id for task
+  let taskId = req.params.id;
+  // If not numeric, resolve public_id to internal id
+  if (typeof taskId === 'string' && !/^\d+$/.test(taskId)) {
+    const [rows] = await new Promise((resolve, reject) =>
+      db.query('SELECT id FROM tasks WHERE public_id = ?', [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Task not found' });
+    }
+    taskId = rows[0].id;
+  }
   const employee = req.user;
   const { reason } = req.body;
   
@@ -2482,27 +2554,61 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
       logger.warn('Failed to send reassignment request email to manager:', e && e.message);
     }
 
-    return res.json({
-      success: true,
-      request: {
-        id: request.request_id,
-        task_id: request.task_id,
-        status: request.status || 'PENDING',
-        requested_at: request.requested_at,
-        responded_at: request.responded_at || null
-      },
-      employee: { 
-        id: employee.public_id || employee._id, 
-        name: employee.name 
-      },
-      manager,
-      project,
-      task: { 
-        id: task.id, 
-        name: task.title 
-      },
-      message: 'Reassignment request sent to manager.'
-    });
+     // Pause timer and set task to On Hold
+     // 1. Get current status and live_timer
+     const [taskStatusRows] = await new Promise((resolve, reject) =>
+       db.query('SELECT status, live_timer, started_at, total_duration FROM tasks WHERE id = ?', [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
+     );
+     let updatedStatus = 'On Hold';
+     let updatedLiveTimer = null;
+     let updatedTotalDuration = null;
+     if (taskStatusRows && taskStatusRows.length > 0) {
+       const t = taskStatusRows[0];
+       // If timer is running, calculate duration and pause
+       if (t.live_timer) {
+         const now = new Date();
+         const started = new Date(t.live_timer);
+         const duration = Math.floor((now - started) / 1000);
+         // Update total_duration and pause timer
+         await new Promise((resolve, reject) =>
+           db.query('UPDATE tasks SET total_duration = COALESCE(total_duration,0) + ?, live_timer = NULL, status = ? WHERE id = ?', [duration, updatedStatus, taskId], (err, result) => err ? reject(err) : resolve(result))
+         );
+         updatedLiveTimer = null;
+         updatedTotalDuration = (t.total_duration || 0) + duration;
+       } else {
+         // Just set status to On Hold
+         await new Promise((resolve, reject) =>
+           db.query('UPDATE tasks SET status = ? WHERE id = ?', [updatedStatus, taskId], (err, result) => err ? reject(err) : resolve(result))
+         );
+         updatedLiveTimer = null;
+         updatedTotalDuration = t.total_duration || 0;
+       }
+     }
+
+      return res.json({
+        success: true,
+        request: {
+          id: request.request_id,
+          task_id: request.task_id,
+          status: request.status || 'PENDING',
+          requested_at: request.requested_at,
+          responded_at: request.responded_at || null
+        },
+        employee: { 
+          id: employee.public_id || employee._id, 
+          name: employee.name 
+        },
+        manager,
+        project,
+        task: { 
+          id: task.id, 
+          name: task.title,
+          status: updatedStatus,
+          live_timer: updatedLiveTimer,
+          total_duration: updatedTotalDuration
+        },
+        message: 'Reassignment request sent to manager. Task is now On Hold and timer paused.'
+      });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }
@@ -2605,6 +2711,27 @@ router.get('/:id/reassign-requests', requireRole(['Employee', 'Manager']), async
       `, [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
     );
 
+    if (!requests || requests.length === 0) {
+      // Try to get public_id for the task
+      let publicId = null;
+      const [taskRows] = await new Promise((resolve, reject) =>
+        db.query('SELECT public_id FROM tasks WHERE id = ? OR public_id = ?', [taskId, taskId], (err, rows) => err ? reject(err) : resolve([rows]))
+      );
+      if (taskRows && taskRows.length > 0) {
+        publicId = taskRows[0].public_id;
+      }
+      return res.json({
+        success: true,
+        requests: [],
+        count: 0,
+        message: 'No reassignment requests found for this task.',
+        task: {
+          id: taskId,
+          public_id: publicId
+        }
+      });
+    }
+
     return res.json({
       success: true,
       requests: requests.map(r => ({
@@ -2627,44 +2754,45 @@ router.get('/:id/reassign-requests', requireRole(['Employee', 'Manager']), async
 });
 
 // POST /tasks/:id/start
-router.post('/:id/start', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
+router.post('/:id/start', requireRole(['Employee']), async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user._id;
 
+    // Resolve task first
+    const task = await q('SELECT id, public_id, status FROM tasks WHERE id = ? OR public_id = ?', [id, id]);
+    if (task.length === 0) return res.status(404).json({ success: false, error: 'Task not found' });
+    const taskId = task[0].id;
+    const publicId = task[0].public_id;
+    const currentStatus = task[0].status;
+
     // Check if user is assigned to the task
-    const assignment = await db.query('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [id, userId]);
-    if (assignment.length === 0 && req.user.role !== 'Admin' && req.user.role !== 'Manager') {
+    const assignment = await q('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [taskId, userId]);
+    if (assignment.length === 0) {
       return res.status(403).json({ success: false, error: 'Not assigned to this task' });
     }
 
-    // Get current task status
-    const task = await db.query('SELECT id, status FROM tasks WHERE id = ? OR public_id = ?', [id, id]);
-    if (task.length === 0) return res.status(404).json({ success: false, error: 'Task not found' });
-    const taskId = task[0].id;
-    const currentStatus = task[0].status;
-
-    // Kanban Rules: Only Pending tasks can be started
-    if (currentStatus !== 'Pending') {
-      return res.status(400).json({ success: false, error: `Cannot start task with status '${currentStatus}'. Only 'Pending' tasks can be started.` });
+    // Kanban Rules: Only 'To Do' or 'Pending' tasks can be started
+    if (currentStatus !== 'To Do' && currentStatus !== 'Pending') {
+      return res.status(400).json({ success: false, error: `Cannot start task with status '${currentStatus}'. Only 'To Do' tasks can be started.` });
     }
 
-    if (currentStatus === 'Completed') {
-      return res.status(400).json({ success: false, error: 'Task already completed' });
-    }
-
+    const now = new Date();
     // Insert start log
-    await db.query('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, NOW())', [taskId, userId, 'start']);
+    await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?)', [taskId, userId, 'start', now]);
 
-    // Update task status and started_at if first start
-    const updateFields = ['status = ?'];
-    const params = ['In Progress'];
-    if (currentStatus === 'Pending') {
-      updateFields.push('started_at = NOW()');
-    }
-    await db.query(`UPDATE tasks SET ${updateFields.join(', ')} WHERE id = ?`, [...params, taskId]);
+    // Update task status and started_at
+    await q('UPDATE tasks SET status = ?, started_at = ?, live_timer = ? WHERE id = ?', ['In Progress', now, now, taskId]);
 
-    res.json({ success: true, message: 'Task started' });
+    res.json({ 
+      success: true, 
+      message: 'Task started',
+      data: {
+        taskId: publicId,
+        status: 'In Progress',
+        started_at: now.toISOString()
+      }
+    });
   } catch (e) {
     logger.error('Start task error:', e.message);
     res.status(500).json({ success: false, error: e.message });
@@ -2672,20 +2800,22 @@ router.post('/:id/start', requireRole(['Admin', 'Manager', 'Employee']), async (
 });
 
 // POST /tasks/:id/pause
-router.post('/:id/pause', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
+router.post('/:id/pause', requireRole(['Employee']), async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user._id;
 
-    // Check assignment
-    const assignment = await db.query('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [id, userId]);
-    if (assignment.length === 0 && req.user.role !== 'Admin' && req.user.role !== 'Manager') {
-      return res.status(403).json({ success: false, error: 'Not assigned to this task' });
-    }
-
-    const task = await db.query('SELECT id, status FROM tasks WHERE id = ? OR public_id = ?', [id, id]);
+    // Resolve task
+    const task = await q('SELECT id, public_id, status FROM tasks WHERE id = ? OR public_id = ?', [id, id]);
     if (task.length === 0) return res.status(404).json({ success: false, error: 'Task not found' });
     const taskId = task[0].id;
+    const publicId = task[0].public_id;
+
+    // Check assignment
+    const assignment = await q('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [taskId, userId]);
+    if (assignment.length === 0) {
+      return res.status(403).json({ success: false, error: 'Not assigned to this task' });
+    }
 
     // Kanban Rules: Only In Progress tasks can be paused
     if (task[0].status !== 'In Progress') {
@@ -2693,101 +2823,130 @@ router.post('/:id/pause', requireRole(['Admin', 'Manager', 'Employee']), async (
     }
 
     // Calculate duration from last start/resume
-    const lastLog = await db.query('SELECT timestamp FROM task_time_logs WHERE task_id = ? AND (action = ? OR action = ?) ORDER BY timestamp DESC LIMIT 1', [taskId, 'start', 'resume']);
+    const lastLog = await q('SELECT timestamp FROM task_time_logs WHERE task_id = ? AND (action = ? OR action = ?) ORDER BY timestamp DESC LIMIT 1', [taskId, 'start', 'resume']);
+    
+    const now = new Date();
+    let duration = 0;
     if (lastLog.length > 0) {
-      const duration = Math.floor((new Date() - new Date(lastLog[0].timestamp)) / 1000); // seconds
-      await db.query('INSERT INTO task_time_logs (task_id, user_id, action, timestamp, duration) VALUES (?, ?, ?, NOW(), ?)', [taskId, userId, 'pause', duration]);
-      // Update total_duration
-      await db.query('UPDATE tasks SET total_duration = COALESCE(total_duration, 0) + ? WHERE id = ?', [duration, taskId]);
-    } else {
-      await db.query('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, NOW())', [taskId, userId, 'pause']);
+      duration = Math.floor((now - new Date(lastLog[0].timestamp)) / 1000);
     }
 
-    // Update status
-    await db.query('UPDATE tasks SET status = ? WHERE id = ?', ['On Hold', taskId]);
+    await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp, duration) VALUES (?, ?, ?, ?, ?)', [taskId, userId, 'pause', now, duration]);
+    
+    // Update total_duration and status
+    await q('UPDATE tasks SET total_duration = COALESCE(total_duration, 0) + ?, status = ?, live_timer = NULL WHERE id = ?', [duration, 'On Hold', taskId]);
 
-    res.json({ success: true, message: 'Task paused' });
+    const updatedTask = await q('SELECT total_duration FROM tasks WHERE id = ?', [taskId]);
+
+    res.json({ 
+      success: true, 
+      message: 'Task paused',
+      data: {
+        taskId: publicId,
+        status: 'On Hold',
+        total_time_seconds: updatedTask[0].total_duration
+      }
+    });
   } catch (e) {
     logger.error('Pause task error:', e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
 
-// POST /tasks/:id/complete
-router.post('/:id/complete', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user._id;
-
-    // Check assignment
-    const assignment = await db.query('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [id, userId]);
-    if (assignment.length === 0 && req.user.role !== 'Admin' && req.user.role !== 'Manager') {
-      return res.status(403).json({ success: false, error: 'Not assigned to this task' });
-    }
-
-    const task = await db.query('SELECT id, status FROM tasks WHERE id = ? OR public_id = ?', [id, id]);
-    if (task.length === 0) return res.status(404).json({ success: false, error: 'Task not found' });
-    const taskId = task[0].id;
-
-    // Kanban Rules: Only In Progress tasks can be completed
-    if (task[0].status !== 'In Progress') {
-      return res.status(400).json({ success: false, error: `Cannot complete task with status '${task[0].status}'. Only 'In Progress' tasks can be completed.` });
-    }
-
-    if (task[0].status === 'Completed') {
-      return res.status(400).json({ success: false, error: 'Task already completed' });
-    }
-
-    // Calculate final duration
-    const lastLog = await db.query('SELECT timestamp FROM task_time_logs WHERE task_id = ? AND (action = ? OR action = ?) ORDER BY timestamp DESC LIMIT 1', [taskId, 'start', 'resume']);
-    if (lastLog.length > 0) {
-      const duration = Math.floor((new Date() - new Date(lastLog[0].timestamp)) / 1000);
-      await db.query('INSERT INTO task_time_logs (task_id, user_id, action, timestamp, duration) VALUES (?, ?, ?, NOW(), ?)', [taskId, userId, 'complete', duration]);
-      await db.query('UPDATE tasks SET total_duration = COALESCE(total_duration, 0) + ? WHERE id = ?', [duration, taskId]);
-    } else {
-      await db.query('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?, NOW())', [taskId, userId, 'complete']);
-    }
-
-    // Update status and completed_at
-    await db.query('UPDATE tasks SET status = ?, completed_at = NOW() WHERE id = ?', ['Completed', taskId]);
-
-    res.json({ success: true, message: 'Task completed' });
-  } catch (e) {
-    logger.error('Complete task error:', e.message);
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
 // POST /tasks/:id/resume
-router.post('/:id/resume', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
+router.post('/:id/resume', requireRole(['Employee']), async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user._id;
 
-    // Check assignment
-    const assignment = await db.query('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [id, userId]);
-    if (assignment.length === 0 && req.user.role !== 'Admin' && req.user.role !== 'Manager') {
-      return res.status(403).json({ success: false, error: 'Not assigned to this task' });
-    }
-
-    const task = await db.query('SELECT id, status FROM tasks WHERE id = ? OR public_id = ?', [id, id]);
+    // Resolve task
+    const task = await q('SELECT id, public_id, status FROM tasks WHERE id = ? OR public_id = ?', [id, id]);
     if (task.length === 0) return res.status(404).json({ success: false, error: 'Task not found' });
     const taskId = task[0].id;
+    const publicId = task[0].public_id;
+
+    // Check assignment
+    const assignment = await q('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [taskId, userId]);
+    if (assignment.length === 0) {
+      return res.status(403).json({ success: false, error: 'Not assigned to this task' });
+    }
 
     // Kanban Rules: Only On Hold tasks can be resumed
     if (task[0].status !== 'On Hold') {
       return res.status(400).json({ success: false, error: `Cannot resume task with status '${task[0].status}'. Only 'On Hold' tasks can be resumed.` });
     }
 
+    const now = new Date();
     // Insert resume log
-    await db.query('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, NOW())', [taskId, userId, 'resume']);
+    await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?)', [taskId, userId, 'resume', now]);
 
     // Update status to In Progress
-    await db.query('UPDATE tasks SET status = ? WHERE id = ?', ['In Progress', taskId]);
+    await q('UPDATE tasks SET status = ?, updatedAt = NOW() WHERE id = ?', ['In Progress', taskId]);
 
-    res.json({ success: true, message: 'Task resumed' });
+    res.json({ 
+      success: true, 
+      message: 'Task resumed',
+      data: {
+        taskId: publicId,
+        status: 'In Progress'
+      }
+    });
   } catch (e) {
     logger.error('Resume task error:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /tasks/:id/complete
+router.post('/:id/complete', requireRole(['Employee']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+
+    // Resolve task
+    const task = await q('SELECT id, public_id, status FROM tasks WHERE id = ? OR public_id = ?', [id, id]);
+    if (task.length === 0) return res.status(404).json({ success: false, error: 'Task not found' });
+    const taskId = task[0].id;
+    const publicId = task[0].public_id;
+
+    // Check assignment
+    const assignment = await q('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [taskId, userId]);
+    if (assignment.length === 0) {
+      return res.status(403).json({ success: false, error: 'Not assigned to this task' });
+    }
+
+    // Kanban Rules: Only In Progress tasks can be completed
+    if (task[0].status !== 'In Progress') {
+      return res.status(400).json({ success: false, error: `Cannot complete task with status '${task[0].status}'. Only 'In Progress' tasks can be completed.` });
+    }
+
+    // Calculate final duration
+    const lastLog = await q('SELECT timestamp FROM task_time_logs WHERE task_id = ? AND (action = ? OR action = ?) ORDER BY timestamp DESC LIMIT 1', [taskId, 'start', 'resume']);
+    
+    const now = new Date();
+    let duration = 0;
+    if (lastLog.length > 0) {
+      duration = Math.floor((now - new Date(lastLog[0].timestamp)) / 1000);
+    }
+
+    await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp, duration) VALUES (?, ?, ?, ?, ?)', [taskId, userId, 'complete', now, duration]);
+    
+    // Update status, completed_at and total_duration
+    await q('UPDATE tasks SET status = ?, completed_at = ?, total_duration = COALESCE(total_duration, 0) + ?, updatedAt = NOW() WHERE id = ?', ['Completed', now, duration, taskId]);
+
+    const updatedTask = await q('SELECT total_duration FROM tasks WHERE id = ?', [taskId]);
+
+    res.json({ 
+      success: true, 
+      message: 'Task completed',
+      data: {
+        taskId: publicId,
+        status: 'Completed',
+        total_time_seconds: updatedTask[0].total_duration
+      }
+    });
+  } catch (e) {
+    logger.error('Complete task error:', e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
@@ -2795,18 +2954,29 @@ router.post('/:id/resume', requireRole(['Admin', 'Manager', 'Employee']), async 
 // GET /tasks/:id/timeline
 router.get('/:id/timeline', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
-    const { id } = req.params;
+    // Allow public_id via header (x-task-public-id) or URL param
+    let id = req.params.id;
+    if (req.headers['x-task-public-id']) {
+      id = req.headers['x-task-public-id'];
+    }
+
+    // Debug: log incoming id
+    console.log('Timeline endpoint: received id param:', id);
+    // Always compare public_id as string
+    const taskResult = await db.query('SELECT id FROM tasks WHERE id = ? OR public_id = CAST(? AS CHAR)', [id, id]);
+    console.log('Timeline endpoint: task query result:', taskResult);
+    if (!taskResult || !Array.isArray(taskResult) || taskResult.length === 0) {
+      return res.status(404).json({ success: false, error: 'Task not found' });
+    }
+    const taskId = taskResult[0].id;
 
     // Check access: assigned or admin/manager
     if (req.user.role !== 'Admin' && req.user.role !== 'Manager') {
-      const assignment = await db.query('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [id, req.user._id]);
+      const assignment = await db.query('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [taskId, req.user._id]);
       if (assignment.length === 0) {
         return res.status(403).json({ success: false, error: 'Access denied' });
       }
     }
-
-    const task = await db.query('SELECT id FROM tasks WHERE id = ? OR public_id = ?', [id, id]);
-    if (task.length === 0) return res.status(404).json({ success: false, error: 'Task not found' });
 
     const logs = await db.query(`
       SELECT l.action, l.timestamp, l.duration, u.name AS user_name
@@ -2814,7 +2984,7 @@ router.get('/:id/timeline', requireRole(['Admin', 'Manager', 'Employee']), async
       LEFT JOIN users u ON l.user_id = u._id
       WHERE l.task_id = ?
       ORDER BY l.timestamp DESC
-    `, [task[0].id]);
+    `, [taskId]);
 
     res.json({ success: true, data: logs });
   } catch (e) {

@@ -816,10 +816,9 @@ router.get('/:id/tasks', async (req, res) => {
         project_id: projectId,
         tasks: formattedTasks,
         kanban_columns: {
-          'To Do': formattedTasks.filter(t => t.status === 'To Do' || t.status === 'Pending'),
+          'To Do': formattedTasks.filter(t => t.status === 'To Do' || t.status === 'Pending' || t.status === 'PENDING'),
           'In Progress': formattedTasks.filter(t => t.status === 'In Progress'),
           'On Hold': formattedTasks.filter(t => t.status === 'On Hold'),
-          'Review': formattedTasks.filter(t => t.status === 'Review'),
           'Completed': formattedTasks.filter(t => t.status === 'Completed')
         }
       }
