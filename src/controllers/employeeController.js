@@ -262,6 +262,7 @@ module.exports = {
       const { clause: taskDeletionClause } = await buildTaskDeletionClause('t');
       const projectData = await buildProjectJoinClause();
       const taskDescriptionExists = await hasColumn('tasks', 'description');
+
       const selectParts = [
         't.id',
         't.public_id',
@@ -274,28 +275,64 @@ module.exports = {
         't.client_id',
         'c.name AS client_name'
       ].concat(projectData.selects);
+
       const rows = await queryAsync(
         `SELECT
-           ${selectParts.join(', ')},
-           GROUP_CONCAT(DISTINCT ua._id) AS assigned_user_ids,
-           GROUP_CONCAT(DISTINCT ua.public_id) AS assigned_user_public_ids,
-           GROUP_CONCAT(DISTINCT ua.name) AS assigned_user_names
-         FROM tasks t
-        INNER JOIN taskassignments ta_user ON ta_user.task_id = t.id AND ta_user.user_id = ?
-         LEFT JOIN taskassignments ta_all ON ta_all.task_id = t.id
-         LEFT JOIN users ua ON ua._id = ta_all.user_id
-         ${projectData.join}
-         LEFT JOIN clientss c ON c.id = t.client_id
-        WHERE 1=1
-          ${taskDeletionClause}
-          ${tenantClause}
-         GROUP BY t.id
-         ORDER BY t.updatedAt DESC`,
+         ${selectParts.join(', ')},
+         GROUP_CONCAT(DISTINCT ua._id) AS assigned_user_ids,
+         GROUP_CONCAT(DISTINCT ua.public_id) AS assigned_user_public_ids,
+         GROUP_CONCAT(DISTINCT ua.name) AS assigned_user_names
+       FROM tasks t
+       INNER JOIN taskassignments ta_user ON ta_user.task_id = t.id AND ta_user.user_id = ?
+       LEFT JOIN taskassignments ta_all ON ta_all.task_id = t.id
+       LEFT JOIN users ua ON ua._id = ta_all.user_id
+       ${projectData.join}
+       LEFT JOIN clientss c ON c.id = t.client_id
+       WHERE 1=1
+        ${taskDeletionClause}
+        ${tenantClause}
+       GROUP BY t.id
+       ORDER BY t.updatedAt DESC`,
         [req.user._id, ...tenantParams]
       );
+
       const taskIds = (rows || []).map(r => r.id).filter(Boolean);
       const checklistMap = await fetchChecklistMap(taskIds);
+
+      // 🔒 FIXED: lockStatuses OUTSIDE if block
+      const lockStatuses = {};
+
+      if (taskIds.length > 0) {
+        const lockResult = await queryAsync(`
+    SELECT 
+      r.task_id,
+      r.status AS request_status,
+      r.id AS request_id,
+      CASE WHEN r.status = 'PENDING' THEN 1 ELSE 0 END AS is_locked,
+      t.status AS task_current_status
+    FROM task_resign_requests r
+    INNER JOIN tasks t ON t.id = r.task_id
+    WHERE r.task_id IN (${taskIds.map(id => parseInt(id)).join(',')}) 
+      AND r.status = 'PENDING'
+    ORDER BY r.requested_at DESC
+  `);
+
+        const lockRows = Array.isArray(lockResult) ? lockResult : [];
+
+        if (Array.isArray(lockRows)) {
+          lockRows.forEach(row => {
+            lockStatuses[row.task_id] = {
+              is_locked: Boolean(row.is_locked),
+              request_status: row.request_status,
+              request_id: row.request_id,
+              task_status: row.task_current_status
+            };
+          });
+        }
+      }
+
       const tasks = (rows || []).map(r => {
+        const taskId = r.id;
         const assignedIds = r.assigned_user_ids ? String(r.assigned_user_ids).split(',') : [];
         const assignedPublic = r.assigned_user_public_ids ? String(r.assigned_user_public_ids).split(',') : [];
         const assignedNames = r.assigned_user_names ? String(r.assigned_user_names).split(',') : [];
@@ -304,6 +341,12 @@ module.exports = {
           internalId: String(internalId),
           name: assignedNames[index] || null
         }));
+
+        // 🔒 Lock status calculation (with fallback)
+        const lockInfo = lockStatuses[taskId] || {};
+        // NEW (locks ONLY PENDING reassignment requests)
+        const isLocked = Boolean(lockInfo.is_locked);
+
         // Overdue/on-time summary
         let summary = {};
         try {
@@ -316,8 +359,10 @@ module.exports = {
         } catch (e) {
           summary.error = 'Could not calculate summary';
         }
+
         return {
           id: r.public_id ? String(r.public_id) : String(r.id),
+          internal_id: taskId,
           title: r.title || null,
           description: r.description || null,
           stage: r.stage || null,
@@ -327,7 +372,7 @@ module.exports = {
           client: buildClientPayload(r),
           project: buildProjectPayload(r),
           assignedUsers,
-          checklist: checklistMap[r.id] || [],
+          checklist: checklistMap[taskId] || [],
           started_at: r.started_at ? new Date(r.started_at).toISOString() : null,
           live_timer: r.live_timer ? new Date(r.live_timer).toISOString() : null,
           total_time_seconds: r.total_duration != null ? Number(r.total_duration) : 0,
@@ -339,28 +384,56 @@ module.exports = {
             const ss = String(secs % 60).padStart(2, '0');
             return `${hh}:${mm}:${ss}`;
           })(),
+          // 🔒 Lock status fields
+          is_locked: isLocked,
+          lock_info: lockInfo,
+          task_status: {
+            current_status: r.status || 'Unknown',
+            is_locked: isLocked
+          },
           summary
         };
       });
-      // Group tasks by status for kanban
+
+      // Kanban with lock awareness
       const statusMap = {};
       tasks.forEach(task => {
         const status = (task.status || task.stage || 'PENDING').toUpperCase();
         if (!statusMap[status]) statusMap[status] = [];
         statusMap[status].push(task);
       });
+
       const possibleStatuses = ['PENDING', 'TO DO', 'IN PROGRESS', 'ON HOLD', 'REVIEW', 'COMPLETED'];
-      const kanban = possibleStatuses.map(status => ({
-        status,
-        count: (statusMap[status] || []).length,
-        tasks: statusMap[status] || [],
-        ...((statusMap[status] || []).length === 0 ? { message: `No tasks in ${status.replace('_', ' ').toLowerCase()}` } : {})
-      }));
-      return res.json({ success: true, data: tasks, kanban });
+      const kanban = possibleStatuses.map(status => {
+        const tasksInStatus = statusMap[status] || [];
+        const lockedCount = tasksInStatus.filter(t => t.is_locked).length;
+
+        return {
+          status,
+          count: tasksInStatus.length,
+          locked_count: lockedCount,
+          tasks: tasksInStatus,
+          ...((tasksInStatus.length === 0) ? { message: `No tasks in ${status.replace('_', ' ').toLowerCase()}` } : {})
+        };
+      });
+
+      const lockSummary = {
+        total_locked: tasks.filter(t => t.is_locked).length,
+        has_pending_requests: Object.keys(lockStatuses).length > 0
+      };
+
+      return res.json({
+        success: true,
+        data: tasks,
+        kanban,
+        summary: lockSummary
+      });
     } catch (error) {
+      console.error('getMyTasks error:', error);
       return res.status(error.status || 500).json({ success: false, error: error.message });
     }
   },
+
 
   createChecklistItem: async (req, res) => {
     try {
