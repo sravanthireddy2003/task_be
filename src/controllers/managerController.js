@@ -224,6 +224,10 @@ async function fetchTaskTimeline(projectIds = [], projectPublicIds = []) {
       t.taskDate,
       t.priority,
       t.status,
+      t.started_at,
+      t.live_timer,
+      t.total_duration,
+      t.completed_at,
       t.time_alloted,
 
       ${clientFields.join(', ')},
@@ -334,9 +338,41 @@ module.exports = {
   getAssignedClients: async (req, res) => {
     try {
       const resources = await requireFeatureAccess(req, 'Assigned Clients');
-      const assignedClientIds = Array.isArray(resources.assignedClientIds)
+      let assignedClientIds = Array.isArray(resources.assignedClientIds)
         ? resources.assignedClientIds.filter(Boolean)
         : [];
+
+      // If RoleBasedLoginResponse didn't return assigned client ids, attempt a robust fallback:
+      // 1) clients where clientss.manager_id matches user's internal id or public id
+      // 2) clients linked to projects where the user is manager/project_manager
+      if (!assignedClientIds.length) {
+        try {
+          const uid = req.user && req.user._id;
+          const pub = req.user && req.user.id;
+
+          // Direct client manager mapping
+          const direct = await queryAsync(
+            'SELECT id FROM clientss WHERE manager_id = ? OR manager_id = ? LIMIT 1000',
+            [uid, pub || -1]
+          );
+          assignedClientIds = (direct || []).map(r => r.id).filter(Boolean);
+
+          // Fallback via projects managed by this user
+          if (!assignedClientIds.length) {
+            const viaProjects = await queryAsync(
+              `SELECT DISTINCT c.id AS id
+               FROM projects p
+               INNER JOIN clientss c ON c.id = p.client_id
+               WHERE (p.project_manager_id = ? OR p.project_manager_id = ? OR p.manager_id = ? OR p.manager_id = ?)`,
+              [uid, pub || -1, uid, pub || -1]
+            );
+            assignedClientIds = (viaProjects || []).map(r => r.id).filter(Boolean);
+          }
+        } catch (e) {
+          logger.warn('Fallback assignedClientIds lookup failed: ' + (e && e.message));
+          assignedClientIds = [];
+        }
+      }
       if (!assignedClientIds.length) return res.json({ success: true, data: [] });
 
       const hasStatus = await cachedHasColumn('clientss', 'status');
@@ -578,6 +614,26 @@ console.log('Assigned Projects Payload:', payload); // Debug log
           assignedUsers,
           checklist: checklistMap[taskKey] || [],
           activityTimeline: activityMap[taskKey] || []
+            ,
+            started_at: task.started_at ? toIsoDate(task.started_at) : null,
+            live_timer: task.live_timer ? toIsoDate(task.live_timer) : null,
+            total_time_seconds: task.total_duration != null ? Number(task.total_duration) : 0,
+            total_time_hours: task.total_duration != null ? Number((Number(task.total_duration) / 3600).toFixed(2)) : 0,
+            total_time_hhmmss: (() => {
+              const secs = Number(task.total_duration || 0);
+              const hh = String(Math.floor(secs / 3600)).padStart(2, '0');
+              const mm = String(Math.floor((secs % 3600) / 60)).padStart(2, '0');
+              const ss = String(secs % 60).padStart(2, '0');
+              return `${hh}:${mm}:${ss}`;
+            })(),
+            summary: (() => {
+              try {
+                const now = new Date();
+                const est = task.taskDate ? new Date(task.taskDate) : null;
+                if (!est) return {};
+                return { dueStatus: est < now ? 'Overdue' : 'On Time', dueDate: toIsoDate(est) };
+              } catch (e) { return {}; }
+            })()
         };
       });
       const meta = { count: formatted.length };

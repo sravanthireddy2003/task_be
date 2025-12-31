@@ -1,5 +1,13 @@
 // Canonical RoleBasedLoginResponse util
 // Minimal implementation to keep app functional; replace with real metrics/resources logic.
+const db = require(__root + 'db');
+
+function q(sql, params = []) {
+  return new Promise((resolve, reject) =>
+    db.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)))
+  );
+}
+
 module.exports = {
   /**
    * Returns dashboard metrics for the user/tenant.
@@ -36,6 +44,38 @@ module.exports = {
       'Client-Viewer': ['Documents']
     };
     const features = featuresByRole[role] || ['Assigned Tasks'];
-    return { ...base, features };
+    const resources = { ...base, features };
+
+    // Populate manager-specific resource mappings
+    if (role === 'Manager') {
+      let assignedClientIds = [];
+      try {
+        // Prefer direct manager assignment on clientss.manager_id
+        const clientsByManager = await q(
+          'SELECT id FROM clientss WHERE manager_id = ? OR manager_id = ? ORDER BY id DESC',
+          [userId, publicId || -1]
+        );
+        assignedClientIds = (clientsByManager || []).map(r => r.id).filter(Boolean);
+
+        // Fallback: derive from projects the manager owns
+        if (!assignedClientIds.length) {
+          const viaProjects = await q(
+            `SELECT DISTINCT c.id
+             FROM projects p
+             INNER JOIN clientss c ON c.id = p.client_id
+             WHERE (p.project_manager_id = ? OR p.project_manager_id = ? OR p.manager_id = ? OR p.manager_id = ?)`,
+            [userId, publicId || -1, userId, publicId || -1]
+          );
+          assignedClientIds = (viaProjects || []).map(r => r.id).filter(Boolean);
+        }
+      } catch (e) {
+        // Keep silent but ensure a deterministic structure
+        assignedClientIds = [];
+      }
+
+      resources.assignedClientIds = assignedClientIds;
+    }
+
+    return resources;
   }
 };

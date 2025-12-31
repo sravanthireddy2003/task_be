@@ -613,7 +613,13 @@ module.exports = {
   },
 
   manageTasks: async (req, res) => {
-    safeSelect('tasks', ['id','title','description','status','assigned_to'], ['tenant_id'], '', [], (err, rows) => {
+    safeSelect(
+      'tasks',
+      ['id','title','description','status','assigned_to'],
+      ['tenant_id','taskDate','started_at','live_timer','total_duration','completed_at','time_alloted','priority','stage'],
+      '',
+      [],
+      (err, rows) => {
       if (err) return res.status(500).json({ success: false, error: err.message });
       try {
         const userIdSet = new Set();
@@ -642,8 +648,38 @@ module.exports = {
             } catch (e) {
               const parts = String(r.assigned_to).split(',').map(s=>s.trim()).filter(Boolean);
               r.assigned_to = parts.map(id => map[id] || id);
+              // enrich time/summary fields
+              try {
+                const now = new Date();
+                const taskDate = r.taskDate ? new Date(r.taskDate) : null;
+                const totalSecs = Number(r.total_duration || 0);
+                const hh = String(Math.floor(totalSecs / 3600)).padStart(2, '0');
+                const mm = String(Math.floor((totalSecs % 3600) / 60)).padStart(2, '0');
+                const ss = String(totalSecs % 60).padStart(2, '0');
+                r.started_at = r.started_at ? new Date(r.started_at).toISOString() : null;
+                r.live_timer = r.live_timer ? new Date(r.live_timer).toISOString() : null;
+                r.total_time_seconds = totalSecs;
+                r.total_time_hours = Number((totalSecs / 3600).toFixed(2));
+                r.total_time_hhmmss = `${hh}:${mm}:${ss}`;
+                r.summary = taskDate ? { dueStatus: taskDate < now ? 'Overdue' : 'On Time', dueDate: taskDate.toISOString() } : {};
+              } catch (er) { /* silent */ }
               return r;
             }
+            // normal path: enrich as well
+            try {
+              const now = new Date();
+              const taskDate = r.taskDate ? new Date(r.taskDate) : null;
+              const totalSecs = Number(r.total_duration || 0);
+              const hh = String(Math.floor(totalSecs / 3600)).padStart(2, '0');
+              const mm = String(Math.floor((totalSecs % 3600) / 60)).padStart(2, '0');
+              const ss = String(totalSecs % 60).padStart(2, '0');
+              r.started_at = r.started_at ? new Date(r.started_at).toISOString() : null;
+              r.live_timer = r.live_timer ? new Date(r.live_timer).toISOString() : null;
+              r.total_time_seconds = totalSecs;
+              r.total_time_hours = Number((totalSecs / 3600).toFixed(2));
+              r.total_time_hhmmss = `${hh}:${mm}:${ss}`;
+              r.summary = taskDate ? { dueStatus: taskDate < now ? 'Overdue' : 'On Time', dueDate: taskDate.toISOString() } : {};
+            } catch (er) { /* silent */ }
             return r;
           });
           res.json({ success: true, data: out });
