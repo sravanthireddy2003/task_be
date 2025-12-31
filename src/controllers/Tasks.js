@@ -72,6 +72,17 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
     const whereClause = 'WHERE t.id IN (?)';
     const queryParams = [internalIds];
 
+    // detect optional time columns on tasks
+    let optionalSelect = '';
+    try {
+      const cols = [];
+      if (await hasColumn('tasks', 'started_at')) cols.push('t.started_at');
+      if (await hasColumn('tasks', 'live_timer')) cols.push('t.live_timer');
+      if (await hasColumn('tasks', 'total_duration')) cols.push('t.total_duration');
+      if (await hasColumn('tasks', 'completed_at')) cols.push('t.completed_at');
+      if (cols.length) optionalSelect = ', ' + cols.join(', ');
+    } catch (e) { /* ignore */ }
+
     const sql = `
       SELECT
         t.id AS task_internal_id,
@@ -85,7 +96,7 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
         t.estimated_hours,
         t.status,
         t.createdAt,
-        t.updatedAt,
+        t.updatedAt${optionalSelect},
         c.id AS client_id,
         c.name AS client_name,
         GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
@@ -139,10 +150,37 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
         [internalIds], (e, r) => e ? reject(e) : resolve(r)
       ));
 
+      // attempt to fetch task files if table exists
+      let files = [];
+      try {
+        files = await new Promise((resolve, reject) => db.query(
+          `SELECT id, task_id, file_url, file_name, file_type, uploaded_at FROM task_documents WHERE task_id IN (?) AND is_active = 1 ORDER BY uploaded_at DESC`,
+          [internalIds], (e, r) => e ? reject(e) : resolve(r)
+        ));
+      } catch (fileErr) {
+        // table might not exist — ignore
+        files = [];
+      }
+
+      const filesMap = {};
+      (files || []).forEach(f => {
+        if (!f || f.task_id === undefined || f.task_id === null) return;
+        const k = String(f.task_id);
+        if (!filesMap[k]) filesMap[k] = [];
+        filesMap[k].push({ id: f.id != null ? String(f.id) : null, url: f.file_url || null, name: f.file_name || null, type: f.file_type || null, uploadedAt: f.uploaded_at ? new Date(f.uploaded_at).toISOString() : null });
+      });
+
       const checklistMap = {};
       (subtasks || []).forEach((s) => {
-        if (!s || s.task_id === undefined || s.task_id === null) return;
-        const key = String(s.task_id);
+        if (!s) return;
+        // normalize possible column name variants for task id
+        const rawTaskId = (s.task_id !== undefined && s.task_id !== null) ? s.task_id
+          : (s.task_Id !== undefined && s.task_Id !== null) ? s.task_Id
+          : (s.taskId !== undefined && s.taskId !== null) ? s.taskId
+          : (s.task !== undefined && s.task !== null) ? s.task
+          : null;
+        if (rawTaskId === null) return;
+        const key = String(rawTaskId);
         if (!checklistMap[key]) checklistMap[key] = [];
         const checklistItem = {
           id: s.id != null ? String(s.id) : null,
@@ -150,11 +188,11 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
           description: s.description || null,
           status: s.status || null,
           tag: s.tag || null,
-          dueDate: s.due_date ? new Date(s.due_date).toISOString() : null,
-          estimatedHours: s.estimated_hours != null ? Number(s.estimated_hours) : null,
-          completedAt: s.completed_at ? new Date(s.completed_at).toISOString() : null,
-          createdAt: s.created_at ? new Date(s.created_at).toISOString() : null,
-          updatedAt: s.updated_at ? new Date(s.updated_at).toISOString() : null
+          dueDate: (s.due_date || s.dueDate) ? new Date(s.due_date || s.dueDate).toISOString() : null,
+          estimatedHours: (s.estimated_hours != null) ? Number(s.estimated_hours) : (s.estimatedHours != null ? Number(s.estimatedHours) : null),
+          completedAt: (s.completed_at || s.completedAt) ? new Date(s.completed_at || s.completedAt).toISOString() : null,
+          createdAt: (s.created_at || s.createdAt) ? new Date(s.created_at || s.createdAt).toISOString() : null,
+          updatedAt: (s.updated_at || s.updatedAt) ? new Date(s.updated_at || s.updatedAt).toISOString() : null
         };
         if (subtaskCreatorColumnExists) {
           const creatorInternalId = s.creator_internal_id != null ? String(s.creator_internal_id) : (s.created_by != null ? String(s.created_by) : null);
@@ -219,9 +257,33 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
           updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
           client: r.client_id ? { id: String(r.client_id), name: r.client_name } : null,
           assignedUsers,
-          checklist: checklistMap[key] || [],
-          activities: activitiesMap[key] || [],
-          totalHours: hoursMap[key] != null ? hoursMap[key] : 0
+          checklist: checklistMap[key] || checklistMap[String(r.task_id)] || checklistMap[String(r.task_internal_id)] || [],
+          activities: activitiesMap[key] || activitiesMap[String(r.task_id)] || activitiesMap[String(r.task_internal_id)] || [],
+          files: filesMap[key] || filesMap[String(r.task_id)] || filesMap[String(r.task_internal_id)] || [],
+          totalHours: hoursMap[key] != null ? hoursMap[key] : 0,
+          // enrich with time-tracking summary using total_duration when available
+          started_at: r.started_at ? new Date(r.started_at).toISOString() : null,
+          live_timer: r.live_timer ? new Date(r.live_timer).toISOString() : null,
+          total_time_seconds: (r.total_duration != null) ? Number(r.total_duration) : (hoursMap[key] != null ? Number(hoursMap[key]) * 3600 : 0),
+          total_time_hours: Number(((r.total_duration != null ? Number(r.total_duration) : (hoursMap[key] != null ? Number(hoursMap[key]) * 3600 : 0)) / 3600).toFixed(2)),
+          total_time_hhmmss: (() => {
+            try {
+              const total = (r.total_duration != null) ? Number(r.total_duration) : (hoursMap[key] != null ? Number(hoursMap[key]) * 3600 : 0);
+              const hh = String(Math.floor(total / 3600)).padStart(2, '0');
+              const mm = String(Math.floor((total % 3600) / 60)).padStart(2, '0');
+              const ss = String(total % 60).padStart(2, '0');
+              return `${hh}:${mm}:${ss}`;
+            } catch (e) { return '00:00:00'; }
+          })(),
+          completed_at: r.completed_at ? new Date(r.completed_at).toISOString() : null,
+          summary: (() => {
+            try {
+              const now = new Date();
+              const est = r.taskDate ? new Date(r.taskDate) : null;
+              if (!est) return {};
+              return { dueStatus: est < now ? 'Overdue' : 'On Time', dueDate: est.toISOString() };
+            } catch (e) { return {}; }
+          })()
         };
       });
 
@@ -716,6 +778,17 @@ router.get('/', async (req, res) => {
     const hasIsDeleted = await hasColumn('tasks', 'isDeleted');
     const includeDeleted = req.query.includeDeleted === '1' || req.query.includeDeleted === 'true';
 
+    // detect optional time-related columns on tasks and build optional select fragment
+    let optionalSelect = '';
+    try {
+      const cols = [];
+      if (await hasColumn('tasks', 'started_at')) cols.push('t.started_at');
+      if (await hasColumn('tasks', 'live_timer')) cols.push('t.live_timer');
+      if (await hasColumn('tasks', 'total_duration')) cols.push('t.total_duration');
+      if (await hasColumn('tasks', 'completed_at')) cols.push('t.completed_at');
+      if (cols.length) optionalSelect = ', ' + cols.join(', ');
+    } catch (e) { /* ignore */ }
+
     // Prepare resolved numeric id and public id to search across both task columns if present
     let resolvedProjectId = projectParam;
     let projectPublicIdToUse = null;
@@ -766,7 +839,7 @@ router.get('/', async (req, res) => {
           t.estimated_hours,
           t.status,
           t.createdAt,
-          t.updatedAt,
+          t.updatedAt${optionalSelect},
           c.id AS client_id,
           c.name AS client_name,
           GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
@@ -795,7 +868,7 @@ router.get('/', async (req, res) => {
           t.estimated_hours,
           t.status,
           t.createdAt,
-          t.updatedAt,
+          t.updatedAt${optionalSelect},
           c.id AS client_id,
           c.name AS client_name,
           GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
@@ -839,7 +912,7 @@ router.get('/', async (req, res) => {
           t.estimated_hours,
           t.status,
           t.createdAt,
-          t.updatedAt,
+          t.updatedAt${optionalSelect},
           c.id AS client_id,
           c.name AS client_name,
           GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
@@ -876,6 +949,12 @@ router.get('/', async (req, res) => {
           name: assignedNames[i] || null
         }));
 
+        const totalSecs = r.total_duration != null ? Number(r.total_duration) : 0;
+        const hh = String(Math.floor(totalSecs / 3600)).padStart(2, '0');
+        const mm = String(Math.floor((totalSecs % 3600) / 60)).padStart(2, '0');
+        const ss = String(totalSecs % 60).padStart(2, '0');
+        const humanDuration = `${hh}:${mm}:${ss}`;
+
         return {
           id: r.task_id ? String(r.task_id) : String(r.task_internal_id),
           title: r.title || null,
@@ -889,7 +968,21 @@ router.get('/', async (req, res) => {
           createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null,
           updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
           client: r.client_id ? { id: r.client_id, name: r.client_name } : null,
-          assignedUsers
+          assignedUsers,
+          started_at: r.started_at ? new Date(r.started_at).toISOString() : null,
+          live_timer: r.live_timer ? new Date(r.live_timer).toISOString() : null,
+          total_time_seconds: totalSecs,
+          total_time_hours: Number((totalSecs / 3600).toFixed(2)),
+          total_time_hhmmss: humanDuration,
+          completed_at: r.completed_at ? new Date(r.completed_at).toISOString() : null,
+          summary: (() => {
+            try {
+              const now = new Date();
+              const est = r.taskDate ? new Date(r.taskDate) : null;
+              if (!est) return {};
+              return { dueStatus: est < now ? 'Overdue' : 'On Time', dueDate: est.toISOString() };
+            } catch (e) { return {}; }
+          })()
         };
       });
 
