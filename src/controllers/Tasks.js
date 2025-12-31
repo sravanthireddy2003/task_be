@@ -2472,330 +2472,299 @@ router.get("/taskdetail/getactivity/:id", async (req, res) => {
   }
 });
 
-// POST /tasks/:id/request-reassignment
-// Employee requests reassignment for a task
+// ✅ COMPLETE FIX - No schema changes required
 router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, res) => {
-  // Accept public_id or internal id for task
+  console.log('🚀 REASSIGNMENT REQUEST - Task ID:', req.params.id);
+  
   let taskId = req.params.id;
-  // If not numeric, resolve public_id to internal id
   if (typeof taskId === 'string' && !/^\d+$/.test(taskId)) {
     const [rows] = await new Promise((resolve, reject) =>
       db.query('SELECT id FROM tasks WHERE public_id = ?', [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
     );
-    if (!rows || rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Task not found' });
-    }
+    if (!rows?.length) return res.status(404).json({ success: false, error: 'Task not found' });
     taskId = rows[0].id;
   }
+
   const employee = req.user;
   const { reason } = req.body;
-  
+
   try {
-    // 1. Fetch task details WITH project info
+    // 🔒 1. CHECK IF TASK IS LOCKED (On Hold status)
+    const [taskCheck] = await new Promise((resolve, reject) =>
+      db.query('SELECT status FROM tasks WHERE id = ?', [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+    const task = taskCheck[0];
+    
+    if (task?.status === 'On Hold') {
+      return res.status(423).json({
+        success: false,
+        error: 'Task is ON HOLD - Awaiting manager response',
+        details: { locked: true }
+      });
+    }
+
+    // 🚫 2. CHECK DUPLICATE REQUEST
+    const [existingReq] = await new Promise((resolve, reject) =>
+      db.query(`
+        SELECT id FROM task_resign_requests 
+        WHERE task_id = ? AND requested_by = ? AND status != 'REJECTED'
+      `, [taskId, employee._id], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+    
+    if (existingReq?.length > 0) {
+      return res.status(409).json({
+        success: false,
+        error: 'You already have a pending request for this task'
+      });
+    }
+
+    // 📊 3. FETCH TASK & PROJECT
     const [taskRows] = await new Promise((resolve, reject) =>
       db.query(`
-        SELECT 
-          t.id, t.title, t.project_id, t.project_public_id,
-          p.id as project_internal_id, p.name as project_name
-        FROM tasks t 
-        LEFT JOIN projects p ON t.project_id = p.id 
+        SELECT t.*, p.id as project_internal_id, p.name as project_name
+        FROM tasks t LEFT JOIN projects p ON t.project_id = p.id 
         WHERE t.id = ?
       `, [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
     );
+    if (!taskRows?.length) return res.status(404).json({ success: false, error: 'Task not found' });
     
-    if (!taskRows || taskRows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Task not found' });
-    }
-    const task = taskRows[0];
-
-    // 2. Project details
+    const fullTask = taskRows[0];
     const project = {
-      id: task.project_id || task.project_internal_id,
-      public_id: task.project_public_id,
-      name: task.project_name || null
+      id: fullTask.project_id || fullTask.project_internal_id,
+      public_id: fullTask.project_public_id,
+      name: fullTask.project_name
     };
 
-    // 3. Find manager (task assignments first, then fallback)
+    // 👥 4. FIND MANAGER
     let manager = null;
-    
-    const [assignedMgrRows] = await new Promise((resolve, reject) =>
+    const [mgrRows] = await new Promise((resolve, reject) =>
       db.query(`
-        SELECT DISTINCT u._id, u.name, u.public_id 
-        FROM taskassignments ta 
-        JOIN users u ON ta.user_id = u._id 
-        WHERE ta.task_id = ? AND u.role = 'Manager'
+        SELECT DISTINCT u._id, u.public_id, u.name, u.email
+        FROM taskassignments ta JOIN users u ON ta.user_id = u._id
+        WHERE ta.task_id = ? AND u.role = 'Manager' AND u.isActive = 1
         LIMIT 1
       `, [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
     );
-    
-    if (assignedMgrRows && assignedMgrRows.length > 0) {
-      manager = { 
-        id: assignedMgrRows[0].public_id || assignedMgrRows[0]._id, 
-        name: assignedMgrRows[0].name 
-      };
-    }
-    
-    if (!manager) {
-      const [fallbackMgrRows] = await new Promise((resolve, reject) =>
-        db.query('SELECT _id, name, public_id FROM users WHERE role = "Manager" LIMIT 1', [], (err, rows) => err ? reject(err) : resolve([rows]))
+
+    if (mgrRows?.length > 0) {
+      manager = mgrRows[0];
+    } else {
+      const [fallback] = await new Promise((resolve, reject) =>
+        db.query(`
+          SELECT _id, public_id, name, email FROM users 
+          WHERE role = 'Manager' AND isActive = 1 AND email NOT LIKE '%@example.com'
+          LIMIT 1
+        `, [], (err, rows) => err ? reject(err) : resolve([rows]))
       );
-      if (fallbackMgrRows && fallbackMgrRows.length > 0) {
-        manager = { 
-          id: fallbackMgrRows[0].public_id || fallbackMgrRows[0]._id, 
-          name: fallbackMgrRows[0].name 
-        };
-      }
+      manager = fallback?.[0] || null;
     }
 
-    if (!manager) {
-      return res.status(400).json({ success: false, error: 'No manager found' });
-    }
+    if (!manager) return res.status(400).json({ success: false, error: 'No manager found' });
 
-    // 4. Insert request and get the created record ID
+    // 💾 5. CREATE REQUEST
     const [insertResult] = await new Promise((resolve, reject) =>
       db.query(
-        'INSERT INTO task_resign_requests (task_id, requested_by, reason, status, requested_at) VALUES (?, ?, ?, ?, ?)',
-        [taskId, employee._id, reason, 'PENDING', new Date().toISOString()],
+        'INSERT INTO task_resign_requests (task_id, requested_by, reason, status) VALUES (?, ?, ?, ?)',
+        [taskId, employee._id, reason, 'PENDING'],
         (err, result) => err ? reject(err) : resolve([result])
       )
     );
-
     const requestId = insertResult.insertId;
 
-    // 5. Fetch the created request with full details
-    const [requestRows] = await new Promise((resolve, reject) =>
+    // ⏱️ 6. CALCULATE TOTAL DURATION
+    const [taskStatus] = await new Promise((resolve, reject) =>
+      db.query('SELECT status, live_timer, total_duration FROM tasks WHERE id = ?', [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+    
+    let totalDuration = taskStatus[0]?.total_duration || 0;
+    if (taskStatus[0]?.live_timer) {
+      const duration = Math.floor((new Date() - new Date(taskStatus[0].live_timer)) / 1000);
+      totalDuration += duration;
+    }
+
+    // 🔒 7. LOCK TASK (Set On Hold status)
+    await new Promise((resolve, reject) =>
       db.query(`
-        SELECT 
-          id as request_id,
-          task_id,
-          requested_by,
-          reason,
-          status,
-          requested_at,
-          responded_at
-        FROM task_resign_requests 
+        UPDATE tasks 
+        SET status = 'On Hold', live_timer = NULL 
         WHERE id = ?
-      `, [requestId], (err, rows) => err ? reject(err) : resolve([rows]))
+      `, [taskId], (err, result) => err ? reject(err) : resolve(result))
     );
 
-    const request = requestRows[0] || {};
-
-    // Notify manager by email (if email exists)
+    // 📧 8. SEND EMAIL (non-blocking)
     try {
-      if (manager && manager.id) {
-        // Fetch manager email
-        const [mgrRows] = await new Promise((resolve, reject) =>
-          db.query('SELECT email FROM users WHERE public_id = ? OR _id = ? LIMIT 1', [manager.id, manager.id], (err, rows) => err ? reject(err) : resolve([rows]))
-        );
-        if (mgrRows && mgrRows[0] && mgrRows[0].email) {
-          await emailService.sendEmail({
-            to: mgrRows[0].email,
-            subject: `Task Reassignment Request for Task: ${task.title}`,
-            text: `${employee.name} has requested reassignment for task "${task.title}" (ID: ${task.id}). Reason: ${reason}`,
-            html: `<p><strong>${employee.name}</strong> has requested reassignment for task <strong>${task.title}</strong> (ID: ${task.id}).</p><p><strong>Reason:</strong> ${reason}</p>`
-          });
-        }
+      if (manager.email?.includes('@') && !manager.email.includes('@example.com')) {
+        await emailService.sendEmail({
+          to: manager.email,
+          subject: `Reassignment Request: ${fullTask.title}`,
+          text: `${employee.name} requests reassignment for "${fullTask.title}". Reason: ${reason || 'N/A'}`,
+          html: `<p><strong>${employee.name}</strong> → <strong>${fullTask.title}</strong><br>Reason: ${reason || 'N/A'}</p>`
+        });
       }
     } catch (e) {
-      logger.warn('Failed to send reassignment request email to manager:', e && e.message);
+      console.log('Email failed:', e.message);
     }
 
-     // Pause timer and set task to On Hold
-     // 1. Get current status and live_timer
-     const [taskStatusRows] = await new Promise((resolve, reject) =>
-       db.query('SELECT status, live_timer, started_at, total_duration FROM tasks WHERE id = ?', [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
-     );
-     let updatedStatus = 'On Hold';
-     let updatedLiveTimer = null;
-     let updatedTotalDuration = null;
-     if (taskStatusRows && taskStatusRows.length > 0) {
-       const t = taskStatusRows[0];
-       // If timer is running, calculate duration and pause
-       if (t.live_timer) {
-         const now = new Date();
-         const started = new Date(t.live_timer);
-         const duration = Math.floor((now - started) / 1000);
-         // Update total_duration and pause timer
-         await new Promise((resolve, reject) =>
-           db.query('UPDATE tasks SET total_duration = COALESCE(total_duration,0) + ?, live_timer = NULL, status = ? WHERE id = ?', [duration, updatedStatus, taskId], (err, result) => err ? reject(err) : resolve(result))
-         );
-         updatedLiveTimer = null;
-         updatedTotalDuration = (t.total_duration || 0) + duration;
-       } else {
-         // Just set status to On Hold
-         await new Promise((resolve, reject) =>
-           db.query('UPDATE tasks SET status = ? WHERE id = ?', [updatedStatus, taskId], (err, result) => err ? reject(err) : resolve(result))
-         );
-         updatedLiveTimer = null;
-         updatedTotalDuration = t.total_duration || 0;
-       }
-     }
-
-      return res.json({
-        success: true,
-        request: {
-          id: request.request_id,
-          task_id: request.task_id,
-          status: request.status || 'PENDING',
-          requested_at: request.requested_at,
-          responded_at: request.responded_at || null
-        },
-        employee: { 
-          id: employee.public_id || employee._id, 
-          name: employee.name 
-        },
-        manager,
-        project,
-        task: { 
-          id: task.id, 
-          name: task.title,
-          status: updatedStatus,
-          live_timer: updatedLiveTimer,
-          total_duration: updatedTotalDuration
-        },
-        message: 'Reassignment request sent to manager. Task is now On Hold and timer paused.'
-      });
-  } catch (error) {
-    return res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// Manager: Accept or Reject Task Reassignment Request
-// Accept: POST /tasks/reassignment/:request_id/accept
-// For manager to approve/reject
-router.post('/:id/request-reassignment/:requestId/respond', requireRole(['Manager']), async (req, res) => {
-  const { id: taskId, requestId } = req.params;
-  const { action } = req.body; // 'APPROVE' or 'REJECT'
-  
-  try {
-    const [result] = await new Promise((resolve, reject) =>
-      db.query(
-        'UPDATE task_resign_requests SET status = ?, responded_at = ? WHERE id = ? AND task_id = ?',
-        [action, new Date().toISOString(), requestId, taskId],
-        (err, result) => err ? reject(err) : resolve([result])
-      )
-    );
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ success: false, error: 'Request not found' });
-    }
-
-    // Fetch request and employee details for notification
-    const [reqRows] = await new Promise((resolve, reject) =>
-      db.query('SELECT requested_by, reason FROM task_resign_requests WHERE id = ?', [requestId], (err, rows) => err ? reject(err) : resolve([rows]))
-    );
-    const requestedBy = reqRows && reqRows[0] && reqRows[0].requested_by;
-    // Fetch employee email
-    let employeeEmail = null;
-    let employeeName = null;
-    if (requestedBy) {
-      const [empRows] = await new Promise((resolve, reject) =>
-        db.query('SELECT email, name FROM users WHERE _id = ? OR public_id = ? LIMIT 1', [requestedBy, requestedBy], (err, rows) => err ? reject(err) : resolve([rows]))
-      );
-      if (empRows && empRows[0]) {
-        employeeEmail = empRows[0].email;
-        employeeName = empRows[0].name;
-      }
-    }
-    // Fetch task info
-    const [taskRows] = await new Promise((resolve, reject) =>
-      db.query('SELECT title, id FROM tasks WHERE id = ?', [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
-    );
-    const taskTitle = taskRows && taskRows[0] && taskRows[0].title;
-
-    // Notify employee by email
-    if (employeeEmail) {
-      try {
-        await emailService.sendEmail({
-          to: employeeEmail,
-          subject: `Your Task Reassignment Request for "${taskTitle}" was ${action}`,
-          text: `Your request to be reassigned from task "${taskTitle}" (ID: ${taskId}) was ${action.toLowerCase()} by the manager.`,
-          html: `<p>Your request to be reassigned from task <strong>${taskTitle}</strong> (ID: ${taskId}) was <strong>${action.toLowerCase()}</strong> by the manager.</p>`
-        });
-      } catch (e) {
-        logger.warn('Failed to send reassignment response email to employee:', e && e.message);
-      }
-    }
-
-    res.json({ 
-      success: true, 
-      status: action, 
-      message: `Request ${action.toLowerCase()}d successfully` 
+    // ✅ 9. SUCCESS RESPONSE
+    res.json({
+      success: true,
+      request: { 
+        id: requestId, 
+        status: 'PENDING', 
+        requested_at: new Date().toISOString()
+      },
+      employee: { id: employee.public_id || employee._id, name: employee.name },
+      manager: { id: manager.public_id || manager._id, name: manager.name },
+      project,
+      task: { 
+        id: taskId, 
+        name: fullTask.title, 
+        status: 'On Hold', 
+        total_duration: totalDuration,
+        is_locked: true  // Frontend flag
+      },
+      message: '✅ Task ON HOLD. Awaiting manager response.'
     });
+
   } catch (error) {
+    console.error('ERROR:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// GET /api/tasks/:id/reassign-requests
-// Returns all reassignment requests for a specific task
-router.get('/:id/reassign-requests', requireRole(['Employee', 'Manager']), async (req, res) => {
-  const { id: taskId } = req.params;
-  const user = req.user;
+// ✅ SINGLE API - approve/reject + FIXED destructuring
+router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', requireRole(['Manager']), async (req, res) => {
+  let { taskId, requestId, action } = req.params;
+  
+  console.log('🔍 DEBUG:', { taskId, requestId, action });
   
   try {
-    // Fetch requests with employee and manager details
-    const [requests] = await new Promise((resolve, reject) =>
+    // 🔥 1. RESOLVE taskId (public_id → internal_id)
+    if (!/^\d+$/.test(taskId)) {
+      const [taskRows] = await new Promise((resolve, reject) =>
+        db.query('SELECT id FROM tasks WHERE public_id = ?', [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
+      );
+      if (!taskRows?.length) {
+        return res.status(404).json({ success: false, error: 'Task not found' });
+      }
+      taskId = taskRows[0].id; // ✅ Now internal ID!
+      console.log('🔄 Resolved taskId:', taskId);
+    }
+
+    // 🔍 2. Verify request exists with INTERNAL taskId
+    const [verifyReq] = await new Promise((resolve, reject) =>
+      db.query(`
+        SELECT id, task_id FROM task_resign_requests 
+        WHERE id = ? AND task_id = ?
+      `, [requestId, taskId], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+    
+    console.log('🔍 VERIFY:', verifyReq);
+    
+    if (!verifyReq?.length) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Request not found',
+        debug: { originalTaskId: req.params.taskId, resolvedTaskId: taskId, requestId, found: verifyReq?.length || 0 }
+      });
+    }
+
+    // ✅ 3. Update request status
+    const [result1] = await new Promise((resolve, reject) =>
+      db.query(`
+        UPDATE task_resign_requests 
+        SET status = ?, responded_at = NOW()
+        WHERE id = ? AND task_id = ?
+      `, [action.toUpperCase(), requestId, taskId], (err, result) => err ? reject(err) : resolve([result]))
+    );
+
+    // ✅ 4. Unlock task
+    await new Promise((resolve, reject) =>
+      db.query(`
+        UPDATE tasks SET status = 'TO DO' 
+        WHERE id = ? AND status = 'On Hold'
+      `, [taskId], (err, result) => err ? reject(err) : resolve(result))
+    );
+    
+    res.json({ 
+      success: true, 
+      message: action === 'approve' 
+        ? '✅ Task unlocked for reassignment' 
+        : '✅ Request rejected. Task unlocked.',
+      debug: { resolvedTaskId: taskId, requestId, action }
+    });
+  } catch (error) {
+    console.error('Reassign error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
+router.get('/:id/reassign-requests', requireRole(['Employee', 'Manager']), async (req, res) => {
+  let taskId = req.params.id;
+  
+  if (typeof taskId === 'string' && !/^\d+$/.test(taskId)) {
+    const [rows] = await new Promise((resolve, reject) =>
+      db.query('SELECT id FROM tasks WHERE public_id = ?', [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+    if (!rows?.length) return res.status(404).json({ success: false, error: 'Task not found' });
+    taskId = rows[0].id;
+  }
+
+  try {
+    // ✅ FIXED QUERY - Removed responded_by reference
+    const [requestsResult] = await new Promise((resolve, reject) =>
       db.query(`
         SELECT 
-          r.id as request_id,
-          r.task_id,
-          r.requested_by,
-          r.reason,
-          r.status,
-          r.requested_at,
-          r.responded_at,
-          e.public_id as employee_public_id,
-          e.name as employee_name,
-          m.public_id as manager_public_id,
-          m.name as manager_name
+          r.id as request_id, r.task_id, r.requested_by, r.reason, r.status,
+          r.requested_at, r.responded_at,
+          e.public_id as employee_public_id, e.name as employee_name,
+          t.status as task_status
         FROM task_resign_requests r
         LEFT JOIN users e ON r.requested_by = e._id
-        LEFT JOIN users m ON r.requested_by = m._id  -- Update this if you track manager separately
+        LEFT JOIN tasks t ON r.task_id = t.id
         WHERE r.task_id = ?
         ORDER BY r.requested_at DESC
       `, [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
     );
+    const requests = requestsResult || [];
 
-    if (!requests || requests.length === 0) {
-      // Try to get public_id for the task
-      let publicId = null;
-      const [taskRows] = await new Promise((resolve, reject) =>
-        db.query('SELECT public_id FROM tasks WHERE id = ? OR public_id = ?', [taskId, taskId], (err, rows) => err ? reject(err) : resolve([rows]))
-      );
-      if (taskRows && taskRows.length > 0) {
-        publicId = taskRows[0].public_id;
-      }
-      return res.json({
-        success: true,
-        requests: [],
-        count: 0,
-        message: 'No reassignment requests found for this task.',
-        task: {
-          id: taskId,
-          public_id: publicId
-        }
-      });
-    }
+    const [taskRows] = await new Promise((resolve, reject) =>
+      db.query('SELECT public_id, title, status FROM tasks WHERE id = ?', [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+    const taskInfo = taskRows[0] || {};
 
-    return res.json({
+    res.json({
       success: true,
       requests: requests.map(r => ({
         id: r.request_id,
         task_id: r.task_id,
         status: r.status,
-        reason: r.reason,
+        reason: r.reason || 'No reason',
         requested_at: r.requested_at,
         responded_at: r.responded_at,
-        employee: {
-          id: r.employee_public_id || r.requested_by,
-          name: r.employee_name
+        employee: { id: r.employee_public_id || r.requested_by, name: r.employee_name },
+        task_status: { 
+          current_status: r.task_status,
+          is_locked: r.task_status === 'On Hold' 
         }
       })),
-      count: requests.length
+      count: requests.length,
+      task: {
+        id: taskId,
+        public_id: taskInfo.public_id,
+        title: taskInfo.title,
+        status: taskInfo.status,
+        is_locked: taskInfo.status === 'On Hold'
+      },
+      summary: {
+        has_pending_requests: requests.some(r => r.status === 'PENDING'),
+        task_is_locked: taskInfo.status === 'On Hold'
+      }
     });
+    
   } catch (error) {
-    return res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

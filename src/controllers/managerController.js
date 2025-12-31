@@ -500,168 +500,217 @@ console.log('Assigned Projects Payload:', payload); // Debug log
   }
 },
 
-  getTaskTimeline: async (req, res) => {
-    try {
-      await requireFeatureAccess(req, 'Tasks');
-      const projects = await gatherManagerProjects(req);
-      const projectIds = dedupe(projects.map((project) => project.id)).filter(Boolean);
-      const projectPublicIds = dedupe(projects.map((project) => project.public_id)).filter(Boolean);
-      const projectFilter = parseProjectFilter(req);
-      const lookupById = new Map();
-      const lookupByPublicId = new Map();
-      projects.forEach((project) => {
-        if (project && project.id) lookupById.set(String(project.id), project);
-        if (project && project.public_id) lookupByPublicId.set(String(project.public_id), project);
-      });
-      let selectedProject = null;
-      let filteredProjectIds = [...projectIds];
-      let filteredProjectPublicIds = [...projectPublicIds];
-      if (projectFilter) {
-        selectedProject =
-          projectFilter.type === 'id'
-            ? lookupById.get(String(projectFilter.value))
-            : lookupByPublicId.get(String(projectFilter.value));
-        if (!selectedProject) {
-          return res``
-            .status(404)
-            .json({ success: false, error: 'Project not found or not assigned to this manager' });
-        }
-        filteredProjectIds = selectedProject.id ? [selectedProject.id] : [];
-        filteredProjectPublicIds = selectedProject.public_id ? [selectedProject.public_id] : [];
+getTaskTimeline: async (req, res) => {
+  try {
+    await requireFeatureAccess(req, 'Tasks');
+    const projects = await gatherManagerProjects(req);
+    const projectIds = dedupe(projects.map((project) => project.id)).filter(Boolean);
+    const projectPublicIds = dedupe(projects.map((project) => project.public_id)).filter(Boolean);
+    const projectFilter = parseProjectFilter(req);
+    const lookupById = new Map();
+    const lookupByPublicId = new Map();
+    projects.forEach((project) => {
+      if (project && project.id) lookupById.set(String(project.id), project);
+      if (project && project.public_id) lookupByPublicId.set(String(project.public_id), project);
+    });
+    let selectedProject = null;
+    let filteredProjectIds = [...projectIds];
+    let filteredProjectPublicIds = [...projectPublicIds];
+    if (projectFilter) {
+      selectedProject =
+        projectFilter.type === 'id'
+          ? lookupById.get(String(projectFilter.value))
+          : lookupByPublicId.get(String(projectFilter.value));
+      if (!selectedProject) {
+        return res
+          .status(404)
+          .json({ success: false, error: 'Project not found or not assigned to this manager' });
       }
-      const tasks = await fetchTaskTimeline(filteredProjectIds, filteredProjectPublicIds);
-      const taskInternalIds = dedupe(tasks.map((task) => task.task_internal_id)).filter(Boolean);
-      let taskChecklists = [];
-      let taskActivities = [];
-      if (taskInternalIds.length) {
-        taskChecklists = await queryAsync(
-          'SELECT id, task_Id AS task_id, title, due_date, tag, created_at, updated_at, status, estimated_hours FROM subtasks WHERE task_Id IN (?)',
-          [taskInternalIds]
-        );
-        taskActivities = await queryAsync(
-          `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt, u._id AS user_id, u.name AS user_name
-           FROM task_activities ta
-           LEFT JOIN users u ON ta.user_id = u._id
-           WHERE ta.task_id IN (?)
-           ORDER BY ta.createdAt DESC`,
-          [taskInternalIds]
-        );
-      }
-      const checklistMap = {};
-      (taskChecklists || []).forEach((subtask) => {
-        if (!subtask || subtask.task_id === undefined || subtask.task_id === null) return;
-        const key = String(subtask.task_id);
-        if (!checklistMap[key]) checklistMap[key] = [];
-        checklistMap[key].push({
-          id: subtask.id,
-          title: subtask.title || null,
-          status: subtask.status || null,
-          dueDate: toIsoDate(subtask.due_date),
-          tag: subtask.tag || null,
-          estimatedHours: subtask.estimated_hours != null ? Number(subtask.estimated_hours) : null,
-          createdAt: toIsoDate(subtask.created_at),
-          updatedAt: toIsoDate(subtask.updated_at)
-        });
-      });
-      const activityMap = {};
-      (taskActivities || []).forEach((activity) => {
-        if (!activity || activity.task_id === undefined || activity.task_id === null) return;
-        const key = String(activity.task_id);
-        if (!activityMap[key]) activityMap[key] = [];
-        activityMap[key].push({
-          type: activity.type || null,
-          activity: activity.activity || null,
-          createdAt: toIsoDate(activity.createdAt),
-          user: activity.user_id ? { id: String(activity.user_id), name: activity.user_name || null } : null
-        });
-      });
-      const formatted = (tasks || []).map((task) => {
-        const assignedInternal = task.assigned_user_internal_ids
-          ? String(task.assigned_user_internal_ids).split(',')
-          : [];
-        const assignedPublic = task.assigned_user_public_ids
-          ? String(task.assigned_user_public_ids).split(',')
-          : [];
-        const assignedNames = task.assigned_user_names ? String(task.assigned_user_names).split(',') : [];
-        const assignedUsers = assignedPublic.map((publicId, idx) => ({
-          id: publicId || (assignedInternal[idx] ? String(assignedInternal[idx]) : null),
-          internalId: assignedInternal[idx] ? String(assignedInternal[idx]) : null,
-          name: assignedNames[idx] || null
-        }));
-        const taskKey = String(task.task_internal_id || task.task_id);
-        return {
-          id: task.task_id ? String(task.task_id) : String(task.task_internal_id),
-          title: task.title,
-          stage: task.stage,
-          taskDate: task.taskDate ? new Date(task.taskDate).toISOString() : null,
-          priority: task.priority,
-          status: task.status,
-          timeAlloted: task.time_alloted != null ? Number(task.time_alloted) : null,
-          client: {
-            id: task.client_public_id || (task.client_id ? String(task.client_id) : null),
-            name: task.client_name || null
-          },
-          project: {
-            internalId: task.project_internal_id || null,
-            id: task.project_public_id || (task.project_internal_id ? String(task.project_internal_id) : null),
-            name: task.project_name || null,
-            status: task.project_status || null,
-            priority: task.project_priority || null,
-            startDate: toIsoDate(task.project_start_date),
-            endDate: toIsoDate(task.project_end_date),
-            clientId: task.project_client_id ? String(task.project_client_id) : null
-          },
-          assignedUsers,
-          checklist: checklistMap[taskKey] || [],
-          activityTimeline: activityMap[taskKey] || []
-            ,
-            started_at: task.started_at ? toIsoDate(task.started_at) : null,
-            live_timer: task.live_timer ? toIsoDate(task.live_timer) : null,
-            total_time_seconds: task.total_duration != null ? Number(task.total_duration) : 0,
-            total_time_hours: task.total_duration != null ? Number((Number(task.total_duration) / 3600).toFixed(2)) : 0,
-            total_time_hhmmss: (() => {
-              const secs = Number(task.total_duration || 0);
-              const hh = String(Math.floor(secs / 3600)).padStart(2, '0');
-              const mm = String(Math.floor((secs % 3600) / 60)).padStart(2, '0');
-              const ss = String(secs % 60).padStart(2, '0');
-              return `${hh}:${mm}:${ss}`;
-            })(),
-            summary: (() => {
-              try {
-                const now = new Date();
-                const est = task.taskDate ? new Date(task.taskDate) : null;
-                if (!est) return {};
-                return { dueStatus: est < now ? 'Overdue' : 'On Time', dueDate: toIsoDate(est) };
-              } catch (e) { return {}; }
-            })()
-        };
-      });
-      const meta = { count: formatted.length };
-      let projectMeta = null;
-      if (selectedProject) {
-        projectMeta = {
-          internalId: selectedProject.id || null,
-          id: selectedProject.public_id || (selectedProject.id ? String(selectedProject.id) : null),
-          publicId: selectedProject.public_id || null,
-          name: selectedProject.name || null,
-          status: selectedProject.status || null,
-          priority: selectedProject.priority || null,
-          startDate: toIsoDate(selectedProject.start_date),
-          endDate: toIsoDate(selectedProject.end_date),
-          client: {
-            id: selectedProject.client_public_id || (selectedProject.client_id ? String(selectedProject.client_id) : null),
-            name: selectedProject.client_name || null
-          }
-        };
-        meta.project = projectMeta;
-      }
-      const payload = { success: true, data: formatted, meta };
-      if (projectMeta) payload.project = projectMeta;
-      return res.json(payload);
-    } catch (error) {
-      return res.status(error.status || 500).json({ success: false, error: error.message });
+      filteredProjectIds = selectedProject.id ? [selectedProject.id] : [];
+      filteredProjectPublicIds = selectedProject.public_id ? [selectedProject.public_id] : [];
     }
-  },
+    
+    const tasks = await fetchTaskTimeline(filteredProjectIds, filteredProjectPublicIds);
+    const taskInternalIds = dedupe(tasks.map((task) => task.task_internal_id || task.id)).filter(Boolean);
+    
+    // 🔒 LOCK STATUS - COPY FROM getMyTasks
+    const lockStatuses = {};
+    if (taskInternalIds.length > 0) {
+      const lockResult = await queryAsync(`
+        SELECT 
+          r.task_id,
+          r.status AS request_status,
+          r.id AS request_id,
+          CASE WHEN r.status = 'PENDING' THEN 1 ELSE 0 END AS is_locked,
+          t.status AS task_current_status
+        FROM task_resign_requests r
+        INNER JOIN tasks t ON t.id = r.task_id
+        WHERE r.task_id IN (${taskInternalIds.map(id => parseInt(id)).join(',')}) 
+          AND r.status = 'PENDING'
+        ORDER BY r.requested_at DESC
+      `);
+      
+      const lockRows = Array.isArray(lockResult) ? lockResult : [];
+      if (Array.isArray(lockRows)) {
+        lockRows.forEach(row => {
+          lockStatuses[row.task_id] = {
+            is_locked: Boolean(row.is_locked),
+            request_status: row.request_status,
+            request_id: row.request_id,
+            task_status: row.task_current_status
+          };
+        });
+      }
+    }
+    
+    let taskChecklists = [];
+    let taskActivities = [];
+    if (taskInternalIds.length) {
+      taskChecklists = await queryAsync(
+        'SELECT id, task_Id AS task_id, title, due_date, tag, created_at, updated_at, status, estimated_hours FROM subtasks WHERE task_Id IN (?)',
+        [taskInternalIds]
+      );
+      taskActivities = await queryAsync(
+        `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt, u._id AS user_id, u.name AS user_name
+         FROM task_activities ta
+         LEFT JOIN users u ON ta.user_id = u._id
+         WHERE ta.task_id IN (?)
+         ORDER BY ta.createdAt DESC`,
+        [taskInternalIds]
+      );
+    }
+    
+    const checklistMap = {};
+    (taskChecklists || []).forEach((subtask) => {
+      if (!subtask || subtask.task_id === undefined || subtask.task_id === null) return;
+      const key = String(subtask.task_id);
+      if (!checklistMap[key]) checklistMap[key] = [];
+      checklistMap[key].push({
+        id: subtask.id,
+        title: subtask.title || null,
+        status: subtask.status || null,
+        dueDate: toIsoDate(subtask.due_date),
+        tag: subtask.tag || null,
+        estimatedHours: subtask.estimated_hours != null ? Number(subtask.estimated_hours) : null,
+        createdAt: toIsoDate(subtask.created_at),
+        updatedAt: toIsoDate(subtask.updated_at)
+      });
+    });
+    
+    const activityMap = {};
+    (taskActivities || []).forEach((activity) => {
+      if (!activity || activity.task_id === undefined || activity.task_id === null) return;
+      const key = String(activity.task_id);
+      if (!activityMap[key]) activityMap[key] = [];
+      activityMap[key].push({
+        type: activity.type || null,
+        activity: activity.activity || null,
+        createdAt: toIsoDate(activity.createdAt),
+        user: activity.user_id ? { id: String(activity.user_id), name: activity.user_name || null } : null
+      });
+    });
+    
+    const formatted = (tasks || []).map((task) => {
+      const assignedInternal = task.assigned_user_internal_ids
+        ? String(task.assigned_user_internal_ids).split(',')
+        : [];
+      const assignedPublic = task.assigned_user_public_ids
+        ? String(task.assigned_user_public_ids).split(',')
+        : [];
+      const assignedNames = task.assigned_user_names ? String(task.assigned_user_names).split(',') : [];
+      const assignedUsers = assignedPublic.map((publicId, idx) => ({
+        id: publicId || (assignedInternal[idx] ? String(assignedInternal[idx]) : null),
+        internalId: assignedInternal[idx] ? String(assignedInternal[idx]) : null,
+        name: assignedNames[idx] || null
+      }));
+      
+      // 🔒 MANAGER LOCK STATUS
+      const taskId = task.task_internal_id || task.id;
+      const lockInfo = lockStatuses[taskId] || {};
+      const isLocked = Boolean(lockInfo.is_locked);
+      
+      const taskKey = String(task.task_internal_id || task.task_id);
+      return {
+        id: task.task_id ? String(task.task_id) : String(task.task_internal_id),
+        title: task.title,
+        stage: task.stage,
+        taskDate: task.taskDate ? new Date(task.taskDate).toISOString() : null,
+        priority: task.priority,
+        status: task.status,
+        timeAlloted: task.time_alloted != null ? Number(task.time_alloted) : null,
+        client: {
+          id: task.client_public_id || (task.client_id ? String(task.client_id) : null),
+          name: task.client_name || null
+        },
+        project: {
+          internalId: task.project_internal_id || null,
+          id: task.project_public_id || (task.project_internal_id ? String(task.project_internal_id) : null),
+          name: task.project_name || null,
+          status: task.project_status || null,
+          priority: task.project_priority || null,
+          startDate: toIsoDate(task.project_start_date),
+          endDate: toIsoDate(task.project_end_date),
+          clientId: task.project_client_id ? String(task.project_client_id) : null
+        },
+        assignedUsers,
+        checklist: checklistMap[taskKey] || [],
+        activityTimeline: activityMap[taskKey] || [],
+        started_at: task.started_at ? toIsoDate(task.started_at) : null,
+        live_timer: task.live_timer ? toIsoDate(task.live_timer) : null,
+        total_time_seconds: task.total_duration != null ? Number(task.total_duration) : 0,
+        total_time_hours: task.total_duration != null ? Number((Number(task.total_duration) / 3600).toFixed(2)) : 0,
+        total_time_hhmmss: (() => {
+          const secs = Number(task.total_duration || 0);
+          const hh = String(Math.floor(secs / 3600)).padStart(2, '0');
+          const mm = String(Math.floor((secs % 3600) / 60)).padStart(2, '0');
+          const ss = String(secs % 60).padStart(2, '0');
+          return `${hh}:${mm}:${ss}`;
+        })(),
+        // 🔒 LOCK FIELDS FOR MANAGER
+        is_locked: isLocked,
+        lock_info: lockInfo,
+        task_status: {
+          current_status: task.status || 'Unknown',
+          is_locked: isLocked
+        },
+        summary: (() => {
+          try {
+            const now = new Date();
+            const est = task.taskDate ? new Date(task.taskDate) : null;
+            if (!est) return {};
+            return { dueStatus: est < now ? 'Overdue' : 'On Time', dueDate: toIsoDate(est) };
+          } catch (e) { return {}; }
+        })()
+      };
+    });
+    
+    const meta = { count: formatted.length };
+    let projectMeta = null;
+    if (selectedProject) {
+      projectMeta = {
+        internalId: selectedProject.id || null,
+        id: selectedProject.public_id || (selectedProject.id ? String(selectedProject.id) : null),
+        publicId: selectedProject.public_id || null,
+        name: selectedProject.name || null,
+        status: selectedProject.status || null,
+        priority: selectedProject.priority || null,
+        startDate: toIsoDate(selectedProject.start_date),
+        endDate: toIsoDate(selectedProject.end_date),
+        client: {
+          id: selectedProject.client_public_id || (selectedProject.client_id ? String(selectedProject.client_id) : null),
+          name: selectedProject.client_name || null
+        }
+      };
+      meta.project = projectMeta;
+    }
+    const payload = { success: true, data: formatted, meta };
+    if (projectMeta) payload.project = projectMeta;
+    return res.json(payload);
+  } catch (error) {
+    return res.status(error.status || 500).json({ success: false, error: error.message });
+  }
+},
+
 
   getDepartmentEmployees: async (req, res) => {
     try {
