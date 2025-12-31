@@ -308,23 +308,30 @@ module.exports = {
       r.task_id,
       r.status AS request_status,
       r.id AS request_id,
-      CASE WHEN r.status = 'PENDING' THEN 1 ELSE 0 END AS is_locked,
+      r.requested_at,
+      r.responded_at,
+      r.requested_by,
       t.status AS task_current_status
     FROM task_resign_requests r
     INNER JOIN tasks t ON t.id = r.task_id
-    WHERE r.task_id IN (${taskIds.map(id => parseInt(id)).join(',')}) 
-      AND r.status = 'PENDING'
+    WHERE r.task_id IN (${taskIds.map(id => parseInt(id)).join(',')})
     ORDER BY r.requested_at DESC
   `);
 
         const lockRows = Array.isArray(lockResult) ? lockResult : [];
 
         if (Array.isArray(lockRows)) {
+          // Use the most recent request per task (rows ordered desc by requested_at)
           lockRows.forEach(row => {
+            if (!row || !row.task_id) return;
+            if (lockStatuses[row.task_id]) return; // already set with most recent
             lockStatuses[row.task_id] = {
-              is_locked: Boolean(row.is_locked),
+              is_locked: String(row.request_status).toUpperCase() === 'PENDING',
               request_status: row.request_status,
               request_id: row.request_id,
+              requested_at: row.requested_at ? new Date(row.requested_at).toISOString() : null,
+              responded_at: row.responded_at ? new Date(row.responded_at).toISOString() : null,
+              requested_by: row.requested_by != null ? String(row.requested_by) : null,
               task_status: row.task_current_status
             };
           });

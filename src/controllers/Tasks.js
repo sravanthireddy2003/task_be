@@ -2744,16 +2744,15 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
       console.log('🔄 Resolved taskId:', taskId);
     }
 
-    // 🔍 2. Verify request exists with INTERNAL taskId
+    // 🔍 2. Verify request exists with INTERNAL taskId and get requester
     const [verifyReq] = await new Promise((resolve, reject) =>
       db.query(`
-        SELECT id, task_id FROM task_resign_requests 
+        SELECT id, task_id, requested_by, status
+        FROM task_resign_requests 
         WHERE id = ? AND task_id = ?
       `, [requestId, taskId], (err, rows) => err ? reject(err) : resolve([rows]))
     );
-    
-    console.log('🔍 VERIFY:', verifyReq);
-    
+
     if (!verifyReq?.length) {
       return res.status(404).json({ 
         success: false, 
@@ -2762,29 +2761,113 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
       });
     }
 
+    const reqRow = verifyReq[0];
+
     // ✅ 3. Update request status
-    const [result1] = await new Promise((resolve, reject) =>
+    await new Promise((resolve, reject) =>
       db.query(`
         UPDATE task_resign_requests 
         SET status = ?, responded_at = NOW()
         WHERE id = ? AND task_id = ?
-      `, [action.toUpperCase(), requestId, taskId], (err, result) => err ? reject(err) : resolve([result]))
+      `, [action.toUpperCase(), requestId, taskId], (err, result) => err ? reject(err) : resolve(result))
     );
 
-    // ✅ 4. Unlock task
+    // ✅ 4. Unlock task (only if currently On Hold)
     await new Promise((resolve, reject) =>
       db.query(`
         UPDATE tasks SET status = 'TO DO' 
         WHERE id = ? AND status = 'On Hold'
       `, [taskId], (err, result) => err ? reject(err) : resolve(result))
     );
-    
-    res.json({ 
-      success: true, 
-      message: action === 'approve' 
-        ? '✅ Task unlocked for reassignment' 
-        : '✅ Request rejected. Task unlocked.',
-      debug: { resolvedTaskId: taskId, requestId, action }
+
+    // 5. Fetch updated task and assigned users to return a clear response
+    const [taskRows] = await new Promise((resolve, reject) =>
+      db.query(`
+        SELECT t.*, GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids, GROUP_CONCAT(DISTINCT u._id) AS assigned_user_internal_ids, GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names
+        FROM tasks t
+        LEFT JOIN taskassignments ta ON ta.task_id = t.id
+        LEFT JOIN users u ON u._id = ta.user_id
+        WHERE t.id = ?
+        GROUP BY t.id
+        LIMIT 1
+      `, [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+
+    const taskRow = (taskRows && taskRows[0]) || null;
+
+    // 6. Prepare clear response payload
+    const assignedUsers = [];
+    if (taskRow && taskRow.assigned_user_internal_ids) {
+      const internals = String(taskRow.assigned_user_internal_ids).split(',');
+      const publics = String(taskRow.assigned_user_public_ids || '').split(',');
+      const names = String(taskRow.assigned_user_names || '').split(',');
+      for (let i = 0; i < internals.length; i++) {
+        assignedUsers.push({ internalId: String(internals[i]), id: publics[i] || internals[i], name: names[i] || null });
+      }
+    }
+
+    // 7. Non-blocking notification to requester (employee)
+    (async () => {
+      try {
+        const requesterId = reqRow.requested_by;
+        const [userRows] = await new Promise((resolve, reject) =>
+          db.query('SELECT _id, public_id, name, email FROM users WHERE _id = ? LIMIT 1', [requesterId], (err, rows) => err ? reject(err) : resolve([rows]))
+        );
+        const requester = (userRows && userRows[0]) || null;
+        if (requester && requester.email && !requester.email.includes('@example.com')) {
+          const subject = action === 'approve' ? 'Reassignment Approved' : 'Reassignment Rejected';
+          const text = action === 'approve'
+            ? `Your reassignment request for task ${taskRow?.public_id || taskRow?.id} has been approved by manager.`
+            : `Your reassignment request for task ${taskRow?.public_id || taskRow?.id} has been rejected by manager.`;
+          await emailService.sendEmail({ to: requester.email, subject, text, html: `<p>${text}</p>` });
+        }
+        // Also notify assigned users/managers for visibility
+        try {
+          const [assignedRows] = await new Promise((resolve, reject) =>
+            db.query(
+              `SELECT DISTINCT u._id, u.email, u.name FROM taskassignments ta JOIN users u ON u._id = ta.user_id WHERE ta.task_id = ?`,
+              [taskId],
+              (err, rows) => err ? reject(err) : resolve([rows])
+            )
+          );
+          const assignedList = assignedRows || [];
+          for (const a of assignedList) {
+            try {
+              if (a && a.email && !a.email.includes('@example.com')) {
+                const subject2 = action === 'approve' ? 'Reassignment Approved (Task Assigned)' : 'Reassignment Rejected (Task Assigned)';
+                const text2 = action === 'approve'
+                  ? `Manager approved reassignment for task ${taskRow?.public_id || taskRow?.id}. Requested by ${requester?.name || requester?.public_id || requesterId}.`
+                  : `Manager rejected reassignment for task ${taskRow?.public_id || taskRow?.id}. Requested by ${requester?.name || requester?.public_id || requesterId}.`;
+                // don't await all; send but await per recipient to surface errors
+                await emailService.sendEmail({ to: a.email, subject: subject2, text: text2, html: `<p>${text2}</p>` });
+              }
+            } catch (e) {
+              console.error('Notify assigned user failed:', e && e.message);
+            }
+          }
+        } catch (e) {
+          console.error('Fetch assigned users failed:', e && e.message);
+        }
+      } catch (notifyErr) {
+        console.error('Notify requester failed:', notifyErr && notifyErr.message);
+      }
+    })();
+
+    // 8. Return clear, structured response
+    return res.json({
+      success: true,
+      message: action === 'approve' ? '✅ Task unlocked for reassignment' : '✅ Request processed (rejected)',
+      request: { id: Number(requestId), status: action.toUpperCase(), requestId: Number(requestId) },
+      task: taskRow ? {
+        id: taskRow.public_id || String(taskRow.id),
+        internal_id: taskRow.id,
+        title: taskRow.title,
+        status: taskRow.status,
+        started_at: taskRow.started_at || null,
+        completed_at: taskRow.completed_at || null,
+        total_duration: taskRow.total_duration != null ? Number(taskRow.total_duration) : 0,
+        assignedUsers
+      } : null
     });
   } catch (error) {
     console.error('Reassign error:', error);
