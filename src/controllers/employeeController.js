@@ -255,29 +255,30 @@ function buildProjectPayload(row) {
 }
 
 module.exports = {
-  getMyTasks: async (req, res) => {
-    try {
-      await requireFeatureAccess(req, 'Assigned Tasks');
-      const { clause: tenantClause, params: tenantParams } = await buildTenantClause('t', req.user.tenant_id);
-      const { clause: taskDeletionClause } = await buildTaskDeletionClause('t');
-      const projectData = await buildProjectJoinClause();
-      const taskDescriptionExists = await hasColumn('tasks', 'description');
 
-      const selectParts = [
-        't.id',
-        't.public_id',
-        't.title',
-        ...(taskDescriptionExists ? ['t.description'] : []),
-        't.status',
-        't.stage',
-        't.priority',
-        't.taskDate',
-        't.client_id',
-        'c.name AS client_name'
-      ].concat(projectData.selects);
+getMyTasks: async (req, res) => {
+  try {
+    await requireFeatureAccess(req, 'Assigned Tasks');
+    const { clause: tenantClause, params: tenantParams } = await buildTenantClause('t', req.user.tenant_id);
+    const { clause: taskDeletionClause } = await buildTaskDeletionClause('t');
+    const projectData = await buildProjectJoinClause();
+    const taskDescriptionExists = await hasColumn('tasks', 'description');
 
-      const rows = await queryAsync(
-        `SELECT
+    const selectParts = [
+      't.id',
+      't.public_id',
+      't.title',
+      ...(taskDescriptionExists ? ['t.description'] : []),
+      't.status',
+      't.stage',
+      't.priority',
+      't.taskDate',
+      't.client_id',
+      'c.name AS client_name'
+    ].concat(projectData.selects);
+
+    const rows = await queryAsync(
+      `SELECT
          ${selectParts.join(', ')},
          GROUP_CONCAT(DISTINCT ua._id) AS assigned_user_ids,
          GROUP_CONCAT(DISTINCT ua.public_id) AS assigned_user_public_ids,
@@ -293,156 +294,164 @@ module.exports = {
         ${tenantClause}
        GROUP BY t.id
        ORDER BY t.updatedAt DESC`,
-        [req.user._id, ...tenantParams]
-      );
+      [req.user._id, ...tenantParams]
+    );
 
-      const taskIds = (rows || []).map(r => r.id).filter(Boolean);
-      const checklistMap = await fetchChecklistMap(taskIds);
+    const taskIds = (rows || []).map(r => r.id).filter(Boolean);
+    const checklistMap = await fetchChecklistMap(taskIds);
 
-      // 🔒 FIXED: lockStatuses OUTSIDE if block
-      const lockStatuses = {};
+    // 🔒 COMPLETE LOCK INFO WITH MANAGER PUBLIC ID
+    const lockStatuses = {};
+    if (taskIds.length > 0) {
+      const lockResult = await queryAsync(`
+        SELECT 
+          r.task_id,
+          r.status AS request_status,
+          r.id AS request_id,
+          r.requested_at,
+          r.responded_at,
+          r.requested_by,
+          r.responded_by,
+          ru.name AS responder_name,
+          ru.public_id AS responder_public_id,  
+          ru._id AS responder_internal_id,      
+          u.name AS requester_name,
+          u.public_id AS requester_id,
+          t.status AS task_current_status
+        FROM task_resign_requests r
+        INNER JOIN tasks t ON t.id = r.task_id
+        LEFT JOIN users u ON r.requested_by = u._id
+        LEFT JOIN users ru ON r.responded_by = ru._id
+        WHERE r.task_id IN (${taskIds.map(id => parseInt(id)).join(',')})
+        ORDER BY 
+          CASE WHEN r.responded_at IS NULL THEN 1 ELSE 0 END ASC,
+          r.responded_at DESC,
+          r.requested_at DESC
+      `);
 
-      if (taskIds.length > 0) {
-        const lockResult = await queryAsync(`
-    SELECT 
-      r.task_id,
-      r.status AS request_status,
-      r.id AS request_id,
-      r.requested_at,
-      r.responded_at,
-      r.requested_by,
-      t.status AS task_current_status
-    FROM task_resign_requests r
-    INNER JOIN tasks t ON t.id = r.task_id
-    WHERE r.task_id IN (${taskIds.map(id => parseInt(id)).join(',')})
-    ORDER BY r.requested_at DESC
-  `);
+      const lockRows = Array.isArray(lockResult) ? lockResult : [];
+      lockRows.forEach(row => {
+        if (!row || !row.task_id || lockStatuses[row.task_id]) return;
+        
+        lockStatuses[row.task_id] = {
+          is_locked: row.request_status === 'PENDING',
+          request_status: row.request_status || '',
+          request_id: row.request_id,
+          requested_at: row.requested_at ? new Date(row.requested_at).toISOString() : null,
+          responded_at: row.responded_at ? new Date(row.responded_at).toISOString() : null,
+          requested_by: String(row.requested_by),
+          requester_name: row.requester_name || null,
+          requester_id: row.requester_id || null,
+          responded_by: String(row.responded_by || ''),
+          responder_name: row.responder_name || null,
+          responder_public_id: row.responder_public_id || null, 
+          responder_internal_id: String(row.responder_internal_id || ''),
+          task_status: row.task_current_status
+        };
+      });
+    }
 
-        const lockRows = Array.isArray(lockResult) ? lockResult : [];
+    const tasks = (rows || []).map(r => {
+      const taskId = r.id;
+      const assignedIds = r.assigned_user_ids ? String(r.assigned_user_ids).split(',') : [];
+      const assignedPublic = r.assigned_user_public_ids ? String(r.assigned_user_public_ids).split(',') : [];
+      const assignedNames = r.assigned_user_names ? String(r.assigned_user_names).split(',') : [];
+      const assignedUsers = assignedIds.map((internalId, index) => ({
+        id: assignedPublic[index] || String(internalId),
+        internalId: String(internalId),
+        name: assignedNames[index] || null
+      }));
 
-        if (Array.isArray(lockRows)) {
-          // Use the most recent request per task (rows ordered desc by requested_at)
-          lockRows.forEach(row => {
-            if (!row || !row.task_id) return;
-            if (lockStatuses[row.task_id]) return; // already set with most recent
-            lockStatuses[row.task_id] = {
-              is_locked: String(row.request_status).toUpperCase() === 'PENDING',
-              request_status: row.request_status,
-              request_id: row.request_id,
-              requested_at: row.requested_at ? new Date(row.requested_at).toISOString() : null,
-              responded_at: row.responded_at ? new Date(row.responded_at).toISOString() : null,
-              requested_by: row.requested_by != null ? String(row.requested_by) : null,
-              task_status: row.task_current_status
-            };
-          });
+      const lockInfo = lockStatuses[taskId] || {};
+      const isLocked = Boolean(lockInfo.is_locked);
+
+      let summary = {};
+      try {
+        const now = new Date();
+        let estDate = r.taskDate ? new Date(r.taskDate) : null;
+        if (estDate) {
+          summary.dueStatus = estDate < now ? 'Overdue' : 'On Time';
+          summary.dueDate = estDate.toISOString();
         }
+      } catch (e) {
+        summary.error = 'Could not calculate summary';
       }
 
-      const tasks = (rows || []).map(r => {
-        const taskId = r.id;
-        const assignedIds = r.assigned_user_ids ? String(r.assigned_user_ids).split(',') : [];
-        const assignedPublic = r.assigned_user_public_ids ? String(r.assigned_user_public_ids).split(',') : [];
-        const assignedNames = r.assigned_user_names ? String(r.assigned_user_names).split(',') : [];
-        const assignedUsers = assignedIds.map((internalId, index) => ({
-          id: assignedPublic[index] || String(internalId),
-          internalId: String(internalId),
-          name: assignedNames[index] || null
-        }));
-
-        // 🔒 Lock status calculation (with fallback)
-        const lockInfo = lockStatuses[taskId] || {};
-        // NEW (locks ONLY PENDING reassignment requests)
-        const isLocked = Boolean(lockInfo.is_locked);
-
-        // Overdue/on-time summary
-        let summary = {};
-        try {
-          const now = new Date();
-          let estDate = r.taskDate ? new Date(r.taskDate) : null;
-          if (estDate) {
-            summary.dueStatus = estDate < now ? 'Overdue' : 'On Time';
-            summary.dueDate = estDate.toISOString();
-          }
-        } catch (e) {
-          summary.error = 'Could not calculate summary';
-        }
-
-        return {
-          id: r.public_id ? String(r.public_id) : String(r.id),
-          internal_id: taskId,
-          title: r.title || null,
-          description: r.description || null,
-          stage: r.stage || null,
-          priority: r.priority || null,
-          status: r.status || null,
-          taskDate: r.taskDate ? new Date(r.taskDate).toISOString() : null,
-          client: buildClientPayload(r),
-          project: buildProjectPayload(r),
-          assignedUsers,
-          checklist: checklistMap[taskId] || [],
-          started_at: r.started_at ? new Date(r.started_at).toISOString() : null,
-          live_timer: r.live_timer ? new Date(r.live_timer).toISOString() : null,
-          total_time_seconds: r.total_duration != null ? Number(r.total_duration) : 0,
-          total_time_hours: r.total_duration != null ? Number((Number(r.total_duration) / 3600).toFixed(2)) : 0,
-          total_time_hhmmss: (() => {
-            const secs = Number(r.total_duration || 0);
-            const hh = String(Math.floor(secs / 3600)).padStart(2, '0');
-            const mm = String(Math.floor((secs % 3600) / 60)).padStart(2, '0');
-            const ss = String(secs % 60).padStart(2, '0');
-            return `${hh}:${mm}:${ss}`;
-          })(),
-          // 🔒 Lock status fields
+      return {
+        id: r.public_id ? String(r.public_id) : String(r.id),
+        internal_id: taskId,
+        title: r.title || null,
+        description: r.description || null,
+        stage: r.stage || null,
+        priority: r.priority || null,
+        status: r.status || null,
+        taskDate: r.taskDate ? new Date(r.taskDate).toISOString() : null,
+        client: buildClientPayload(r),
+        project: buildProjectPayload(r),
+        assignedUsers,
+        checklist: checklistMap[taskId] || [],
+        started_at: r.started_at ? new Date(r.started_at).toISOString() : null,
+        live_timer: r.live_timer ? new Date(r.live_timer).toISOString() : null,
+        total_time_seconds: r.total_duration != null ? Number(r.total_duration) : 0,
+        total_time_hours: r.total_duration != null ? Number((Number(r.total_duration) / 3600).toFixed(2)) : 0,
+        total_time_hhmmss: (() => {
+          const secs = Number(r.total_duration || 0);
+          const hh = String(Math.floor(secs / 3600)).padStart(2, '0');
+          const mm = String(Math.floor((secs % 3600) / 60)).padStart(2, '0');
+          const ss = String(secs % 60).padStart(2, '0');
+          return `${hh}:${mm}:${ss}`;
+        })(),
+        is_locked: isLocked,
+        lock_info: lockInfo,
+        task_status: {
+          current_status: r.status || 'Unknown',
           is_locked: isLocked,
-          lock_info: lockInfo,
-          task_status: {
-            current_status: r.status || 'Unknown',
-            is_locked: isLocked
-          },
-          summary
-        };
-      });
-
-      // Kanban with lock awareness
-      const statusMap = {};
-      tasks.forEach(task => {
-        const status = (task.status || task.stage || 'PENDING').toUpperCase();
-        if (!statusMap[status]) statusMap[status] = [];
-        statusMap[status].push(task);
-      });
-
-      const possibleStatuses = ['PENDING', 'TO DO', 'IN PROGRESS', 'ON HOLD', 'REVIEW', 'COMPLETED'];
-      const kanban = possibleStatuses.map(status => {
-        const tasksInStatus = statusMap[status] || [];
-        const lockedCount = tasksInStatus.filter(t => t.is_locked).length;
-
-        return {
-          status,
-          count: tasksInStatus.length,
-          locked_count: lockedCount,
-          tasks: tasksInStatus,
-          ...((tasksInStatus.length === 0) ? { message: `No tasks in ${status.replace('_', ' ').toLowerCase()}` } : {})
-        };
-      });
-
-      const lockSummary = {
-        total_locked: tasks.filter(t => t.is_locked).length,
-        has_pending_requests: Object.keys(lockStatuses).length > 0
+          requester_name: lockInfo.requester_name,
+          responder_name: lockInfo.responder_name, 
+          responder_public_id: lockInfo.responder_public_id,
+        },
+        summary
       };
+    });
 
-      return res.json({
-        success: true,
-        data: tasks,
-        kanban,
-        summary: lockSummary
-      });
-    } catch (error) {
-      console.error('getMyTasks error:', error);
-      return res.status(error.status || 500).json({ success: false, error: error.message });
-    }
-  },
+    // Kanban logic (unchanged)
+    const statusMap = {};
+    tasks.forEach(task => {
+      const status = (task.status || task.stage || 'PENDING').toUpperCase();
+      if (!statusMap[status]) statusMap[status] = [];
+      statusMap[status].push(task);
+    });
 
+    const possibleStatuses = ['PENDING', 'TO DO', 'IN PROGRESS', 'ON HOLD', 'REVIEW', 'COMPLETED'];
+    const kanban = possibleStatuses.map(status => {
+      const tasksInStatus = statusMap[status] || [];
+      const lockedCount = tasksInStatus.filter(t => t.is_locked).length;
+      return {
+        status,
+        count: tasksInStatus.length,
+        locked_count: lockedCount,
+        tasks: tasksInStatus,
+        ...((tasksInStatus.length === 0) ? { message: `No tasks in ${status.replace('_', ' ').toLowerCase()}` } : {})
+      };
+    });
 
-  createChecklistItem: async (req, res) => {
+    const lockSummary = {
+      total_locked: tasks.filter(t => t.is_locked).length,
+      has_pending_requests: Object.keys(lockStatuses).length > 0
+    };
+
+    return res.json({
+      success: true,
+      data: tasks,
+      kanban,
+      summary: lockSummary
+    });
+  } catch (error) {
+    console.error('getMyTasks error:', error);
+    return res.status(error.status || 500).json({ success: false, error: error.message });
+  }
+},
+ createChecklistItem: async (req, res) => {
     try {
       const { taskId } = req.params;
       const { title, description, dueDate } = req.body;
