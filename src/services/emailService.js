@@ -1,3 +1,114 @@
+function taskReassignmentRequestTemplate({ taskTitle, requesterName, reason, taskLink }) {
+  return {
+    subject: `Task Reassignment Requested: ${taskTitle}`,
+    text: `A reassignment request has been submitted.\n\nTask: ${taskTitle}\nRequested by: ${requesterName}\nReason: ${reason}\nReview and take action: ${taskLink}`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
+        <h2 style="color:#007bff;">Task Reassignment Requested</h2>
+        <p><strong>Task:</strong> ${taskTitle}</p>
+        <p><strong>Requested by:</strong> ${requesterName}</p>
+        <p><strong>Reason:</strong> ${reason}</p>
+        <p>
+          <a href="${taskLink}" style="background:#007bff;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;">Review Request</a>
+        </p>
+      </div>
+    `
+  };
+}
+
+// Task Reassignment Approved (to New Assignee)
+function taskReassignmentApprovedTemplate({ taskTitle, oldAssignee, newAssignee, taskLink }) {
+  return {
+    subject: `Task Reassigned: ${taskTitle}`,
+    text: `You have been assigned a new task.\nTask: ${taskTitle}\nPrevious Assignee: ${oldAssignee}\nTask Link: ${taskLink}`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
+        <h2 style="color:#28a745;">Task Reassigned</h2>
+        <p>You have been assigned a new task.</p>
+        <ul>
+          <li><b>Task:</b> ${taskTitle}</li>
+          <li><b>Previous Assignee:</b> ${oldAssignee}</li>
+        </ul>
+        <p><a href="${taskLink}" style="background:#28a745;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;">View Task</a></p>
+      </div>
+    `
+  };
+}
+
+// Task Reassignment Approved (to Old Assignee)
+function taskReassignmentOldAssigneeTemplate({ taskTitle, newAssignee, taskLink }) {
+  return {
+    subject: `Task Reassigned (Read-Only): ${taskTitle}`,
+    text: `Your task has been reassigned and is now read-only.\nTask: ${taskTitle}\nNew Assignee: ${newAssignee}\nTask Link: ${taskLink}`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
+        <h2 style="color:#ffc107;">Task Reassigned (Read-Only)</h2>
+        <p>Your task has been reassigned and is now <b>read-only</b>.</p>
+        <ul>
+          <li><b>Task:</b> ${taskTitle}</li>
+          <li><b>New Assignee:</b> ${newAssignee}</li>
+        </ul>
+        <p><a href="${taskLink}" style="background:#ffc107;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;">View Task</a></p>
+      </div>
+    `
+  };
+}
+
+// Task Reassignment Approved (to Managers/Admins)
+function taskReassignmentManagerTemplate({ taskTitle, oldAssignee, newAssignee, taskLink }) {
+  return {
+    subject: `Task Reassignment Completed: ${taskTitle}`,
+    text: `Task reassignment completed.\nTask: ${taskTitle}\nNew Assignee: ${newAssignee}\nOld Assignee: ${oldAssignee}\nTask Link: ${taskLink}`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
+        <h2 style="color:#17a2b8;">Task Reassignment Completed</h2>
+        <ul>
+          <li><b>Task:</b> ${taskTitle}</li>
+          <li><b>New Assignee:</b> ${newAssignee}</li>
+          <li><b>Old Assignee:</b> ${oldAssignee}</li>
+        </ul>
+        <p><a href="${taskLink}" style="background:#17a2b8;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;">View Task</a></p>
+      </div>
+    `
+  };
+}
+
+// Task Reassignment Rejected (to Old Assignee)
+function taskReassignmentRejectedTemplate({ taskTitle, taskLink }) {
+  return {
+    subject: `Task Reassignment Rejected: ${taskTitle}`,
+    text: `Your reassignment request was rejected.\nTask: ${taskTitle}\nYou can continue working on this task.\nTask Link: ${taskLink}`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
+        <h2 style="color:#dc3545;">Task Reassignment Rejected</h2>
+        <p>Your reassignment request was <b>rejected</b>.</p>
+        <ul>
+          <li><b>Task:</b> ${taskTitle}</li>
+        </ul>
+        <p>You can continue working on this task.</p>
+        <p><a href="${taskLink}" style="background:#dc3545;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;">View Task</a></p>
+      </div>
+    `
+  };
+}
+
+// Task Reassignment Rejected (to Managers/Admins)
+function taskReassignmentRejectedManagerTemplate({ taskTitle, oldAssignee, taskLink }) {
+  return {
+    subject: `Task Reassignment Rejected: ${taskTitle}`,
+    text: `Task reassignment was rejected.\nTask: ${taskTitle}\nOld Assignee: ${oldAssignee}\nTask Link: ${taskLink}`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
+        <h2 style="color:#dc3545;">Task Reassignment Rejected</h2>
+        <ul>
+          <li><b>Task:</b> ${taskTitle}</li>
+          <li><b>Old Assignee:</b> ${oldAssignee}</li>
+        </ul>
+        <p><a href="${taskLink}" style="background:#dc3545;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;">View Task</a></p>
+      </div>
+    `
+  };
+}
 const nodemailer = require('nodemailer');
 require('dotenv').config();
  
@@ -664,6 +775,12 @@ module.exports = {
   sendProjectNotifications,
   taskAssignedToEmployeeTemplate,
   sendTaskAssignmentEmails
+  ,taskReassignmentRequestTemplate
+  ,taskReassignmentApprovedTemplate
+  ,taskReassignmentOldAssigneeTemplate
+  ,taskReassignmentManagerTemplate
+  ,taskReassignmentRejectedTemplate
+  ,taskReassignmentRejectedManagerTemplate
 };
  
 // Convenience: send credentials/welcome email to newly created users

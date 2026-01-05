@@ -41,6 +41,20 @@ const q = (sql, params = []) => new Promise((resolve, reject) => {
   });
 });
 
+// Permission check for task actions
+async function canEditTask(taskId, user) {
+  // Always allow Admin/Manager
+  if (user.role === 'Admin' || user.role === 'Manager') return true;
+  // Check if task is locked and if user is the new assignee
+  const [task] = await q('SELECT is_locked FROM tasks WHERE id = ?', [taskId]);
+  if (!task) return false;
+  if (!task.is_locked) return true;
+  // If locked, only allow new assignee
+  const [assignment] = await q('SELECT user_id FROM taskassignments WHERE task_id = ?', [taskId]);
+  if (!assignment) return false;
+  return assignment.user_id === user._id;
+}
+
 // helper: get last action for task and user
 const getLastAction = async (taskId, userId) => {
   const rows = await q('SELECT action FROM task_time_logs WHERE task_id = ? AND user_id = ? ORDER BY timestamp DESC LIMIT 1', [taskId, userId]);
@@ -240,9 +254,14 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
         const assignedNames = r.assigned_user_names ? String(r.assigned_user_names).split(',') : [];
 
         const assignedUsers = assignedIds.map((uid, i) => ({ id: assignedPublic[i] || uid, internalId: String(uid), name: assignedNames[i] || null }));
-
         const key = String(r.task_internal_id || r.task_id);
-
+        // Determine read_only for this user
+        let read_only = false;
+        if (r.status === 'Request Approved' && req.user.role !== 'Admin' && req.user.role !== 'Manager') {
+          // Only the new assignee can edit
+          const [assignment] = assignedIds;
+          if (String(req.user._id) !== String(assignment)) read_only = true;
+        }
         return {
           id: String(r.task_internal_id),
           title: r.title || null,
@@ -261,7 +280,6 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
           activities: activitiesMap[key] || activitiesMap[String(r.task_id)] || activitiesMap[String(r.task_internal_id)] || [],
           files: filesMap[key] || filesMap[String(r.task_id)] || filesMap[String(r.task_internal_id)] || [],
           totalHours: hoursMap[key] != null ? hoursMap[key] : 0,
-          // enrich with time-tracking summary using total_duration when available
           started_at: r.started_at ? new Date(r.started_at).toISOString() : null,
           live_timer: r.live_timer ? new Date(r.live_timer).toISOString() : null,
           total_time_seconds: (r.total_duration != null) ? Number(r.total_duration) : (hoursMap[key] != null ? Number(hoursMap[key]) * 3600 : 0),
@@ -283,7 +301,8 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
               if (!est) return {};
               return { dueStatus: est < now ? 'Overdue' : 'On Time', dueDate: est.toISOString() };
             } catch (e) { return {}; }
-          })()
+          })(),
+          read_only
         };
       });
 
@@ -2569,8 +2588,6 @@ router.get("/taskdetail/getactivity/:id", async (req, res) => {
 // Replace ENTIRE route handler with this fixed version
 
 router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, res) => {
-  console.log('🚀 REASSIGNMENT REQUEST - Task ID:', req.params.id);
-  
   let taskId = req.params.id;
   if (typeof taskId === 'string' && !/^\d+$/.test(taskId)) {
     const [rows] = await new Promise((resolve, reject) =>
@@ -2582,37 +2599,27 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
 
   const employee = req.user;
   const { reason } = req.body;
-
   try {
-    // ✅ BLOCK PENDING REQUESTS
+    // Block if pending request exists
     const [existingReq] = await new Promise((resolve, reject) =>
       db.query(`SELECT id FROM task_resign_requests WHERE task_id = ? AND status = 'PENDING'`, [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
     );
     if (existingReq?.length > 0) return res.status(409).json({ success: false, error: 'Pending request exists' });
 
-    // ✅ FIXED QUERY - No manager_id column error
+    // Get task and manager info
     const [taskRows] = await new Promise((resolve, reject) =>
       db.query(`
-        SELECT 
-          t.*, 
-          p.name as project_name, 
-          p.project_manager_id,
-          u_pm._id as pm_id, 
-          u_pm.public_id as pm_public_id, 
-          u_pm.name as pm_name, 
-          u_pm.email as pm_email
+        SELECT t.*, p.name as project_name, p.project_manager_id, u_pm._id as pm_id, u_pm.public_id as pm_public_id, u_pm.name as pm_name, u_pm.email as pm_email
         FROM tasks t 
         LEFT JOIN projects p ON t.project_id = p.id
-        LEFT JOIN users u_pm ON p.project_manager_id = u_pm._id 
-          AND u_pm.role = 'Manager' AND u_pm.isActive = 1
+        LEFT JOIN users u_pm ON p.project_manager_id = u_pm._id AND u_pm.role = 'Manager' AND u_pm.isActive = 1
         WHERE t.id = ?
       `, [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
     );
-    
     if (!taskRows?.length) return res.status(404).json({ success: false, error: 'Task not found' });
     const fullTask = taskRows[0];
 
-    // ✅ PRIORITY: Project Manager (pre-joined)
+    // Priority: Project Manager
     let manager = null;
     if (fullTask.pm_id) {
       manager = {
@@ -2622,7 +2629,6 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
         email: fullTask.pm_email
       };
     }
-
     // Fallback: manager assigned to task
     if (!manager) {
       const [mgrRows] = await new Promise((resolve, reject) =>
@@ -2636,7 +2642,6 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
       );
       if (mgrRows?.length > 0) manager = mgrRows[0];
     }
-
     // Fallback: any active manager
     if (!manager) {
       const [fallback] = await new Promise((resolve, reject) =>
@@ -2650,10 +2655,9 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
       );
       manager = fallback?.[0];
     }
-
     if (!manager) return res.status(400).json({ success: false, error: 'No manager found' });
 
-    // ✅ INSERT + LOCK
+    // Insert request
     const [insertResult] = await new Promise((resolve, reject) =>
       db.query(
         'INSERT INTO task_resign_requests (task_id, requested_by, reason, status) VALUES (?, ?, ?, ?)', 
@@ -2661,24 +2665,24 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
         (err, result) => err ? reject(err) : resolve([result])
       )
     );
-
     await new Promise((resolve, reject) =>
       db.query(`UPDATE tasks SET status = 'On Hold', live_timer = NULL WHERE id = ?`, [taskId], (err) => err ? reject(err) : resolve())
     );
 
-    // ✅ EMAIL (optional)
+    // Email manager with improved template
     try {
+      const emailService = require('../services/emailService');
+      const taskLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/tasks/${fullTask.public_id}`;
       if (manager.email && !manager.email.includes('@example.com')) {
-        await emailService.sendEmail({
-          to: manager.email,
-          subject: `🔄 Reassignment Request: ${fullTask.title}`,
-          text: `${employee.name} (${employee.public_id}) requests reassignment.\n\nReason: ${reason || 'None provided'}\n\nTask: ${fullTask.project_name} - ${fullTask.title}`
+        const { subject, text, html } = emailService.taskReassignmentRequestTemplate({
+          taskTitle: fullTask.title,
+          requesterName: employee.name,
+          reason: reason || 'None provided',
+          taskLink
         });
-        console.log('📧 Reassignment email →', manager.email);
+        await emailService.sendEmail({ to: manager.email, subject, text, html });
       }
-    } catch (e) { 
-      console.log('Email optional fail:', e.message); 
-    }
+    } catch (e) { }
 
     res.json({
       success: true,
@@ -2687,9 +2691,7 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
       task_status: 'On Hold',
       manager_id: manager.public_id
     });
-
   } catch (error) {
-    console.error('❌ Reassignment error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -2698,8 +2700,30 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
 router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', requireRole(['Manager']), async (req, res) => {
   let { taskId, requestId, action } = req.params;
   
+  const dbTransaction = (connection) => new Promise((resolve, reject) => {
+    if (connection) return resolve(connection);
+    db.getConnection((err, conn) => {
+      if (err) return reject(err);
+      conn.beginTransaction(err => err ? reject(err) : resolve(conn));
+    });
+  });
+
+  const commitTransaction = (connection) => new Promise((resolve, reject) => {
+    connection.commit(err => {
+      connection.release();
+      err ? reject(err) : resolve();
+    });
+  });
+
+  const rollbackTransaction = (connection) => new Promise((resolve, reject) => {
+    connection.rollback(() => {
+      connection.release();
+      resolve();
+    });
+  });
+
   try {
-    // ✅ Resolve public_id to internal ID
+    // Resolve public_id to internal ID
     if (!/^\d+$/.test(taskId)) {
       const [rows] = await new Promise((resolve, reject) =>
         db.query('SELECT id FROM tasks WHERE public_id = ?', [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
@@ -2708,7 +2732,7 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
       taskId = rows[0].id;
     }
 
-    // ✅ VALIDATE PENDING REQUEST EXISTS
+    // Validate pending request exists
     const [reqRows] = await new Promise((resolve, reject) =>
       db.query(
         `SELECT * FROM task_resign_requests 
@@ -2717,48 +2741,188 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
         (err, rows) => err ? reject(err) : resolve([rows])
       )
     );
-    
     if (!reqRows?.length) {
       return res.status(404).json({ success: false, error: 'No pending request found' });
     }
+    const resignRequest = reqRows[0];
 
-    // ✅ MANAGER DETAILS
+    // Validate new assignee exists (for approve)
+    let newAssigneeUser = null;
+    if (action.toUpperCase() === 'APPROVE' && resignRequest.new_assignee_id) {
+      const [newUserRows] = await new Promise((resolve, reject) =>
+        db.query('SELECT _id, name, email FROM users WHERE _id = ?', [resignRequest.new_assignee_id], (err, rows) => err ? reject(err) : resolve([rows]))
+      );
+      if (!newUserRows?.length) {
+        return res.status(400).json({ success: false, error: 'New assignee not found' });
+      }
+      newAssigneeUser = newUserRows[0];
+    }
+    // Get old assignee user
+    const [oldUserRows] = await new Promise((resolve, reject) =>
+      db.query('SELECT _id, name, email FROM users WHERE _id = ?', [resignRequest.requested_by], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+    const oldAssigneeUser = oldUserRows?.[0];
+    // Get all managers/admins
+    const managers = await q('SELECT name, email FROM users WHERE role IN ("Manager", "Admin")');
+
+    // Manager details
     const newStatus = action.toUpperCase();
     const managerId = req.user._id;
     const managerName = req.user.name;
 
-    // ✅ UPDATE REQUEST + UNLOCK TASK
-    await new Promise((resolve, reject) => {
-      db.query(
-        `UPDATE task_resign_requests 
-         SET status = ?, responded_at = NOW(), responded_by = ?, responder_name = ? 
-         WHERE id = ?`,
-        [newStatus, managerId, managerName, requestId],
-        (err) => err ? reject(err) : resolve()
-      );
-    });
+    // Get task, previous assignees, and assignee details
+    const [taskRows] = await new Promise((resolve, reject) =>
+      db.query('SELECT * FROM tasks WHERE id = ?', [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+    if (!taskRows?.length) return res.status(404).json({ success: false, error: 'Task not found' });
+    const task = taskRows[0];
 
-    // ✅ UNLOCK: Back to TO DO
-    await new Promise((resolve, reject) =>
-      db.query(`UPDATE tasks SET status = 'TO DO', live_timer = NULL WHERE id = ?`, [taskId], (err) => err ? reject(err) : resolve())
+    const prevAssignees = await new Promise((resolve, reject) =>
+      db.query('SELECT user_id FROM taskassignments WHERE task_id = ?', [taskId], (err, rows) => err ? reject(err) : resolve(rows))
     );
 
-    res.json({
-      success: true,
-      message: `✅ ${newStatus} - Task unlocked (TO DO)`,
-      action_taken: newStatus,
-      task_status: 'TO DO',
-      manager: {
-        id: managerId,
-        public_id: req.user.public_id,
-        name: managerName
-      },
-      updated_request: {
-        request_id: requestId,
-        new_status: newStatus,
-        responded_at: new Date().toISOString()
+    const prevAssigneeUser = await new Promise((resolve, reject) =>
+      db.query('SELECT name, email FROM users WHERE _id = ?', [resignRequest.requested_by], (err, rows) => err ? reject(err) : resolve(rows))
+    );
+    const prevAssigneeName = prevAssigneeUser?.[0]?.name || 'Previous Assignee';
+
+    // Start transaction
+    const connection = await dbTransaction();
+    
+    try {
+      // Update request status
+      await new Promise((resolve, reject) => {
+        db.query(
+          `UPDATE task_resign_requests 
+           SET status = ?, responded_at = NOW(), responded_by = ?, responder_name = ? 
+           WHERE id = ?`,
+          [newStatus, managerId, managerName, requestId],
+          (err) => err ? reject(err) : resolve(),
+          connection
+        );
+      });
+
+      if (newStatus === 'APPROVE') {
+        // Lock task and reassign atomically
+        await new Promise((resolve, reject) => {
+          db.query(
+            `UPDATE tasks SET status = 'Request Approved', is_locked = 1 WHERE id = ?`,
+            [taskId],
+            (err) => err ? reject(err) : resolve(),
+            connection
+          );
+        });
+
+        // Remove previous assignees
+        await new Promise((resolve, reject) => {
+          db.query('DELETE FROM taskassignments WHERE task_id = ?', [taskId], (err) => err ? reject(err) : resolve(), connection);
+        });
+
+        // Assign to new employee
+        if (resignRequest.new_assignee_id) {
+          await new Promise((resolve, reject) => {
+            db.query(
+              'INSERT INTO taskassignments (task_id, user_id) VALUES (?, ?)',
+              [taskId, resignRequest.new_assignee_id],
+              (err) => err ? reject(err) : resolve(),
+              connection
+            );
+          });
+        }
+
+        await commitTransaction(connection);
+
+        // Send notification emails (outside transaction)
+        const emailService = require('../services/emailService');
+        const taskLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/tasks/${task.public_id}`;
+        // New assignee
+        if (newAssigneeUser?.email) {
+          await emailService.sendEmail({
+            to: newAssigneeUser.email,
+            subject: `Task Reassigned: ${task.name || task.title || 'Task'}`,
+            text: `You have been assigned a new task.\nTask: ${task.name || task.title || 'Task'}\nPrevious Assignee: ${oldAssigneeUser?.name}\nProject: ${task.project_id || ''}\nDeadline: ${task.taskDate || ''}\nPriority: ${task.priority || ''}\nTask Link: ${taskLink}`,
+            html: `<p>You have been assigned a new task.</p><ul><li><b>Task:</b> ${task.name || task.title || 'Task'}</li><li><b>Previous Assignee:</b> ${oldAssigneeUser?.name}</li><li><b>Project:</b> ${task.project_id || ''}</li><li><b>Deadline:</b> ${task.taskDate || ''}</li><li><b>Priority:</b> ${task.priority || ''}</li><li><b>Task Link:</b> <a href='${taskLink}'>View Task</a></li></ul>`
+          }).catch(console.error);
+        }
+        // Old assignee
+        if (oldAssigneeUser?.email) {
+          await emailService.sendEmail({
+            to: oldAssigneeUser.email,
+            subject: `Task Reassigned (Read-Only): ${task.name || task.title || 'Task'}`,
+            text: `Your task has been reassigned and is now read-only.\nTask: ${task.name || task.title || 'Task'}\nNew Assignee: ${newAssigneeUser?.name}\nTask Link: ${taskLink}`,
+            html: `<p>Your task has been reassigned and is now <b>read-only</b>.<br>Task: ${task.name || task.title || 'Task'}<br>New Assignee: ${newAssigneeUser?.name}<br>Task Link: <a href='${taskLink}'>View Task</a></p>`
+          }).catch(console.error);
+        }
+        // Managers/Admins
+        for (const mgr of managers) {
+          if (mgr.email) {
+            await emailService.sendEmail({
+              to: mgr.email,
+              subject: `Task Reassignment Completed: ${task.name || task.title || 'Task'}`,
+              text: `Task reassignment completed.\nTask: ${task.name || task.title || 'Task'}\nNew Assignee: ${newAssigneeUser?.name}\nOld Assignee: ${oldAssigneeUser?.name}\nTask Link: ${taskLink}`,
+              html: `<p>Task reassignment completed.<br>Task: ${task.name || task.title || 'Task'}<br>New Assignee: ${newAssigneeUser?.name}<br>Old Assignee: ${oldAssigneeUser?.name}<br>Task Link: <a href='${taskLink}'>View Task</a></p>`
+            }).catch(console.error);
+          }
+        }
+        return res.json({
+          success: true,
+          message: `Task reassigned and locked. Notifications sent.`,
+          action_taken: newStatus,
+          task_status: 'Request Approved',
+          locked: true
+        });
+
+      } else if (newStatus === 'REJECT') {
+        // Unlock and resume task atomically
+        await new Promise((resolve, reject) => {
+          db.query(
+            `UPDATE tasks SET status = 'In Progress', is_locked = 0 WHERE id = ?`,
+            [taskId],
+            (err) => err ? reject(err) : resolve(),
+            connection
+          );
+        });
+
+        await commitTransaction(connection);
+
+        // Notify old assignee and managers/admins on rejection
+        const emailService = require('../services/emailService');
+        const taskLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/tasks/${task.public_id}`;
+        if (oldAssigneeUser?.email) {
+          await emailService.sendEmail({
+            to: oldAssigneeUser.email,
+            subject: `Task Reassignment Rejected: ${task.name || task.title || 'Task'}`,
+            text: `Your reassignment request was rejected.\nTask: ${task.name || task.title || 'Task'}\nYou can continue working on this task.\nTask Link: ${taskLink}`,
+            html: `<p>Your reassignment request was <b>rejected</b>.<br>Task: ${task.name || task.title || 'Task'}<br>You can continue working on this task.<br>Task Link: <a href='${taskLink}'>View Task</a></p>`
+          }).catch(console.error);
+        }
+        for (const mgr of managers) {
+          if (mgr.email) {
+            await emailService.sendEmail({
+              to: mgr.email,
+              subject: `Task Reassignment Rejected: ${task.name || task.title || 'Task'}`,
+              text: `Task reassignment was rejected.\nTask: ${task.name || task.title || 'Task'}\nOld Assignee: ${oldAssigneeUser?.name}\nTask Link: ${taskLink}`,
+              html: `<p>Task reassignment was <b>rejected</b>.<br>Task: ${task.name || task.title || 'Task'}<br>Old Assignee: ${oldAssigneeUser?.name}<br>Task Link: <a href='${taskLink}'>View Task</a></p>`
+            }).catch(console.error);
+          }
+        }
+        return res.json({
+          success: true,
+          message: `Reassignment rejected. Task resumed for ${oldAssigneeUser?.name}.`,
+          action_taken: newStatus,
+          task_status: 'In Progress',
+          locked: false
+        });
+
+      } else {
+        await rollbackTransaction(connection);
+        return res.status(400).json({ success: false, error: 'Invalid action (approve|reject)' });
       }
-    });
+
+    } catch (txError) {
+      await rollbackTransaction(connection);
+      throw txError;
+    }
 
   } catch (error) {
     console.error('❌ Manager action error:', error);
@@ -2818,6 +2982,26 @@ router.get('/:id/reassign-requests', requireRole(['Employee', 'Manager']), async
   }
 });
 
+// GET /reassign-requests - List all pending reassignment requests for managers
+router.get('/reassign-requests', requireRole(['Manager']), async (req, res) => {
+  try {
+    const [requests] = await new Promise((resolve, reject) =>
+      db.query(`
+        SELECT r.*, t.title AS task_title, t.public_id AS task_public_id, u.name AS requester_name, u.email AS requester_email, u.public_id AS requester_public_id,
+               t.status AS task_status, t.taskDate, t.priority, t.project_id
+        FROM task_resign_requests r
+        JOIN tasks t ON r.task_id = t.id
+        JOIN users u ON r.requested_by = u._id
+        WHERE r.status = 'PENDING'
+        ORDER BY r.requested_at DESC
+      `, [], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+    res.json({ success: true, requests });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ✅ FIXED: Case-insensitive + Kanban Flow
 router.post('/:id/start', requireRole(['Employee']), async (req, res) => {
   try {
@@ -2839,10 +3023,19 @@ router.post('/:id/start', requireRole(['Employee']), async (req, res) => {
       });
     }
 
-    // Check assignment + NO LOCK
+
+    // Check assignment and permissions
     const assignment = await q('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [taskId, userId]);
     if (assignment.length === 0) return res.status(403).json({ success: false, error: 'Not assigned' });
-
+    // Check if task is locked and user is not allowed
+    const [taskRow] = await q('SELECT is_locked FROM tasks WHERE id = ?', [taskId]);
+    if (taskRow && taskRow.is_locked && req.user.role !== 'Admin' && req.user.role !== 'Manager') {
+      // Only allow new assignee
+      const [assn] = await q('SELECT user_id FROM taskassignments WHERE task_id = ?', [taskId]);
+      if (!assn || String(assn.user_id) !== String(userId)) {
+        return res.status(403).json({ success: false, error: 'Task is read-only for you (reassigned).' });
+      }
+    }
     const [lockCheck] = await q(`SELECT trr.status FROM task_resign_requests trr WHERE trr.task_id = ? AND trr.status = 'PENDING'`, [taskId]);
     if (lockCheck?.length > 0) return res.status(423).json({ success: false, error: 'Task locked - pending reassignment' });
 
