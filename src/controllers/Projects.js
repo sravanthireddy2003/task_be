@@ -4,6 +4,7 @@ const router = express.Router();
 const logger = require(__root + 'logger');
 const crypto = require('crypto');
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
+const NotificationService = require('../services/notificationService');
 require('dotenv').config();
 router.use(requireAuth);
  
@@ -169,7 +170,16 @@ router.post('/', requireRole(['Admin', 'Manager']), async (req, res) => {
     });
  
     console.log('Project emails sent:', emailResults);
- 
+
+    // Send notification
+    (async () => {
+      try {
+        await NotificationService.createAndSendToRoles(['Admin', 'Manager'], 'Project Created', `New project "${projectName}" has been created`, 'PROJECT_CREATED', 'project', projectId, req.user ? req.user.tenant_id : null);
+      } catch (notifErr) {
+        console.error('Project creation notification error:', notifErr);
+      }
+    })();
+
     res.status(201).json({ success: true, data: response });
   } catch (e) {
     logger.error('Create project error:', e.message);
@@ -538,6 +548,14 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
       const pmRows = await q('SELECT public_id, name FROM users WHERE _id = ? LIMIT 1', [updated[0].project_manager_id]);
       if (pmRows && pmRows.length > 0) out.project_manager = { id: pmRows[0].public_id, name: pmRows[0].name };
     }
+    // Send notification
+    (async () => {
+      try {
+        await NotificationService.createAndSendToRoles(['Admin', 'Manager'], 'Project Updated', `Project "${name || updated[0].name}" has been updated`, 'PROJECT_UPDATED', 'project', projectId, req.user ? req.user.tenant_id : null);
+      } catch (notifErr) {
+        console.error('Project update notification error:', notifErr);
+      }
+    })();
     res.json({ success: true, data: out });
   } catch (e) {
     logger.error('Update project error:', e.message);

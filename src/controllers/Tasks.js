@@ -18,6 +18,7 @@ const cron = require("node-cron");
 const winston = require("winston");
 const { google } = require("googleapis");
 const dayjs = require('dayjs');
+const NotificationService = require(__root + 'services/notificationService');
 router.use(requireAuth);        // ✅ Sets req.user from JWT
 router.use(tenantMiddleware); 
 
@@ -719,8 +720,30 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
     return new Promise((resolve, reject) => {
       executeTaskCreation(resolve, reject);
     })
-      .then((result) => {
+      .then(async (result) => {
         console.log('Task creation successful:', result);
+        // Send notifications to assigned users
+        if (result.assignedUsers && result.assignedUsers.length > 0) {
+          await NotificationService.createAndSend(
+            result.assignedUsers.map(u => typeof u === 'object' ? u.internalId || u.id : u),
+            'Task Assigned',
+            `You have been assigned a new task: ${body.title}`,
+            'TASK_ASSIGNED',
+            'task',
+            result.publicId
+          );
+        }
+
+        // Send notifications to managers and admins
+        await NotificationService.createAndSendToRoles(['Manager', 'Admin'], 
+          'New Task Created', 
+          `A new task "${body.title}" has been created`, 
+          'TASK_CREATED', 
+          'task', 
+          result.publicId, 
+          req.user.tenant_id
+        );
+
         // Overdue/on-time summary logic
         let summary = {};
         try {
@@ -1412,6 +1435,26 @@ router.patch('/:id/status', requireRole(['Employee']), async (req, res) => {
         logger.warn('Failed to persist project hours:', persistErr && persistErr.message);
       }
     }
+
+    // Notify the user
+    await NotificationService.createAndSend(
+      [req.user._id],
+      'Task Status Changed',
+      `Task status updated to ${status}: ${task.title}`,
+      'TASK_STATUS_CHANGED',
+      'task',
+      task.public_id
+    );
+
+    // Notify managers
+    await NotificationService.createAndSendToRoles(['Manager'], 
+      'Task Status Updated', 
+      `Task "${task.title}" status changed to ${status}`, 
+      'TASK_STATUS_CHANGED', 
+      'task', 
+      task.public_id, 
+      req.user.tenant_id
+    );
 
     res.json({
       success: true,
@@ -3043,6 +3086,16 @@ router.post('/:id/start', requireRole(['Employee']), async (req, res) => {
     await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?)', [taskId, userId, 'start', now]);
     await q('UPDATE tasks SET status = "In Progress", started_at = ?, live_timer = ? WHERE id = ?', [now, now, taskId]);
 
+    // Notify the user
+    await NotificationService.createAndSend(
+      [userId],
+      'Task Started',
+      `You started working on task: ${publicId}`,
+      'TASK_STARTED',
+      'task',
+      publicId
+    );
+
     res.json({ 
       success: true, 
       message: '✅ Started',
@@ -3080,6 +3133,16 @@ router.post('/:id/pause', requireRole(['Employee']), async (req, res) => {
     await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp, duration) VALUES (?, ?, ?, ?, ?)', [taskId, userId, 'pause', now, duration]);
     await q('UPDATE tasks SET status = "On Hold", total_duration = COALESCE(total_duration, 0) + ?, live_timer = NULL WHERE id = ?', [duration, taskId]);
 
+    // Notify the user
+    await NotificationService.createAndSend(
+      [userId],
+      'Task Paused',
+      `You paused task: ${publicId}`,
+      'TASK_PAUSED',
+      'task',
+      publicId
+    );
+
     res.json({ success: true, message: '⏸️ Paused', data: { taskId: publicId, status: 'On Hold' } });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -3107,6 +3170,16 @@ router.post('/:id/resume', requireRole(['Employee']), async (req, res) => {
     const now = new Date();
     await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?)', [taskId, userId, 'resume', now]);
     await q('UPDATE tasks SET status = "In Progress", updatedAt = NOW() WHERE id = ?', [taskId]);
+
+    // Notify the user
+    await NotificationService.createAndSend(
+      [userId],
+      'Task Resumed',
+      `Task resumed: ${task[0].public_id}`,
+      'TASK_RESUMED',
+      'task',
+      task[0].public_id
+    );
 
     res.json({ success: true, message: '▶️ Resumed', data: { status: 'In Progress' } });
   } catch (e) {
@@ -3138,6 +3211,16 @@ router.post('/:id/complete', requireRole(['Employee']), async (req, res) => {
 
     await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp, duration) VALUES (?, ?, ?, ?, ?)', [taskId, userId, 'complete', now, duration]);
     await q('UPDATE tasks SET status = "Completed", completed_at = ?, total_duration = COALESCE(total_duration, 0) + ?, updatedAt = NOW() WHERE id = ?', [now, duration, taskId]);
+
+    // Notify the user
+    await NotificationService.createAndSend(
+      [userId],
+      'Task Completed',
+      `You completed task: ${publicId}`,
+      'TASK_COMPLETED',
+      'task',
+      publicId
+    );
 
     res.json({ success: true, message: '✅ Completed', data: { status: 'Completed' } });
   } catch (e) {

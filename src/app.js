@@ -1,13 +1,50 @@
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
+const http = require('http');
+const socketIo = require('socket.io');
+const jwt = require('jsonwebtoken');
 require('dotenv').config()
 const app = express();
+const server = http.createServer(app);
+const io = socketIo(server, {
+  cors: {
+    origin: "*", // Adjust for production
+    methods: ["GET", "POST", "PUT", "DELETE"]
+  }
+});
 const db = require('./db');
 const path = require('path');
 const fs = require('fs');
 
 global.__root = __dirname + '/';
+
+// Socket.IO authentication and room joining
+io.use((socket, next) => {
+  const token = socket.handshake.auth.token;
+  if (!token) {
+    return next(new Error('Authentication error'));
+  }
+  try {
+    const decoded = jwt.verify(token, process.env.SECRET || 'secret');
+    socket.user = decoded;
+    next();
+  } catch (err) {
+    next(new Error('Authentication error'));
+  }
+});
+
+io.on('connection', (socket) => {
+  const userId = socket.user.id; // Assuming id is public_id or _id
+  socket.join(`user_${userId}`);
+  console.log(`User ${userId} connected and joined room user_${userId}`);
+  socket.on('disconnect', () => {
+    console.log(`User ${userId} disconnected`);
+  });
+});
+
+// Make io available globally
+global.io = io;
 
 app.use(bodyParser.urlencoded({ extended: false }))
 app.use(bodyParser.json())
@@ -100,5 +137,8 @@ app.use('/api/manager', managerRoutes);
 const employeeRoutes = require(__root + 'routes/employeeRoutes');
 app.use('/api/employee', employeeRoutes);
 
+const notificationRoutes = require(__root + 'routes/notificationRoutes');
+app.use('/api/notifications', notificationRoutes);
 
-module.exports = app;
+
+module.exports = server;

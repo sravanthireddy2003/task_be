@@ -2,6 +2,7 @@ const db = require(__root + 'db');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const NotificationService = require('../services/notificationService');
 
 const MODULES_FILE = path.join(__root, 'data', 'modules.json');
 
@@ -375,6 +376,11 @@ module.exports = {
         const insertId = result && result.insertId ? result.insertId : null;
         if (!insertId) return res.status(201).json({ success: true, data: { id: insertId, name, manager_id, head_id } });
         (async () => {
+          try {
+            await NotificationService.createAndSendToRoles(['Admin'], 'Department Created', `New department "${name}" has been created`, 'DEPARTMENT_CREATED', 'department', insertId, req.user ? req.user.tenant_id : null);
+          } catch (notifErr) {
+            console.error('Department creation notification error:', notifErr);
+          }
           const selOptional = [].concat(hasPublic ? ['public_id'] : [])
             .concat(['manager_id','head_id'])
             .concat(hasManagerNameCol ? ['manager_name'] : [])
@@ -502,6 +508,11 @@ module.exports = {
         }
         if (!result || result.affectedRows === 0) return res.status(404).json({ success: false, message: 'Department not found' });
         (async () => {
+          try {
+            await NotificationService.createAndSendToRoles(['Admin'], 'Department Updated', `Department "${name || 'Unknown'}" has been updated`, 'DEPARTMENT_UPDATED', 'department', id, req.user ? req.user.tenant_id : null);
+          } catch (notifErr) {
+            console.error('Department update notification error:', notifErr);
+          }
           const hasPublic = await tableHasColumn('departments', 'public_id');
           const selOptional = [].concat(hasPublic ? ['public_id'] : []).concat(['manager_id','head_id']);
           safeSelect('departments', ['id','name'], selOptional, 'WHERE id = ? LIMIT 1', [id], (sErr, rows) => {
@@ -552,6 +563,20 @@ module.exports = {
           return res.status(500).json({ success: false, error: err.message });
         }
         if (!result || result.affectedRows === 0) return res.status(404).json({ success: false, message: 'Department not found' });
+        (async () => {
+          try {
+            await NotificationService.createAndSendToRoles(['Admin'], 'Department Deleted', `Department with ID "${id}" has been deleted`, 'DEPARTMENT_DELETED', 'department', id, req.user ? req.user.tenant_id : null);
+          } catch (notifErr) {
+            console.error('Department delete notification error:', notifErr);
+          }
+        })();
+        (async () => {
+          try {
+            await NotificationService.createAndSendToRoles(['Admin'], 'Department Deleted', `Department with ID "${id}" has been deleted`, 'DEPARTMENT_DELETED', 'department', id, req.user ? req.user.tenant_id : null);
+          } catch (notifErr) {
+            console.error('Department delete notification error:', notifErr);
+          }
+        })();
         return res.json({ success: true, message: 'Department deleted' });
       });
       return;
@@ -712,6 +737,13 @@ module.exports = {
     const m = { moduleId, name, description: description || '' };
     modules.push(m);
     if (!writeModules(modules)) return res.status(500).json({ success: false, message: 'Failed to save module' });
+    (async () => {
+      try {
+        await NotificationService.createAndSendToRoles(['Admin'], 'Module Created', `New module "${name}" has been created`, 'MODULE_CREATED', 'module', moduleId, req.user ? req.user.tenant_id : null);
+      } catch (notifErr) {
+        console.error('Module creation notification error:', notifErr);
+      }
+    })();
     return res.status(201).json({ success: true, data: m });
   },
 
@@ -724,6 +756,13 @@ module.exports = {
     if (name) modules[idx].name = name;
     if (description !== undefined) modules[idx].description = description;
     if (!writeModules(modules)) return res.status(500).json({ success: false, message: 'Failed to write module' });
+    (async () => {
+      try {
+        await NotificationService.createAndSendToRoles(['Admin'], 'Module Updated', `Module "${name || modules[idx].name}" has been updated`, 'MODULE_UPDATED', 'module', id, req.user ? req.user.tenant_id : null);
+      } catch (notifErr) {
+        console.error('Module update notification error:', notifErr);
+      }
+    })();
     return res.json({ success: true, data: modules[idx] });
   },
 
@@ -734,6 +773,13 @@ module.exports = {
     if (idx === -1) return res.status(404).json({ success: false, message: 'Module not found' });
     const removed = modules.splice(idx, 1)[0];
     if (!writeModules(modules)) return res.status(500).json({ success: false, message: 'Failed to write module' });
+    (async () => {
+      try {
+        await NotificationService.createAndSendToRoles(['Admin'], 'Module Deleted', `Module "${removed.name}" has been deleted`, 'MODULE_DELETED', 'module', id, req.user ? req.user.tenant_id : null);
+      } catch (notifErr) {
+        console.error('Module delete notification error:', notifErr);
+      }
+    })();
     return res.json({ success: true, data: removed });
   }
 };
