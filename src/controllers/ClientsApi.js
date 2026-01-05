@@ -7,6 +7,7 @@ const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
 const mime = require('mime-types');
+const NotificationService = require('../services/notificationService');
  
 // configure multer to save files into uploads/ directory
 const uploadsRoot = path.join(__dirname, '..', 'uploads');
@@ -468,13 +469,15 @@ if (primaryContactEmail || email) {
     `, [clientId, req.user && req.user._id ? req.user._id : null, 'create',
         JSON.stringify({ createdBy: req.user ? req.user.id : null })]);
  
-    return res.status(201).json({
-      success: true,
-      data: { id: clientId, ref, name, company, documents: attachedDocuments },
-      viewer: viewerInfo,
-      clientCredentials: clientCredentials || null
-    });
- 
+    // Send notification
+    (async () => {
+      try {
+        await NotificationService.createAndSendToRoles(['Admin'], 'Client Added', `New client "${name}" has been added`, 'CLIENT_ADDED', 'client', clientId, req.user ? req.user.tenant_id : null);
+      } catch (notifErr) {
+        console.error('Client creation notification error:', notifErr);
+      }
+    })();
+
   } catch (e) {
     logger.error('Error creating client: ' + e.message);
     return res.status(500).json({ success: false, error: e.message });
@@ -677,8 +680,14 @@ router.put('/:id', requireRole(['Admin','Manager']), async (req, res) => {
     if (setCols.length === 0) return res.status(400).json({ success: false, error: 'No updatable fields provided' });
     params.push(id);
     await q(`UPDATE clientss SET ${setCols.join(', ')} WHERE id = ?`, params);
-    await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'update', JSON.stringify(payload)]).catch(()=>{});
-    return res.json({ success: true, message: 'Client updated' });
+    await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'update', JSON.stringify(payload)]).catch(()=>{});    // Send notification
+    (async () => {
+      try {
+        await NotificationService.createAndSendToRoles(['Admin'], 'Client Updated', `Client with ID "${id}" has been updated`, 'CLIENT_UPDATED', 'client', id, req.user ? req.user.tenant_id : null);
+      } catch (notifErr) {
+        console.error('Client update notification error:', notifErr);
+      }
+    })();    return res.json({ success: true, message: 'Client updated' });
   } catch (e) {
     logger.error('Error updating client: ' + e.message);
     return res.status(500).json({ success: false, error: e.message });
@@ -715,8 +724,14 @@ router.delete('/:id', requireRole('Admin'), async (req, res) => {
   try {
     const id = req.params.id;
     await permanentlyDeleteClientById(id);
-    await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'deleted', 'permanently deleted']).catch(()=>{});
-    return res.json({ success: true, message: 'Client permanently deleted' });
+    await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'deleted', 'permanently deleted']).catch(()=>{});    // Send notification
+    (async () => {
+      try {
+        await NotificationService.createAndSendToRoles(['Admin'], 'Client Deleted', `Client with ID "${id}" has been deleted`, 'CLIENT_DELETED', 'client', id, req.user ? req.user.tenant_id : null);
+      } catch (notifErr) {
+        console.error('Client delete notification error:', notifErr);
+      }
+    })();    return res.json({ success: true, message: 'Client permanently deleted' });
   } catch (e) {
     logger.error('Error deleting client: ' + e.message);
     return res.status(500).json({ success: false, error: e.message });

@@ -8,6 +8,7 @@ const jwt = require('jsonwebtoken');
 const otpService = require(__root + 'utils/otpService');
 const emailService = require(__root + 'utils/emailService');
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
+const NotificationService = require('../services/notificationService');
 require('dotenv').config();
 
 const queryAsync = (sql, params = []) =>
@@ -219,6 +220,15 @@ router.post('/create', requireRole('Admin'), async (req, res) => {
     });
 
     const insertId = result.insertId;
+
+    // Send notification
+    (async () => {
+      try {
+        await NotificationService.createAndSendToRoles(['Admin'], 'User Created', `New user "${name}" has been created`, 'USER_CREATED', 'user', insertId, req.user ? req.user.tenant_id : null);
+      } catch (notifErr) {
+        console.error('User creation notification error:', notifErr);
+      }
+    })();
 
     // Send welcome/setup email
     const setupToken = jwt.sign({ id: publicId, step: 'setup' }, process.env.JWT_SECRET || process.env.SECRET || 'change_this_secret', { expiresIn: '7d' });
