@@ -2856,60 +2856,130 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
           );
         });
 
-        // Remove previous assignees
-        await new Promise((resolve, reject) => {
-          db.query('DELETE FROM taskassignments WHERE task_id = ?', [taskId], (err) => err ? reject(err) : resolve(), connection);
-        });
+        // Check if this is a full reassignment (single assignee) or partial reassignment (multiple assignees)
+        const isFullReassignment = prevAssignees.length <= 1;
 
-        // Assign to new employee
-        if (resignRequest.new_assignee_id) {
+        if (isFullReassignment) {
+          // Full reassignment: remove all assignees and assign to new user
           await new Promise((resolve, reject) => {
-            db.query(
-              'INSERT INTO taskassignments (task_id, user_id) VALUES (?, ?)',
-              [taskId, resignRequest.new_assignee_id],
-              (err) => err ? reject(err) : resolve(),
-              connection
-            );
+            db.query('DELETE FROM taskassignments WHERE task_id = ?', [taskId], (err) => err ? reject(err) : resolve(), connection);
           });
+
+          // Assign to new employee
+          if (resignRequest.new_assignee_id) {
+            await new Promise((resolve, reject) => {
+              db.query(
+                'INSERT INTO taskassignments (task_id, user_id) VALUES (?, ?)',
+                [taskId, resignRequest.new_assignee_id],
+                (err) => err ? reject(err) : resolve(),
+                connection
+              );
+            });
+          }
+        } else {
+          // Partial reassignment: only remove the requesting user, keep others
+          await new Promise((resolve, reject) => {
+            db.query('DELETE FROM taskassignments WHERE task_id = ? AND user_id = ?', [taskId, resignRequest.requested_by], (err) => err ? reject(err) : resolve(), connection);
+          });
+
+          // Assign to new employee if specified
+          if (resignRequest.new_assignee_id) {
+            await new Promise((resolve, reject) => {
+              db.query(
+                'INSERT INTO taskassignments (task_id, user_id) VALUES (?, ?)',
+                [taskId, resignRequest.new_assignee_id],
+                (err) => err ? reject(err) : resolve(),
+                connection
+              );
+            });
+          }
         }
 
         await commitTransaction(connection);
 
-        // Send notification emails (outside transaction)
+        // Send notification emails using proper templates
         const emailService = require('../services/emailService');
         const taskLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/tasks/${task.public_id}`;
-        // New assignee
-        if (newAssigneeUser?.email) {
-          await emailService.sendEmail({
-            to: newAssigneeUser.email,
-            subject: `Task Reassigned: ${task.name || task.title || 'Task'}`,
-            text: `You have been assigned a new task.\nTask: ${task.name || task.title || 'Task'}\nPrevious Assignee: ${oldAssigneeUser?.name}\nProject: ${task.project_id || ''}\nDeadline: ${task.taskDate || ''}\nPriority: ${task.priority || ''}\nTask Link: ${taskLink}`,
-            html: `<p>You have been assigned a new task.</p><ul><li><b>Task:</b> ${task.name || task.title || 'Task'}</li><li><b>Previous Assignee:</b> ${oldAssigneeUser?.name}</li><li><b>Project:</b> ${task.project_id || ''}</li><li><b>Deadline:</b> ${task.taskDate || ''}</li><li><b>Priority:</b> ${task.priority || ''}</li><li><b>Task Link:</b> <a href='${taskLink}'>View Task</a></li></ul>`
-          }).catch(console.error);
-        }
-        // Old assignee
-        if (oldAssigneeUser?.email) {
-          await emailService.sendEmail({
-            to: oldAssigneeUser.email,
-            subject: `Task Reassigned (Read-Only): ${task.name || task.title || 'Task'}`,
-            text: `Your task has been reassigned and is now read-only.\nTask: ${task.name || task.title || 'Task'}\nNew Assignee: ${newAssigneeUser?.name}\nTask Link: ${taskLink}`,
-            html: `<p>Your task has been reassigned and is now <b>read-only</b>.<br>Task: ${task.name || task.title || 'Task'}<br>New Assignee: ${newAssigneeUser?.name}<br>Task Link: <a href='${taskLink}'>View Task</a></p>`
-          }).catch(console.error);
-        }
-        // Managers/Admins
-        for (const mgr of managers) {
-          if (mgr.email) {
+
+        // Send emails for approval
+        try {
+          // Get new assignee info if assigned
+          let newAssigneeUser = null;
+          if (resignRequest.new_assignee_id) {
+            const [newAssigneeRows] = await new Promise((resolve, reject) =>
+              db.query('SELECT name, email FROM users WHERE _id = ?', [resignRequest.new_assignee_id], (err, rows) => err ? reject(err) : resolve([rows]))
+            );
+            newAssigneeUser = newAssigneeRows[0];
+          }
+
+          if (isFullReassignment) {
+            // Full reassignment: notify old assignees that they've been removed
+            for (const oldAssignee of prevAssignees) {
+              if (oldAssignee.email) {
+                const oldAssigneeTemplate = emailService.taskReassignmentOldAssigneeTemplate({
+                  taskTitle: task.name || task.title || 'Task',
+                  newAssignee: newAssigneeUser?.name || 'New Assignee',
+                  taskLink
+                });
+                await emailService.sendEmail({
+                  to: oldAssignee.email,
+                  ...oldAssigneeTemplate
+                }).catch(console.error);
+              }
+            }
+          } else {
+            // Partial reassignment: only notify the requesting user
+            if (oldAssigneeUser?.email) {
+              const oldAssigneeTemplate = emailService.taskReassignmentOldAssigneeTemplate({
+                taskTitle: task.name || task.title || 'Task',
+                newAssignee: newAssigneeUser?.name || 'New Assignee',
+                taskLink
+              });
+              await emailService.sendEmail({
+                to: oldAssigneeUser.email,
+                ...oldAssigneeTemplate
+              }).catch(console.error);
+            }
+          }
+
+          // Notify new assignee if assigned
+          if (newAssigneeUser?.email) {
+            const approvedTemplate = emailService.taskReassignmentApprovedTemplate({
+              taskTitle: task.name || task.title || 'Task',
+              oldAssignee: oldAssigneeUser?.name || 'Previous Assignee',
+              newAssignee: newAssigneeUser.name,
+              taskLink
+            });
             await emailService.sendEmail({
-              to: mgr.email,
-              subject: `Task Reassignment Completed: ${task.name || task.title || 'Task'}`,
-              text: `Task reassignment completed.\nTask: ${task.name || task.title || 'Task'}\nNew Assignee: ${newAssigneeUser?.name}\nOld Assignee: ${oldAssigneeUser?.name}\nTask Link: ${taskLink}`,
-              html: `<p>Task reassignment completed.<br>Task: ${task.name || task.title || 'Task'}<br>New Assignee: ${newAssigneeUser?.name}<br>Old Assignee: ${oldAssigneeUser?.name}<br>Task Link: <a href='${taskLink}'>View Task</a></p>`
+              to: newAssigneeUser.email,
+              ...approvedTemplate
             }).catch(console.error);
           }
+
+          // Notify managers/admins
+          const managerTemplate = emailService.taskReassignmentManagerTemplate({
+            taskTitle: task.name || task.title || 'Task',
+            oldAssignee: oldAssigneeUser?.name || 'Previous Assignee',
+            newAssignee: newAssigneeUser?.name || 'New Assignee',
+            taskLink
+          });
+
+          for (const mgr of managers) {
+            if (mgr.email) {
+              await emailService.sendEmail({
+                to: mgr.email,
+                ...managerTemplate
+              }).catch(console.error);
+            }
+          }
+        } catch (emailError) {
+          console.error('Error sending approval emails:', emailError);
+          // Don't fail the request due to email errors
         }
+
         return res.json({
           success: true,
-          message: `Task reassigned and locked. Notifications sent.`,
+          message: 'Reassignment approved successfully',
           action_taken: newStatus,
           task_status: 'Request Approved',
           locked: true
@@ -2931,24 +3001,35 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
         // Notify old assignee and managers/admins on rejection
         const emailService = require('../services/emailService');
         const taskLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/tasks/${task.public_id}`;
+
+        // Old assignee (rejection notification)
         if (oldAssigneeUser?.email) {
+          const rejectedTemplate = emailService.taskReassignmentRejectedTemplate({
+            taskTitle: task.name || task.title || 'Task',
+            taskLink
+          });
           await emailService.sendEmail({
             to: oldAssigneeUser.email,
-            subject: `Task Reassignment Rejected: ${task.name || task.title || 'Task'}`,
-            text: `Your reassignment request was rejected.\nTask: ${task.name || task.title || 'Task'}\nYou can continue working on this task.\nTask Link: ${taskLink}`,
-            html: `<p>Your reassignment request was <b>rejected</b>.<br>Task: ${task.name || task.title || 'Task'}<br>You can continue working on this task.<br>Task Link: <a href='${taskLink}'>View Task</a></p>`
+            ...rejectedTemplate
           }).catch(console.error);
         }
+
+        // Managers/Admins (rejection notification)
+        const rejectedManagerTemplate = emailService.taskReassignmentRejectedManagerTemplate({
+          taskTitle: task.name || task.title || 'Task',
+          oldAssignee: oldAssigneeUser?.name || 'Previous Assignee',
+          taskLink
+        });
+
         for (const mgr of managers) {
           if (mgr.email) {
             await emailService.sendEmail({
               to: mgr.email,
-              subject: `Task Reassignment Rejected: ${task.name || task.title || 'Task'}`,
-              text: `Task reassignment was rejected.\nTask: ${task.name || task.title || 'Task'}\nOld Assignee: ${oldAssigneeUser?.name}\nTask Link: ${taskLink}`,
-              html: `<p>Task reassignment was <b>rejected</b>.<br>Task: ${task.name || task.title || 'Task'}<br>Old Assignee: ${oldAssigneeUser?.name}<br>Task Link: <a href='${taskLink}'>View Task</a></p>`
+              ...rejectedManagerTemplate
             }).catch(console.error);
           }
         }
+
         return res.json({
           success: true,
           message: `Reassignment rejected. Task resumed for ${oldAssigneeUser?.name}.`,
@@ -2961,8 +3042,8 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
         await rollbackTransaction(connection);
         return res.status(400).json({ success: false, error: 'Invalid action (approve|reject)' });
       }
-
-    } catch (txError) {
+    }
+    catch (txError) {
       await rollbackTransaction(connection);
       throw txError;
     }

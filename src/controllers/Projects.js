@@ -207,12 +207,12 @@ router.get('/', async (req, res) => {
         ORDER BY p.created_at DESC
       `, [req.user._id, req.user._id]);
     } else if (req.user.role === 'Employee') {
-      // Employees see projects from their departments
+      // Employees see only projects where they have assigned tasks
       projects = await q(`
         SELECT DISTINCT p.* FROM projects p
-        JOIN project_departments pd ON p.id = pd.project_id
-        JOIN departments d ON pd.department_id = d.id
-        WHERE d.public_id = (SELECT department_public_id FROM users u WHERE u._id = ? LIMIT 1)
+        JOIN tasks t ON p.id = t.project_id
+        JOIN taskassignments ta ON t.id = ta.task_id
+        WHERE ta.user_id = ?
         ORDER BY p.created_at DESC
       `, [req.user._id]);
     } else {
@@ -282,12 +282,12 @@ router.get('/stats', async (req, res) => {
       `, [req.user._id, req.user._id]);
       projectIds = projects.map(p => p.id);
     } else if (req.user.role === 'Employee') {
-      // Projects from user's department
+      // Projects where employee has assigned tasks
       const projects = await q(`
         SELECT DISTINCT p.id FROM projects p
-        JOIN project_departments pd ON p.id = pd.project_id
-        JOIN departments d ON pd.department_id = d.id
-        WHERE d.public_id = (SELECT department_public_id FROM users WHERE _id = ? LIMIT 1)
+        JOIN tasks t ON p.id = t.project_id
+        JOIN taskassignments ta ON t.id = ta.task_id
+        WHERE ta.user_id = ?
       `, [req.user._id]);
       projectIds = projects.map(p => p.id);
     }
