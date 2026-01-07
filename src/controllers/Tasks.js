@@ -1,3 +1,4 @@
+
 const db = require(__root + 'db');
 const express = require('express');
 const router = express.Router();
@@ -1037,19 +1038,12 @@ router.get('/', async (req, res) => {
 });
 
 // PUT /api/projects/tasks/:id - Update task
+// ✅ FIXED ROUTER - Matches YOUR task_resign_requests schema (no requester_email column)
 router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
   const { id: taskId } = req.params;
   const {
-    stage,
-    title,
-    priority,
-    description,
-    client_id,
-    projectId,
-    projectPublicId,
-    taskDate,
-    time_alloted,
-    assigned_to,
+    stage, title, priority, description, client_id, projectId, projectPublicId,
+    taskDate, time_alloted, assigned_to, handleResignationRequestId
   } = req.body;
 
   logger.info(`[PUT /tasks/:id] Updating task: taskId=${taskId}`);
@@ -1060,220 +1054,331 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
       return res.status(404).json({ success: false, error: 'Task not found' });
     }
     const internalTaskId = taskRow[0].id;
+
     db.getConnection((err, connection) => {
       if (err) {
         logger.error(`DB connection error: ${err}`);
         return res.status(500).json({ success: false, error: 'Database connection error' });
       }
 
-      const updates = [];
-      const values = [];
-
-      if (stage !== undefined) { updates.push('stage = ?'); values.push(stage); }
-      if (title !== undefined) { updates.push('title = ?'); values.push(title); }
-      if (priority !== undefined) { updates.push('priority = ?'); values.push(priority); }
-      if (description !== undefined) { updates.push('description = ?'); values.push(description); }
-      if (client_id !== undefined) { updates.push('client_id = ?'); values.push(client_id); }
-      if (taskDate !== undefined) { updates.push('taskDate = ?'); values.push(taskDate); }
-      if (time_alloted !== undefined) { updates.push('time_alloted = ?'); values.push(time_alloted); }
-      if (projectId !== undefined) { updates.push('project_id = ?'); values.push(projectId); }
-      if (projectPublicId !== undefined) { updates.push('project_public_id = ?'); values.push(projectPublicId); }
-
-      updates.push('updatedAt = ?');
-      values.push(new Date().toISOString());
-      values.push(internalTaskId);
-
-      if (updates.length === 1) {
-        connection.release();
-        return res.status(400).json({ success: false, error: 'No fields to update' });
-      }
-
-      const updateTaskQuery = `UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`;
-
-      connection.query(updateTaskQuery, values, async (err, result) => {
-        if (err) {
-          connection.release();
-          logger.error(`Error updating task: ${err.message}`);
-          return res.status(500).json({ success: false, error: 'Database update error' });
-        }
-
-        if (result.affectedRows === 0) {
-          connection.release();
-          return res.status(404).json({ success: false, error: 'Task not found' });
-        }
-
-        let reassigned = false;
-        let finalAssignedUserIds = []; // INTERNAL user IDs for email
-
+      // ✅ FIXED: Fetch from YOUR schema (requested_by → users table)
+      (async () => {
         try {
-          if (Array.isArray(assigned_to)) {
-            await new Promise((resolve, reject) =>
-              connection.query('DELETE FROM taskassignments WHERE task_id = ?', [internalTaskId], (e) => e ? reject(e) : resolve())
+          let reassignmentRequest = null;
+          let oldAssigneeEmail = null;
+          let oldAssigneeName = 'Previous Assignee';
+
+          if (handleResignationRequestId) {
+            // 1. Get request details (YOUR schema: requested_by)
+            const requestRows = await new Promise((resolve, reject) =>
+              connection.query(
+                'SELECT requested_by FROM task_resign_requests WHERE id = ? AND status = "APPROVED"',
+                [handleResignationRequestId],
+                (e, r) => e ? reject(e) : resolve(r)
+              )
             );
 
-            if (assigned_to.length > 0) {
-              const numericIds = assigned_to.filter(v => /^\d+$/.test(String(v))).map(Number);
-              const publicIds = assigned_to.filter(v => !/^\d+$/.test(String(v))).map(String);
-              finalAssignedUserIds = Array.from(new Set(numericIds));
+            if (requestRows.length > 0) {
+              const requestedById = requestRows[0].requested_by;
+              
+              // 2. Get requester's email/name from users table
+              const userRows = await new Promise((resolve, reject) =>
+                connection.query(
+                  'SELECT _id, name, email FROM users WHERE _id = ?',
+                  [requestedById],
+                  (e, r) => e ? reject(e) : resolve(r)
+                )
+              );
 
-              if (publicIds.length > 0) {
-                const rows = await new Promise((resolve, reject) =>
-                  connection.query('SELECT _id FROM users WHERE public_id IN (?)', [publicIds], (e, r) => e ? reject(e) : resolve(r))
+              if (userRows.length > 0) {
+                reassignmentRequest = userRows[0];
+                oldAssigneeEmail = userRows[0].email;
+                oldAssigneeName = userRows[0].name || 'Previous Assignee';
+              }
+            }
+          }
+
+          // 3. Build updates
+          const updates = [];
+          const values = [];
+
+          if (stage !== undefined) { updates.push('stage = ?'); values.push(stage); }
+          if (title !== undefined) { updates.push('title = ?'); values.push(title); }
+          if (priority !== undefined) { updates.push('priority = ?'); values.push(priority); }
+          if (description !== undefined) { updates.push('description = ?'); values.push(description); }
+          if (client_id !== undefined) { updates.push('client_id = ?'); values.push(client_id); }
+          if (taskDate !== undefined) { updates.push('taskDate = ?'); values.push(taskDate); }
+          if (time_alloted !== undefined) { updates.push('time_alloted = ?'); values.push(time_alloted); }
+          if (projectId !== undefined) { updates.push('project_id = ?'); values.push(projectId); }
+          if (projectPublicId !== undefined) { updates.push('project_public_id = ?'); values.push(projectPublicId); }
+
+          updates.push('updatedAt = ?');
+          values.push(new Date().toISOString());
+          values.push(internalTaskId);
+
+          if (updates.length === 1) {
+            connection.release();
+            return res.status(400).json({ success: false, error: 'No fields to update' });
+          }
+
+          // 4. Update task
+          const updateTaskQuery = `UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`;
+          connection.query(updateTaskQuery, values, async (err, result) => {
+            if (err) {
+              connection.release();
+              logger.error(`Error updating task: ${err.message}`);
+              return res.status(500).json({ success: false, error: 'Database update error' });
+            }
+
+            if (result.affectedRows === 0) {
+              connection.release();
+              return res.status(404).json({ success: false, message: 'Task not found' });
+            }
+
+            let reassigned = false;
+            let finalAssignedUserIds = [];
+            let emailStatus = null;
+
+            try {
+              // 5. Handle assignees (ADD only - preserve read-only)
+              if (Array.isArray(assigned_to) && assigned_to.length > 0) {
+                const currentAssignees = await new Promise((resolve, reject) =>
+                  connection.query('SELECT user_Id FROM taskassignments WHERE task_Id = ?', 
+                    [internalTaskId], (e, r) => e ? reject(e) : resolve(r))
                 );
-                if (rows.length > 0) {
-                  rows.forEach(r => { if (r && r._id) finalAssignedUserIds.push(r._id); });
+                const currentUserIds = currentAssignees.map(r => String(r.user_Id));
+
+                const numericIds = assigned_to.filter(v => /^\d+$/.test(String(v))).map(String);
+                const publicIds = assigned_to.filter(v => !/^\d+$/.test(String(v))).map(String);
+                let newUserIds = [...numericIds];
+
+                if (publicIds.length > 0) {
+                  const rows = await new Promise((resolve, reject) =>
+                    connection.query('SELECT _id FROM users WHERE public_id IN (?)', 
+                      [publicIds], (e, r) => e ? reject(e) : resolve(r))
+                  );
+                  rows.forEach(r => { if (r && r._id) newUserIds.push(String(r._id)); });
+                }
+                newUserIds = Array.from(new Set(newUserIds));
+
+                // Add new assignees only
+                for (const uid of newUserIds) {
+                  if (!currentUserIds.includes(uid)) {
+                    await new Promise((resolve,  reject) =>
+                      connection.query(
+                        'INSERT IGNORE INTO taskassignments (task_Id, user_Id) VALUES (?, ?)', 
+                        [internalTaskId, uid], (e) => e ? reject(e) : resolve()
+                      )
+                    );
+                  }
+                }
+
+                // ✅ SELECTIVE READ-ONLY: Only requester becomes read-only
+                if (req.user && req.user._id) {
+                  await new Promise((resolve, reject) =>
+                    connection.query(
+                      'UPDATE taskassignments SET is_read_only = 1 WHERE task_Id = ? AND user_Id = ?', 
+                      [internalTaskId, req.user._id], (e) => e ? reject(e) : resolve()
+                    )
+                  );
+                }
+
+                reassigned = true;
+                finalAssignedUserIds = Array.from(new Set([...currentUserIds, ...newUserIds]));
+              }
+
+              // 6. Fetch updated task
+              const fetchSql = `
+                SELECT t.*, c.name AS client_name,
+                  GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
+                  GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
+                  GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names,
+                  GROUP_CONCAT(DISTINCT u.email) AS assigned_user_emails
+                FROM tasks t
+                LEFT JOIN clientss c ON t.client_id = c.id
+                LEFT JOIN taskassignments ta ON ta.task_Id = t.id
+                LEFT JOIN users u ON u._id = ta.user_Id
+                WHERE t.id = ? GROUP BY t.id LIMIT 1
+              `;
+
+              const rows = await new Promise((resolve, reject) => 
+                connection.query(fetchSql, [internalTaskId], (e, r) => e ? reject(e) : resolve(r))
+              );
+
+              const taskObj = rows.length > 0 ? {
+                id: rows[0].public_id || String(rows[0].id),
+                title: rows[0].title,
+                description: rows[0].description,
+                stage: rows[0].stage,
+                taskDate: rows[0].taskDate ? new Date(rows[0].taskDate).toISOString() : null,
+                priority: rows[0].priority,
+                timeAlloted: rows[0].time_alloted ? Number(rows[0].time_alloted) : null,
+                client: rows[0].client_id ? { id: String(rows[0].client_id), name: rows[0].client_name } : null,
+                assignedUsers: (rows[0].assigned_user_ids?.split(',') || []).map((uid, i) => ({
+                  id: rows[0].assigned_user_public_ids?.split(',')[i] || uid,
+                  internalId: String(uid),
+                  name: rows[0].assigned_user_names?.split(',')[i] || null,
+                  email: rows[0].assigned_user_emails?.split(',')[i] || null
+                }))
+              } : { taskId };
+
+              // 7. ✅ SEND EMAILS (Valid emails only)
+              if (reassigned && Array.isArray(taskObj.assignedUsers)) {
+                try {
+                  const baseUrl = process.env.FRONTEND_URL || 'http://localhost:4000';
+                  const taskLink = `${baseUrl}/tasks/${taskId}`;
+                  
+                  const isValidEmail = (email) => {
+                    if (!email || typeof email !== 'string' || !email.includes('@')) return false;
+                    const invalidDomains = ['@example.com', '@test.com'];
+                    return !invalidDomains.some(domain => email.toLowerCase().endsWith(domain));
+                  };
+
+                  const requesterId = req.user?._id ? String(req.user._id) : null;
+                  const newAssignees = taskObj.assignedUsers.filter(u => u.internalId !== requesterId);
+
+                  // New assignees
+                  for (const user of newAssignees) {
+                    if (isValidEmail(user.email)) {
+                      await emailService.sendEmail(
+                        emailService.taskReassignmentApprovedTemplate({
+                          taskTitle: taskObj.title,
+                          taskId,
+                          oldAssignee: oldAssigneeName,
+                          newAssignee: user.name,
+                          taskLink
+                        }),
+                        user.email
+                      );
+                    }
+                  }
+
+                  // Old assignee (requester)
+                  if (isValidEmail(oldAssigneeEmail)) {
+                    await emailService.sendEmail(
+                      emailService.taskReassignmentOldAssigneeTemplate({
+                        taskTitle: taskObj.title,
+                        newAssignees: newAssignees.map(u => u.name).join(', '),
+                        taskLink
+                      }),
+                      oldAssigneeEmail
+                    );
+                  }
+
+                  emailStatus = { sent: true };
+                } catch (mailErr) {
+                  logger.warn(`Email failed: ${mailErr.message}`);
+                  emailStatus = { sent: false, error: mailErr.message };
                 }
               }
 
-              finalAssignedUserIds = Array.from(new Set(finalAssignedUserIds));
-
-              if (finalAssignedUserIds.length > 0) {
-                const insertVals = finalAssignedUserIds.map(uid => [internalTaskId, uid]);
-                await new Promise((resolve, reject) =>
-                  connection.query('INSERT INTO taskassignments (task_id, user_id) VALUES ?', [insertVals], (e) => e ? reject(e) : resolve())
-                );
-              }
-            }
-
-            reassigned = true;
-          }
-
-          // Restore task if soft-deleted
-          try {
-            const hasIsDeletedFlag = await hasColumn('tasks', 'isDeleted');
-            if (hasIsDeletedFlag) {
-              await new Promise((resolve, reject) =>
-                connection.query('UPDATE tasks SET isDeleted = 0, deleted_at = NULL WHERE id = ?', [internalTaskId], (e) => e ? reject(e) : resolve())
-              );
-            }
-          } catch (restoreErr) {
-            logger.warn(`Failed to restore task isDeleted flag: ${restoreErr?.message}`);
-          }
-
-          // Fetch updated task
-          const fetchSql = `
-            SELECT
-              t.id AS task_internal_id,
-              t.public_id AS task_id,
-              t.title,
-              t.description,
-              t.stage,
-              t.taskDate,
-              t.priority,
-              t.time_alloted,
-              t.estimated_hours,
-              t.status,
-              t.createdAt,
-              t.updatedAt,
-              c.id AS client_id,
-              c.name AS client_name,
-              GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
-              GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
-              GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names,
-              GROUP_CONCAT(DISTINCT u.email) AS assigned_user_emails,
-              t.project_id,
-              t.project_public_id
-            FROM tasks t
-            LEFT JOIN clientss c ON t.client_id = c.id
-            LEFT JOIN taskassignments ta ON ta.task_id = t.id
-            LEFT JOIN users u ON u._id = ta.user_id
-            WHERE t.id = ?
-            GROUP BY t.id
-            LIMIT 1
-          `;
-
-          const rows = await new Promise((resolve, reject) => connection.query(fetchSql, [internalTaskId], (e, r) => e ? reject(e) : resolve(r)));
-          let taskObj = { taskId };
-
-          if (rows.length > 0) {
-            const r = rows[0];
-            const assignedIds = r.assigned_user_ids?.split(',') || [];
-            const assignedPublic = r.assigned_user_public_ids?.split(',') || [];
-            const assignedNames = r.assigned_user_names?.split(',') || [];
-            const assignedEmails = r.assigned_user_emails?.split(',') || [];
-            const assignedUsers = assignedIds.map((uid, i) => ({
-              id: assignedPublic[i] || uid,
-              internalId: String(uid),
-              name: assignedNames[i] || null,
-              email: assignedEmails[i] || null
-            }));
-
-            taskObj = {
-              id: r.task_id || String(r.task_internal_id),
-              title: r.title,
-              description: r.description,
-              stage: r.stage,
-              taskDate: r.taskDate ? new Date(r.taskDate).toISOString() : null,
-              priority: r.priority,
-              timeAlloted: r.time_alloted != null ? Number(r.time_alloted) : null,
-              estimatedHours: r.estimated_hours != null ? Number(r.estimated_hours) : (r.time_alloted != null ? Number(r.time_alloted) : null),
-              status: r.status,
-              createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null,
-              updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : null,
-              client: r.client_id ? { id: String(r.client_id), name: r.client_name } : null,
-              assignedUsers,
-              projectId: r.project_id,
-              projectPublicId: r.project_public_id
-            };
-          }
-
-          // Send emails after reassignment
-          let emailStatus = null;
-          if (reassigned && Array.isArray(taskObj.assignedUsers) && taskObj.assignedUsers.length > 0) {
-            try {
-              const baseUrl = process.env.FRONTEND_URL || 'http://localhost:4000';
-              const taskLink = `${baseUrl}/tasks/${taskId}`;
-              const assignedBy = req.user?.name || req.user?.email || 'Manager';
-
-              // Use public_ids for email notification
-              const assignedPublicIds = taskObj.assignedUsers.map(u => u.id).filter(Boolean);
-
-              logger.info(`Sending task assignment email: taskId=${taskId}`, { assignedPublicIds });
-
-              emailStatus = await emailService.sendTaskAssignmentEmails({
-                finalAssigned: assignedPublicIds,
-                taskTitle: taskObj.title,
-                taskId,
-                priority: taskObj.priority,
-                taskDate: taskObj.taskDate,
-                description: taskObj.description,
-                projectName: taskObj.projectId ? '' : '',
-                projectPublicId: taskObj.projectPublicId,
-                assignedBy,
-                taskLink,
-                connection,
+              connection.release();
+              res.status(200).json({
+                success: true,
+                message: 'Task updated successfully',
+                data: taskObj,
+                emailStatus,
+                reassigned,
+                assignedToCount: finalAssignedUserIds.length
               });
-            } catch (mailErr) {
-              logger.warn(`Email sending failed for taskId=${taskId}: ${mailErr?.message}`);
-              emailStatus = { sent: false, error: mailErr?.message };
-            }
-          }
 
-          connection.release();
-          return res.status(200).json({
-            success: true,
-            message: 'Task updated successfully',
-            data: taskObj,
-            emailStatus,
-            reassigned,
-            assignedToCount: finalAssignedUserIds.length
+            } catch (e) {
+              connection.release();
+              logger.error(`Post-update failed: ${e.message}`);
+              res.status(500).json({ success: false, error: 'Post-update failed', details: e.message });
+            }
           });
 
-        } catch (e) {
+        } catch (error) {
           connection.release();
-          logger.error(`Post-update processing failed: ${e?.message}`);
-          return res.status(500).json({ success: false, error: 'Post-update processing failed', details: e?.message });
+          logger.error(`Setup error: ${error.message}`);
+          res.status(500).json({ success: false, error: 'Setup failed', details: error.message });
         }
+      })();
 
-      });
     });
 
   } catch (error) {
-    logger.error(`Unexpected server error: ${error?.message}`);
-    return res.status(500).json({ success: false, error: 'Unexpected server error', details: error?.message });
+    logger.error(`Unexpected error: ${error.message}`);
+    res.status(500).json({ success: false, error: 'Server error', details: error.message });
   }
 });
-
+// PATCH /tasks/:taskId/reassign/:userId - Approve or reject a reassignment request for a specific user
+router.patch('/:taskId/reassign/:userId', requireRole(['Manager', 'Admin']), async (req, res) => {
+  const { taskId, userId } = req.params;
+  const { approve, newAssigneeId } = req.body;
+  try {
+    if (approve) {
+      // Set requester to read-only
+      await q('UPDATE taskassignments SET status = ?, is_read_only = 1 WHERE task_id = ? AND user_id = ?', ['READ_ONLY', taskId, userId]);
+      // Add new assignee if not present
+      if (newAssigneeId) {
+        const exists = await q('SELECT 1 FROM taskassignments WHERE task_id = ? AND user_id = ?', [taskId, newAssigneeId]);
+        if (!exists.length) {
+          await q('INSERT INTO taskassignments (task_id, user_id, status, is_read_only) VALUES (?, ?, ?, 0)', [taskId, newAssigneeId, 'ACTIVE']);
+        }
+      }
+      // Log audit (implement as needed)
+      // await logTaskAssignmentAudit({ taskId, userId, action: 'REASSIGN_APPROVED', byUserId: req.user._id, details: { newAssigneeId } });
+      // Send emails
+      const [[oldUser], [newUser], [task]] = await Promise.all([
+        q('SELECT name, email FROM users WHERE _id = ?', [userId]),
+        newAssigneeId ? q('SELECT name, email FROM users WHERE _id = ?', [newAssigneeId]) : [{}],
+        q('SELECT title FROM tasks WHERE id = ?', [taskId])
+      ]);
+      const baseUrl = process.env.FRONTEND_URL || 'http://localhost:4000';
+      const taskLink = `${baseUrl}/tasks/${taskId}`;
+      // To new assignee
+      if (newUser && newUser.email) {
+        await emailService.sendEmail({
+          to: newUser.email,
+          ...emailService.taskReassignmentApprovedTemplate({
+            taskTitle: task?.title || '',
+            oldAssignee: oldUser?.name || '',
+            newAssignee: newUser?.name || '',
+            taskLink
+          })
+        });
+      }
+      // To old assignee (read-only)
+      if (oldUser && oldUser.email) {
+        await emailService.sendEmail({
+          to: oldUser.email,
+          ...emailService.taskReassignmentOldAssigneeTemplate({
+            taskTitle: task?.title || '',
+            newAssignee: newUser?.name || '',
+            taskLink
+          })
+        });
+      }
+      return res.json({ success: true });
+    } else {
+      // Rejected: restore full access
+      await q('UPDATE taskassignments SET status = ?, is_read_only = 0 WHERE task_id = ? AND user_id = ?', ['ACTIVE', taskId, userId]);
+      // Log audit (implement as needed)
+      // await logTaskAssignmentAudit({ taskId, userId, action: 'REASSIGN_REJECTED', byUserId: req.user._id });
+      // Get user email
+      const [[oldUser], [task]] = await Promise.all([
+        q('SELECT name, email FROM users WHERE _id = ?', [userId]),
+        q('SELECT title FROM tasks WHERE id = ?', [taskId])
+      ]);
+      const baseUrl = process.env.FRONTEND_URL || 'http://localhost:4000';
+      const taskLink = `${baseUrl}/tasks/${taskId}`;
+      if (oldUser && oldUser.email) {
+        await emailService.sendEmail({
+          to: oldUser.email,
+          ...emailService.taskReassignmentRejectedTemplate({
+            taskTitle: task?.title || '',
+            taskLink
+          })
+        });
+      }
+      return res.json({ success: true });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 // ==================== UPDATE TASK STATUS (EMPLOYEE KANBAN) ====================
 // PATCH /api/tasks/:id/status
 // Allows employees to move tasks through Kanban workflow
