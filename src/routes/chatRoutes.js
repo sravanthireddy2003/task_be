@@ -107,7 +107,8 @@ router.post('/:projectId/chat/messages', requireRole(['Admin', 'Manager', 'Emplo
     // Check if it's a bot command
     if (message.startsWith('/')) {
       // Handle bot command - send response as a separate bot message
-      const userId = req.user._id || req.user.id; // Fallback to public_id if _id is not available
+      // Pass public_id when available so ChatService can map role/internal id correctly
+      const userId = req.user.public_id || req.user._id || req.user.id;
       const botResponse = await ChatService.handleChatbotCommand(projectId, message, req.user.name, userId);
 
       // Save the bot response message
