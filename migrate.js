@@ -101,6 +101,76 @@ async function runMigrations() {
     await q("CREATE INDEX IF NOT EXISTS idx_notifications_is_read ON notifications(is_read)");
     await q("CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at)");
 
+    // Create project_chats table
+    await q(`
+      CREATE TABLE IF NOT EXISTS project_chats (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        project_id VARCHAR(255) NOT NULL,
+        room_name VARCHAR(255) NOT NULL UNIQUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_project_id (project_id),
+        INDEX idx_room_name (room_name)
+      )
+    `);
+    console.log('Created project_chats table');
+
+    // Create chat_messages table
+    await q(`
+      CREATE TABLE IF NOT EXISTS chat_messages (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        project_id VARCHAR(255) NOT NULL,
+        sender_id INT,
+        sender_name VARCHAR(255) NOT NULL,
+        message TEXT NOT NULL,
+        message_type ENUM('text', 'system', 'bot') DEFAULT 'text',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_project_id (project_id),
+        INDEX idx_sender_id (sender_id),
+        INDEX idx_created_at (created_at),
+        INDEX idx_message_type (message_type)
+      )
+    `);
+    console.log('Created chat_messages table');
+
+    // Modify chat_messages table to allow NULL sender_id for bot messages
+    try {
+      await q('ALTER TABLE chat_messages MODIFY COLUMN sender_id INT NULL');
+      console.log('Modified chat_messages sender_id to allow NULL');
+    } catch (e) {
+      // Column might already be nullable or table doesn't exist yet
+      console.log('Note: chat_messages sender_id modification skipped (might already be correct)');
+    }
+
+    // Remove foreign key constraint if it exists
+    try {
+      await q('ALTER TABLE chat_messages DROP FOREIGN KEY chat_messages_ibfk_1');
+      console.log('Dropped foreign key constraint on chat_messages.sender_id');
+    } catch (e) {
+      // Foreign key might not exist
+      console.log('Note: foreign key drop skipped (might not exist)');
+    }
+
+    // Create chat_participants table for tracking online users
+    await q(`
+      CREATE TABLE IF NOT EXISTS chat_participants (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        project_id VARCHAR(255) NOT NULL,
+        user_id INT NOT NULL,
+        user_name VARCHAR(255) NOT NULL,
+        user_role VARCHAR(50) NOT NULL,
+        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        is_online BOOLEAN DEFAULT FALSE,
+        FOREIGN KEY (user_id) REFERENCES users(_id) ON DELETE CASCADE,
+        UNIQUE KEY unique_project_user (project_id, user_id),
+        INDEX idx_project_id (project_id),
+        INDEX idx_user_id (user_id),
+        INDEX idx_is_online (is_online)
+      )
+    `);
+    console.log('Created chat_participants table');
+
     // Seed some test notifications
     console.log('Seeding test notifications...');
     await q(`

@@ -468,6 +468,19 @@ async function completeLoginForUser(user, req, res) {
       db.query(insert, [user._id, user.tenant_id || null, ip, ua, 1], () => {});
     } catch (e) {}
 
+    // Set user as online
+    try {
+      await new Promise((resolve, reject) => {
+        db.query('UPDATE users SET is_online = TRUE WHERE _id = ?', [user._id], (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      console.log(`User ${user.name} (${user._id}) set as online`);
+    } catch (e) {
+      console.warn('Could not set user online status:', e.message);
+    }
+
     // Get user photo URL
     let photoUrl = user.photo || null;
     if (photoUrl && !photoUrl.startsWith('http')) {
@@ -765,12 +778,6 @@ router.post('/reset-password', (req, res) => {
     const user = results[0];
     return handleResetForUser(user);
   });
-});
-
-// Logout: for token-based stateless, instruct client to delete token
-router.post('/logout', requireAuth, (req, res) => {
-  // could store token blacklist if needed
-  return res.json({ message: 'Logged out' });
 });
 
 // Complete setup: accept setupToken issued at user creation and set initial password
@@ -1174,6 +1181,28 @@ router.get('/2fa/status', requireAuth, async (req, res) => {
     });
   } catch (e) {
     return res.status(500).json({ message: 'Error fetching 2FA status', error: e.message });
+  }
+});
+
+// Logout endpoint - set user as offline
+router.post('/logout', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user && req.user._id;
+    if (!userId) return res.status(401).json({ message: 'Not authenticated' });
+
+    // Set user as offline
+    await new Promise((resolve, reject) => {
+      db.query('UPDATE users SET is_online = FALSE WHERE _id = ?', [userId], (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    console.log(`User ${userId} logged out and set as offline`);
+    return res.json({ success: true, message: 'Logged out successfully' });
+  } catch (e) {
+    console.error('Logout error:', e.message);
+    return res.status(500).json({ message: 'Logout error', error: e.message });
   }
 });
 
