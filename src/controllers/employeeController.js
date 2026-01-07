@@ -282,7 +282,8 @@ getMyTasks: async (req, res) => {
          ${selectParts.join(', ')},
          GROUP_CONCAT(DISTINCT ua._id) AS assigned_user_ids,
          GROUP_CONCAT(DISTINCT ua.public_id) AS assigned_user_public_ids,
-         GROUP_CONCAT(DISTINCT ua.name) AS assigned_user_names
+         GROUP_CONCAT(DISTINCT ua.name) AS assigned_user_names,
+         GROUP_CONCAT(DISTINCT COALESCE(ta_all.is_read_only, 0)) AS assigned_user_read_only
        FROM tasks t
        INNER JOIN taskassignments ta_user ON ta_user.task_id = t.id AND ta_user.user_id = ?
        LEFT JOIN taskassignments ta_all ON ta_all.task_id = t.id
@@ -356,10 +357,12 @@ getMyTasks: async (req, res) => {
       const assignedIds = r.assigned_user_ids ? String(r.assigned_user_ids).split(',') : [];
       const assignedPublic = r.assigned_user_public_ids ? String(r.assigned_user_public_ids).split(',') : [];
       const assignedNames = r.assigned_user_names ? String(r.assigned_user_names).split(',') : [];
+      const assignedReadOnly = r.assigned_user_read_only ? String(r.assigned_user_read_only).split(',') : [];
       const assignedUsers = assignedIds.map((internalId, index) => ({
         id: assignedPublic[index] || String(internalId),
         internalId: String(internalId),
-        name: assignedNames[index] || null
+        name: assignedNames[index] || null,
+        readOnly: assignedReadOnly[index] === '1' || assignedReadOnly[index] === 'true'
       }));
 
       const lockInfo = lockStatuses[taskId] || {};

@@ -47,13 +47,22 @@ const q = (sql, params = []) => new Promise((resolve, reject) => {
 async function canEditTask(taskId, user) {
   // Always allow Admin/Manager
   if (user.role === 'Admin' || user.role === 'Manager') return true;
-  // Check if task is locked and if user is the new assignee
+
+  // Check if user is assigned with full access (not read-only)
+  const hasReadOnlyColumn = await hasColumn('taskassignments', 'is_read_only');
+  const selectColumns = hasReadOnlyColumn ? 'user_id, is_read_only' : 'user_id';
+  const [assignment] = await q(`SELECT ${selectColumns} FROM taskassignments WHERE task_id = ? AND user_id = ?`, [taskId, user._id]);
+  if (!assignment) return false;
+
+  // If read-only column exists and user has read-only access, deny edit access
+  if (hasReadOnlyColumn && assignment.is_read_only) return false;
+
+  // Check if task is locked and if user is the assignee
   const [task] = await q('SELECT is_locked FROM tasks WHERE id = ?', [taskId]);
   if (!task) return false;
   if (!task.is_locked) return true;
-  // If locked, only allow new assignee
-  const [assignment] = await q('SELECT user_id FROM taskassignments WHERE task_id = ?', [taskId]);
-  if (!assignment) return false;
+
+  // If locked, only allow current assignee
   return assignment.user_id === user._id;
 }
 
@@ -117,7 +126,8 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
         c.name AS client_name,
         GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
         GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
-        GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names
+        GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names,
+        GROUP_CONCAT(DISTINCT COALESCE(ta.is_read_only, 0)) AS assigned_user_read_only
       FROM tasks t
       LEFT JOIN clientss c ON t.client_id = c.id
       LEFT JOIN taskassignments ta ON ta.task_id = t.id
@@ -254,16 +264,15 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
         const assignedIds = r.assigned_user_ids ? String(r.assigned_user_ids).split(',') : [];
         const assignedPublic = r.assigned_user_public_ids ? String(r.assigned_user_public_ids).split(',') : [];
         const assignedNames = r.assigned_user_names ? String(r.assigned_user_names).split(',') : [];
+        const assignedReadOnly = r.assigned_user_read_only ? String(r.assigned_user_read_only).split(',') : [];
 
-        const assignedUsers = assignedIds.map((uid, i) => ({ id: assignedPublic[i] || uid, internalId: String(uid), name: assignedNames[i] || null }));
+        const assignedUsers = assignedIds.map((uid, i) => ({
+          id: assignedPublic[i] || uid,
+          internalId: String(uid),
+          name: assignedNames[i] || null,
+          readOnly: assignedReadOnly[i] === '1' || assignedReadOnly[i] === 'true'
+        }));
         const key = String(r.task_internal_id || r.task_id);
-        // Determine read_only for this user
-        let read_only = false;
-        if (r.status === 'Request Approved' && req.user.role !== 'Admin' && req.user.role !== 'Manager') {
-          // Only the new assignee can edit
-          const [assignment] = assignedIds;
-          if (String(req.user._id) !== String(assignment)) read_only = true;
-        }
         return {
           id: String(r.task_internal_id),
           title: r.title || null,
@@ -359,8 +368,14 @@ async function createJsonHandler(req, res) {
       return res.status(400).send("Missing required field: title");
     }
 
-    if (!Array.isArray(finalAssigned) || finalAssigned.length === 0) {
-      return res.status(400).send("assigned_to must be a non-empty array of user IDs (or assignedTo)");
+    // Enforce single-user ownership: exactly one assignee required
+    if (!finalAssigned || (Array.isArray(finalAssigned) && finalAssigned.length !== 1) || (!Array.isArray(finalAssigned) && !finalAssigned)) {
+      return res.status(400).send("assigned_to must contain exactly one user ID (single-user ownership required)");
+    }
+
+    // Normalize to array for consistency
+    if (!Array.isArray(finalAssigned)) {
+      finalAssigned = [finalAssigned];
     }
 
     db.getConnection((err, connection) => {
@@ -1140,10 +1155,16 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
             let emailStatus = null;
 
             try {
-              // 5. Handle assignees (ADD only - preserve read-only)
+              // 5. Handle assignees (REPLACE with single assignee for single-user ownership)
               if (Array.isArray(assigned_to) && assigned_to.length > 0) {
+                // Enforce single-user ownership: only one assignee allowed
+                if (assigned_to.length !== 1) {
+                  connection.release();
+                  return res.status(400).json({ success: false, error: 'Tasks must have exactly one assignee (single-user ownership)' });
+                }
+
                 const currentAssignees = await new Promise((resolve, reject) =>
-                  connection.query('SELECT user_Id FROM taskassignments WHERE task_Id = ?', 
+                  connection.query('SELECT user_Id FROM taskassignments WHERE task_Id = ?',
                     [internalTaskId], (e, r) => e ? reject(e) : resolve(r))
                 );
                 const currentUserIds = currentAssignees.map(r => String(r.user_Id));
@@ -1154,37 +1175,49 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
 
                 if (publicIds.length > 0) {
                   const rows = await new Promise((resolve, reject) =>
-                    connection.query('SELECT _id FROM users WHERE public_id IN (?)', 
+                    connection.query('SELECT _id FROM users WHERE public_id IN (?)',
                       [publicIds], (e, r) => e ? reject(e) : resolve(r))
                   );
                   rows.forEach(r => { if (r && r._id) newUserIds.push(String(r._id)); });
                 }
                 newUserIds = Array.from(new Set(newUserIds));
 
-                // Add new assignees only
-                for (const uid of newUserIds) {
-                  if (!currentUserIds.includes(uid)) {
-                    await new Promise((resolve,  reject) =>
+                if (newUserIds.length !== 1) {
+                  connection.release();
+                  return res.status(400).json({ success: false, error: 'Invalid assignee data' });
+                }
+
+                const newAssigneeId = newUserIds[0];
+
+                // Remove all current assignees
+                await new Promise((resolve, reject) =>
+                  connection.query('DELETE FROM taskassignments WHERE task_Id = ?', [internalTaskId], (e) => e ? reject(e) : resolve())
+                );
+
+                // Assign the new single assignee
+                await new Promise((resolve, reject) =>
+                  connection.query(
+                    'INSERT INTO taskassignments (task_Id, user_Id) VALUES (?, ?)',
+                    [internalTaskId, newAssigneeId], (e) => e ? reject(e) : resolve()
+                  )
+                );
+
+                // If this is a reassignment (different assignee), make previous assignees read-only
+                const previousAssignees = currentUserIds.filter(id => id !== newAssigneeId);
+                if (previousAssignees.length > 0) {
+                  // Add read-only access for previous assignees
+                  for (const prevId of previousAssignees) {
+                    await new Promise((resolve, reject) =>
                       connection.query(
-                        'INSERT IGNORE INTO taskassignments (task_Id, user_Id) VALUES (?, ?)', 
-                        [internalTaskId, uid], (e) => e ? reject(e) : resolve()
+                        'INSERT INTO taskassignments (task_Id, user_Id, is_read_only) VALUES (?, ?, 1)',
+                        [internalTaskId, prevId], (e) => e ? reject(e) : resolve()
                       )
                     );
                   }
                 }
 
-                // ✅ SELECTIVE READ-ONLY: Only requester becomes read-only
-                if (req.user && req.user._id) {
-                  await new Promise((resolve, reject) =>
-                    connection.query(
-                      'UPDATE taskassignments SET is_read_only = 1 WHERE task_Id = ? AND user_Id = ?', 
-                      [internalTaskId, req.user._id], (e) => e ? reject(e) : resolve()
-                    )
-                  );
-                }
-
                 reassigned = true;
-                finalAssignedUserIds = Array.from(new Set([...currentUserIds, ...newUserIds]));
+                finalAssignedUserIds = [newAssigneeId];
               }
 
               // 6. Fetch updated task
@@ -1430,19 +1463,22 @@ router.patch('/:id/status', requireRole(['Employee']), async (req, res) => {
       resolvedProjectId = projectRows[0].id;
     }
 
-    // Verify task belongs to the specified project and employee is assigned
+    // Verify task belongs to the specified project and employee is assigned with full access (not read-only)
+    const hasReadOnlyColumn = await hasColumn('taskassignments', 'is_read_only');
+    const selectColumns = hasReadOnlyColumn ? 't.*, ta.user_id, ta.is_read_only, p.public_id as project_public_id' : 't.*, ta.user_id, p.public_id as project_public_id';
+    const readOnlyCondition = hasReadOnlyColumn ? ' AND (ta.is_read_only IS NULL OR ta.is_read_only != 1)' : '';
     const taskQuery = `
-      SELECT t.*, ta.user_id, p.public_id as project_public_id
+      SELECT ${selectColumns}
       FROM tasks t
       JOIN taskassignments ta ON t.id = ta.task_id
       LEFT JOIN projects p ON t.project_id = p.id
-      WHERE t.id = ? AND ta.user_id = ? AND t.project_id = ?
+      WHERE t.id = ? AND ta.user_id = ? AND t.project_id = ?${readOnlyCondition}
       LIMIT 1
     `;
     const tasks = await q(taskQuery, [resolvedTaskId, req.user._id, resolvedProjectId]);
 
     if (!tasks || tasks.length === 0) {
-      return res.status(404).json({ success: false, message: 'Task not found, not assigned to you, or does not belong to the specified project' });
+      return res.status(404).json({ success: false, message: 'Task not found, not assigned to you with full access, or does not belong to the specified project' });
     }
 
     const task = tasks[0];
@@ -2493,18 +2529,22 @@ router.put("/updatetask/:id", requireRole(['Admin', 'Manager']), async (req, res
           return res.status(404).json({ success: false, error: 'Task not found' });
         }
 
-        // Update assigned users if provided
+        // Update assigned users if provided (enforce single-user ownership)
         if (Array.isArray(assigned_to)) {
+          // Enforce single-user ownership
+          if (assigned_to.length > 1) {
+            return res.status(400).json({ success: false, error: 'Tasks must have exactly one assignee (single-user ownership)' });
+          }
+          
           const deleteQuery = `DELETE FROM taskassignments WHERE task_id = ?`;
           db.query(deleteQuery, [taskId], (delErr) => {
             if (delErr) {
               logger.error(`Error clearing task assignments: ${delErr.message}`);
-            } else if (assigned_to.length > 0) {
-              const insertQuery = `INSERT INTO taskassignments (task_id, user_id) VALUES ?`;
-              const values = assigned_to.map((userId) => [taskId, userId]);
-              db.query(insertQuery, [values], (insErr) => {
+            } else if (assigned_to.length === 1) {
+              const insertQuery = `INSERT INTO taskassignments (task_id, user_id) VALUES (?, ?)`;
+              db.query(insertQuery, [taskId, assigned_to[0]], (insErr) => {
                 if (insErr) {
-                  logger.error(`Error assigning users: ${insErr.message}`);
+                  logger.error(`Error assigning user: ${insErr.message}`);
                 }
               });
             }
@@ -2961,44 +3001,33 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
           );
         });
 
-        // Check if this is a full reassignment (single assignee) or partial reassignment (multiple assignees)
-        const isFullReassignment = prevAssignees.length <= 1;
+        // Single-user ownership: always full reassignment
+        // Remove all current assignees
+        await new Promise((resolve, reject) => {
+          db.query('DELETE FROM taskassignments WHERE task_id = ?', [taskId], (err) => err ? reject(err) : resolve(), connection);
+        });
 
-        if (isFullReassignment) {
-          // Full reassignment: remove all assignees and assign to new user
+        // Assign to new employee (if specified)
+        if (resignRequest.new_assignee_id) {
           await new Promise((resolve, reject) => {
-            db.query('DELETE FROM taskassignments WHERE task_id = ?', [taskId], (err) => err ? reject(err) : resolve(), connection);
+            db.query(
+              'INSERT INTO taskassignments (task_id, user_id) VALUES (?, ?)',
+              [taskId, resignRequest.new_assignee_id],
+              (err) => err ? reject(err) : resolve(),
+              connection
+            );
           });
-
-          // Assign to new employee
-          if (resignRequest.new_assignee_id) {
-            await new Promise((resolve, reject) => {
-              db.query(
-                'INSERT INTO taskassignments (task_id, user_id) VALUES (?, ?)',
-                [taskId, resignRequest.new_assignee_id],
-                (err) => err ? reject(err) : resolve(),
-                connection
-              );
-            });
-          }
-        } else {
-          // Partial reassignment: only remove the requesting user, keep others
-          await new Promise((resolve, reject) => {
-            db.query('DELETE FROM taskassignments WHERE task_id = ? AND user_id = ?', [taskId, resignRequest.requested_by], (err) => err ? reject(err) : resolve(), connection);
-          });
-
-          // Assign to new employee if specified
-          if (resignRequest.new_assignee_id) {
-            await new Promise((resolve, reject) => {
-              db.query(
-                'INSERT INTO taskassignments (task_id, user_id) VALUES (?, ?)',
-                [taskId, resignRequest.new_assignee_id],
-                (err) => err ? reject(err) : resolve(),
-                connection
-              );
-            });
-          }
         }
+
+        // Give previous assignee read-only access for reference
+        await new Promise((resolve, reject) => {
+          db.query(
+            'INSERT INTO taskassignments (task_id, user_id, is_read_only) VALUES (?, ?, 1)',
+            [taskId, resignRequest.requested_by],
+            (err) => err ? reject(err) : resolve(),
+            connection
+          );
+        });
 
         await commitTransaction(connection);
 
@@ -3017,40 +3046,23 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
             newAssigneeUser = newAssigneeRows[0];
           }
 
-          if (isFullReassignment) {
-            // Full reassignment: notify old assignees that they've been removed
-            for (const oldAssignee of prevAssignees) {
-              if (oldAssignee.email) {
-                const oldAssigneeTemplate = emailService.taskReassignmentOldAssigneeTemplate({
-                  taskTitle: task.name || task.title || 'Task',
-                  newAssignee: newAssigneeUser?.name || 'New Assignee',
-                  taskLink
-                });
-                await emailService.sendEmail({
-                  to: oldAssignee.email,
-                  ...oldAssigneeTemplate
-                }).catch(console.error);
-              }
-            }
-          } else {
-            // Partial reassignment: only notify the requesting user
-            if (oldAssigneeUser?.email) {
-              const oldAssigneeTemplate = emailService.taskReassignmentOldAssigneeTemplate({
-                taskTitle: task.name || task.title || 'Task',
-                newAssignee: newAssigneeUser?.name || 'New Assignee',
-                taskLink
-              });
-              await emailService.sendEmail({
-                to: oldAssigneeUser.email,
-                ...oldAssigneeTemplate
-              }).catch(console.error);
-            }
+          // Single-user ownership: always notify the previous assignee (read-only access)
+          if (oldAssigneeUser?.email) {
+            const oldAssigneeTemplate = emailService.taskReassignmentOldAssigneeTemplate({
+              taskTitle: task.title || 'Task',
+              newAssignee: newAssigneeUser?.name || 'New Assignee',
+              taskLink
+            });
+            await emailService.sendEmail({
+              to: oldAssigneeUser.email,
+              ...oldAssigneeTemplate
+            }).catch(console.error);
           }
 
           // Notify new assignee if assigned
           if (newAssigneeUser?.email) {
             const approvedTemplate = emailService.taskReassignmentApprovedTemplate({
-              taskTitle: task.name || task.title || 'Task',
+              taskTitle: task.title || 'Task',
               oldAssignee: oldAssigneeUser?.name || 'Previous Assignee',
               newAssignee: newAssigneeUser.name,
               taskLink
