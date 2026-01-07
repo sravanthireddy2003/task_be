@@ -1,4 +1,5 @@
 const db = require('../db');
+const NotificationService = require('./notificationService');
 
 class ChatService {
   constructor() {
@@ -150,6 +151,57 @@ class ChatService {
         }
       }
 
+      // After saving message, detect mentions and send notifications
+      try {
+        if (typeof message === 'string' && message.indexOf('@') !== -1) {
+          const mentionRegex = /@([A-Za-z0-9_\-\.]+)/g;
+          const mentions = [];
+          let m;
+          while ((m = mentionRegex.exec(message)) !== null) {
+            mentions.push(m[1]);
+          }
+
+          const notifyUserIds = new Set();
+
+          if (mentions.length > 0) {
+            const lowerMentions = mentions.map(s => String(s).toLowerCase());
+
+            // If includes everyone mention
+            if (lowerMentions.includes('everyone') || lowerMentions.includes('all')) {
+              // Notify all project members (exclude sender)
+              const members = await this.getAllProjectMembers(projectId);
+              members.forEach(u => {
+                if (u.user_id && u.user_id !== senderId) notifyUserIds.add(u.user_id);
+              });
+            } else {
+              // Resolve individual mentions by public_id only
+              for (const raw of mentions) {
+                const pid = raw.trim();
+                if (!pid) continue;
+                const rows = await this.query(
+                  'SELECT _id FROM users WHERE public_id = ? LIMIT 1',
+                  [pid]
+                );
+                if (rows && rows.length > 0) {
+                  if (rows[0]._id !== senderId) notifyUserIds.add(rows[0]._id);
+                }
+              }
+            }
+
+            if (notifyUserIds.size > 0) {
+              const userIdArray = Array.from(notifyUserIds);
+              const excerpt = message.length > 200 ? message.slice(0, 197) + '...' : message;
+              const title = `${senderName} mentioned you`;
+              const body = `${senderName} mentioned you in project chat: "${excerpt}"`;
+              // Create and send notifications (entity_type chat_message)
+              await NotificationService.createAndSend(userIdArray, title, body, 'mention', 'chat_message', result.insertId);
+            }
+          }
+        }
+      } catch (notifErr) {
+        console.error('Error sending mention notifications:', notifErr);
+      }
+
       return {
         id: result.insertId,
         project_id: projectId,
@@ -263,7 +315,8 @@ class ChatService {
           u.name as user_name,
           u.role as user_role,
           u.public_id,
-          u.is_online
+          u.is_online,
+          u.is_active
         FROM users u
         JOIN taskassignments ta ON u._id = ta.user_id
         JOIN tasks t ON ta.task_id = t.id
@@ -277,7 +330,8 @@ class ChatService {
           u.name as user_name,
           u.role as user_role,
           u.public_id,
-          u.is_online
+          u.is_online,
+          u.is_active
         FROM users u
         JOIN projects p ON u._id = p.project_manager_id
         WHERE p.id = ?
@@ -290,7 +344,8 @@ class ChatService {
           u.name as user_name,
           u.role as user_role,
           u.public_id,
-          u.is_online
+          u.is_online,
+          u.is_active
         FROM users u
         JOIN projects p ON u._id = p.created_by
         WHERE p.id = ?
@@ -364,12 +419,27 @@ class ChatService {
       let internalUserId = userId;
       let userRole = null;
       if (typeof userId === 'string' && !/^\d+$/.test(userId)) {
+        // userId is a public_id string; map to internal id and role
         const userResult = await this.query('SELECT _id, role FROM users WHERE public_id = ?', [userId]);
+        console.log('ChatService: userResult for public_id', userId, userResult && userResult.length ? userResult[0] : userResult);
         if (userResult && userResult.length > 0) {
           internalUserId = userResult[0]._id;
           userRole = userResult[0].role;
+          console.log('ChatService: mapped internalUserId=', internalUserId, 'userRole=', userRole);
         } else {
+          console.warn('ChatService: user not found for public_id', userId);
           return 'User not found.';
+        }
+      } else {
+        // userId appears to be internal numeric id; fetch role
+        try {
+          const roleRes = await this.query('SELECT role FROM users WHERE _id = ?', [internalUserId]);
+          if (roleRes && roleRes.length > 0) {
+            userRole = roleRes[0].role;
+            console.log('ChatService: resolved role for internal id', internalUserId, 'role=', userRole);
+          }
+        } catch (e) {
+          console.warn('ChatService: failed to resolve role for internal id', internalUserId, e);
         }
       }
 
@@ -387,11 +457,11 @@ class ChatService {
 
         case '/tasks':
           try {
-            console.log('userRole:', userRole);
-            if (userRole && (userRole.toLowerCase() === 'admin' || userRole.toLowerCase() === 'manager')) {
+            console.log(`Checking role for /tasks: '${userRole}'`); // Added for debugging
+            if (userRole && (userRole.toLowerCase().trim() === 'admin' || userRole.toLowerCase().trim() === 'manager')) {
               // Get all tasks in this project
               const allTasks = await this.query(`
-                SELECT title, status, priority
+                SELECT title, description, status, priority, taskDate
                 FROM tasks
                 WHERE project_id = ?
                 ORDER BY id DESC
@@ -403,7 +473,7 @@ class ChatService {
               } else {
                 response = `All tasks in this project (${allTasks.length}):\n` +
                   allTasks.map(task =>
-                    `• ${task.title}\n  Status: ${task.status}, Priority: ${task.priority}`
+                    `• ${task.title}\n  Description: ${task.description || 'N/A'}\n  Status: ${task.status}, Priority: ${task.priority}\n  Due: ${task.taskDate ? new Date(task.taskDate).toLocaleDateString() : 'N/A'}`
                   ).join('\n\n');
               }
             } else {
