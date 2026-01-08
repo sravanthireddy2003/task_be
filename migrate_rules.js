@@ -185,6 +185,8 @@ const rules = [
     version: '1.0'
   },
 
+// drtyuiopjhgfdsrtyuiop[';lkjhgsdtyuio]
+
   // Project Management Rules
   {
     ruleCode: 'project_creation',
