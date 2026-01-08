@@ -312,8 +312,7 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
               if (!est) return {};
               return { dueStatus: est < now ? 'Overdue' : 'On Time', dueDate: est.toISOString() };
             } catch (e) { return {}; }
-          })(),
-          read_only
+          })()
         };
       });
 
@@ -578,10 +577,11 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
     const insertTaskQuery = `INSERT INTO tasks (${cols.join(', ')}) VALUES (${placeholders.join(', ')})`;
 
     // Helper function to handle the entire flow with proper closure
-    const executeTaskCreation = (resolve, reject) => {
+    const executeTaskCreation = async (resolve, reject) => {
       let resolvedUserIds = []; // Declare at function scope
+      let resolvedPublicIds = []; // Declare at function scope
 
-      connection.query(insertTaskQuery, values, (err, result) => {
+      connection.query(insertTaskQuery, values, async (err, result) => {
         if (err) {
           console.error('Error inserting task:', err);
           return connection.rollback(() => {
@@ -654,7 +654,7 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
                 });
               }
 
-              // Send emails asynchronously without blocking commit
+              // Send emails before committing to use the connection
               const assignedBy = (req.user && req.user.name) || 'System';
               const link = `${process.env.FRONTEND_URL || process.env.BASE_URL || 'http://localhost:3000'}/tasks/${taskId}`;
               const projectName = null;
@@ -662,14 +662,14 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
               const taskDateVal = taskDate || null;
               const descriptionVal = description || null;
 
-              console.log('Preparing to send emails to users:', rawAssigned);
+              console.log('Preparing to send emails to users:', resolvedPublicIds);
 
               // Get the existing email service function
               const sendEmails = require(__root + 'utils/emailService').sendTaskAssignmentEmails;
               
-              // Fire and forget emails (don't await to avoid blocking)
+              // Send emails before committing transaction
               sendEmails({
-                finalAssigned: rawAssigned,
+                finalAssigned: resolvedPublicIds,
                 taskTitle: title,
                 taskId,
                 priority,
@@ -723,6 +723,7 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
             if (Array.isArray(rows) && rows.length > 0) {
               for (const r of rows) {
                 resolvedUserIds.push(r._id);
+                resolvedPublicIds.push(r.public_id);
               }
             }
             runResolveQuery(idx + 1);
@@ -788,7 +789,7 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
       })
       .catch((error) => {
         console.error('Task creation failed:', error);
-        res.status(500).json({ error: error.message });
+        return res.status(500).json({ success: false, error: error.message });
       });
 
   } catch (error) {
@@ -1273,29 +1274,29 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
                   // New assignees
                   for (const user of newAssignees) {
                     if (isValidEmail(user.email)) {
-                      await emailService.sendEmail(
-                        emailService.taskReassignmentApprovedTemplate({
+                      await emailService.sendEmail({
+                        to: user.email,
+                        ...emailService.taskReassignmentApprovedTemplate({
                           taskTitle: taskObj.title,
                           taskId,
                           oldAssignee: oldAssigneeName,
                           newAssignee: user.name,
                           taskLink
-                        }),
-                        user.email
-                      );
+                        })
+                      });
                     }
                   }
 
                   // Old assignee (requester)
                   if (isValidEmail(oldAssigneeEmail)) {
-                    await emailService.sendEmail(
-                      emailService.taskReassignmentOldAssigneeTemplate({
+                    await emailService.sendEmail({
+                      to: oldAssigneeEmail,
+                      ...emailService.taskReassignmentOldAssigneeTemplate({
                         taskTitle: taskObj.title,
                         newAssignees: newAssignees.map(u => u.name).join(', '),
                         taskLink
-                      }),
-                      oldAssigneeEmail
-                    );
+                      })
+                    });
                   }
 
                   emailStatus = { sent: true };
