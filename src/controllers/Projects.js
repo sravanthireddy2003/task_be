@@ -4,6 +4,7 @@ const router = express.Router();
 const logger = require(__root + 'logger');
 const crypto = require('crypto');
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
+const ruleEngine = require(__root + 'middleware/ruleEngine');
 const NotificationService = require('../services/notificationService');
 require('dotenv').config();
 router.use(requireAuth);
@@ -23,7 +24,7 @@ async function hasColumn(table, column) {
   }
 }
  
-router.post('/', requireRole(['Admin', 'Manager']), async (req, res) => {
+router.post('/', ruleEngine('project_creation'), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { projectName, description, clientPublicId, projectManagerId, projectManagerPublicId, project_manager_id, department_ids = [], departmentIds = [], departmentPublicIds = [], priority = 'Medium', startDate, endDate, start_date, end_date, budget } = req.body;
  
@@ -425,7 +426,7 @@ router.get('/:id', async (req, res) => {
  
 // ==================== UPDATE PROJECT ====================
 // PUT /api/projects/:id
-router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
+router.put('/:id', ruleEngine('project_update'), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { id } = req.params;
     // ✅ FIXED: Added ALL missing fields
@@ -565,7 +566,7 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
  
 // ==================== ADD DEPARTMENTS TO PROJECT ====================
 // POST /api/projects/:id/departments
-router.post('/:id/departments', requireRole(['Admin', 'Manager']), async (req, res) => {
+router.post('/:id/departments', ruleEngine('project_department_add'), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { id } = req.params;
     const { department_ids } = req.body;
@@ -628,7 +629,7 @@ router.post('/:id/departments', requireRole(['Admin', 'Manager']), async (req, r
  
 // ==================== REMOVE DEPARTMENT FROM PROJECT ====================
 // DELETE /api/projects/:id/departments/:deptId
-router.delete('/:id/departments/:deptId', requireRole(['Admin', 'Manager']), async (req, res) => {
+router.delete('/:id/departments/:deptId', ruleEngine('project_department_delete'), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { id, deptId } = req.params;
  
@@ -648,7 +649,7 @@ router.delete('/:id/departments/:deptId', requireRole(['Admin', 'Manager']), asy
  
 // ==================== DELETE PROJECT ====================
 // DELETE /api/projects/:id
-router.delete('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
+router.delete('/:id', ruleEngine('project_delete'), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { id } = req.params;
  

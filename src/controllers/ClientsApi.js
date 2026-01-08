@@ -51,6 +51,7 @@ function saveBase64ToUploads(base64data, filename) {
   }
 }
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
+const ruleEngine = require(__root + 'middleware/ruleEngine');
 const emailService = require(__root + 'utils/emailService');
 require('dotenv').config();
  
@@ -148,7 +149,7 @@ async function ensureClientTables() {
   }
 }
  
-router.post('/', requireRole('Admin'), async (req, res) => {
+router.post('/', ruleEngine('client_creation'), requireRole('Admin'), async (req, res) => {
   try {
     await ensureClientTables();
     const {
@@ -652,7 +653,7 @@ router.get('/:id', requireRole(['Admin','Manager','Client-Viewer']), async (req,
   } catch (e) { logger.error('Error fetching client details: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
 });
  
-router.put('/:id', requireRole(['Admin','Manager']), async (req, res) => {
+router.put('/:id', ruleEngine('client_update'), requireRole(['Admin','Manager']), async (req, res) => {
   try {
     const id = req.params.id;
     const payload = req.body || {};
@@ -720,7 +721,7 @@ async function permanentlyDeleteClientById(id) {
   await q('DELETE FROM client_viewers WHERE client_id = ?', [id]).catch(() => {});
 }
 
-router.delete('/:id', requireRole('Admin'), async (req, res) => {
+router.delete('/:id', ruleEngine('client_delete'), requireRole('Admin'), async (req, res) => {
   try {
     const id = req.params.id;
     await permanentlyDeleteClientById(id);
@@ -738,7 +739,7 @@ router.delete('/:id', requireRole('Admin'), async (req, res) => {
   }
 });
  
-router.delete('/:id/permanent', requireRole('Admin'), async (req, res) => {
+router.delete('/:id/permanent', ruleEngine('client_permanent_delete'), requireRole('Admin'), async (req, res) => {
   try {
     const id = req.params.id;
     const viewerRows = await q('SELECT user_id FROM client_viewers WHERE client_id = ?', [id]).catch(() => []);

@@ -5,6 +5,7 @@ const router = express.Router();
 const logger = require(__root + 'logger');
 const crypto = require('crypto');
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
+const ruleEngine = require(__root + 'middleware/ruleEngine');
 require('dotenv').config();
 const jwt = require('jsonwebtoken');
 const emailService = require(__root + 'utils/emailService');
@@ -801,8 +802,8 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
   }
 }
 
-router.post('/createjson', requireRole(['Admin', 'Manager']), createJsonHandler);
-router.post('/', requireRole(['Admin', 'Manager']), createJsonHandler);
+router.post('/createjson', ruleEngine('task_creation'), requireRole(['Admin', 'Manager']), createJsonHandler);
+router.post('/', ruleEngine('task_creation'), requireRole(['Admin', 'Manager']), createJsonHandler);
 
 router.get("/taskdropdown", async (req, res) => {
   try {
@@ -1055,7 +1056,7 @@ router.get('/', async (req, res) => {
 
 // PUT /api/projects/tasks/:id - Update task
 // ✅ FIXED ROUTER - Matches YOUR task_resign_requests schema (no requester_email column)
-router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
+router.put('/:id', ruleEngine('task_update'), requireRole(['Admin', 'Manager']), async (req, res) => {
   const { id: taskId } = req.params;
   const {
     stage, title, priority, description, client_id, projectId, projectPublicId,
@@ -1338,7 +1339,7 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
   }
 });
 // PATCH /tasks/:taskId/reassign/:userId - Approve or reject a reassignment request for a specific user
-router.patch('/:taskId/reassign/:userId', requireRole(['Manager', 'Admin']), async (req, res) => {
+router.patch('/:taskId/reassign/:userId', ruleEngine('task_reassign'), requireRole(['Manager', 'Admin']), async (req, res) => {
   const { taskId, userId } = req.params;
   const { approve, newAssigneeId } = req.body;
   try {
@@ -1416,7 +1417,7 @@ router.patch('/:taskId/reassign/:userId', requireRole(['Manager', 'Admin']), asy
 // ==================== UPDATE TASK STATUS (EMPLOYEE KANBAN) ====================
 // PATCH /api/tasks/:id/status
 // Allows employees to move tasks through Kanban workflow
-router.patch('/:id/status', requireRole(['Employee']), async (req, res) => {
+router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Employee']), async (req, res) => {
   try {
     const { id } = req.params;
     const { status, projectId, taskId } = req.body;
@@ -1634,7 +1635,7 @@ router.patch('/:id/status', requireRole(['Employee']), async (req, res) => {
 });
 
 // DELETE /api/projects/tasks/:id - Delete task
-router.delete('/:id', requireRole(['Admin', 'Manager']), (req, res) => {
+router.delete('/:id', ruleEngine('task_delete'), requireRole(['Admin', 'Manager']), (req, res) => {
   const { id: taskId } = req.params;
 
   logger.info(`[DELETE /tasks/:id] Deleting task: taskId=${taskId}`);
