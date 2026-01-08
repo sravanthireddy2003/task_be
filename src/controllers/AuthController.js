@@ -966,53 +966,69 @@ router.put("/profile", requireAuth, upload.single("photo"), async (req, res) => 
     const newTitle = title ?? user.title;
     const newDepartment = department ?? user.department;
 
-    const sql = `
-      UPDATE users 
-      SET name = ?, email = ?, phone = ?, title = ?, department = ?, photo = ?
-      WHERE _id = ?
-    `;
+    // Build UPDATE dynamically based on columns present in `users` table
+    const candidate = {
+      name: newName,
+      email: newEmail,
+      phone: newPhone,
+      title: newTitle,
+      department: newDepartment,
+      photo: photoPath
+    };
 
-    const values = [newName, newEmail, newPhone, newTitle, newDepartment, photoPath, user._id];
-
-    db.query(sql, values, (err) => {
-      if (err) {
-        if (err.code === "ER_DUP_ENTRY")
-          return res.status(409).json({ message: "Email already exists" });
-
-        return res.status(500).json({ message: "DB error", error: err });
+    const colNames = Object.keys(candidate);
+    const infoSql = `SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME IN (${colNames.map(() => '?').join(',')})`;
+    db.query(infoSql, colNames, (iErr, cols) => {
+      if (iErr) {
+        console.error('Column detection error (profile update):', iErr);
+        return res.status(500).json({ message: 'DB error', error: iErr });
       }
 
-      db.query(
-        `SELECT _id, public_id, email, name, phone, title, department, photo, role, tenant_id 
-         FROM users 
-         WHERE _id = ? LIMIT 1`,
-        [user._id],
-        (qErr, rows) => {
-          if (qErr) return res.status(500).json({ message: "DB error", error: qErr });
-          if (!rows.length) return res.status(404).json({ message: "User not found" });
+      const present = Array.isArray(cols) ? cols.map(r => r.COLUMN_NAME) : [];
+      const toUpdate = colNames.filter(c => present.includes(c));
+      if (toUpdate.length === 0) {
+        // Nothing to update on this schema
+        return res.json({ message: 'Profile updated (no mutable columns present)', user: { id: user.public_id || user._id, email: newEmail, name: newName } });
+      }
+
+      const setClause = toUpdate.map(c => `${c} = ?`).join(', ');
+      const values = toUpdate.map(c => candidate[c]);
+      values.push(user._id);
+
+      const updSql = `UPDATE users SET ${setClause} WHERE _id = ?`;
+      db.query(updSql, values, (err) => {
+        if (err) {
+          if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ message: 'Email already exists' });
+          return res.status(500).json({ message: 'DB error', error: err });
+        }
+
+        // Build select list based on present columns (include commonly used cols)
+        const selectCols = ['_id', 'public_id', 'email', 'name', 'phone', 'title', 'photo', 'role', 'tenant_id']
+          .concat(present.includes('department') ? ['department'] : []);
+
+        const selSql = `SELECT ${selectCols.join(', ')} FROM users WHERE _id = ? LIMIT 1`;
+        db.query(selSql, [user._id], (qErr, rows) => {
+          if (qErr) return res.status(500).json({ message: 'DB error', error: qErr });
+          if (!rows || rows.length === 0) return res.status(404).json({ message: 'User not found' });
 
           const updated = rows[0];
-
-          const fullPhotoURL = updated.photo
-            ? `${req.protocol}://${req.get("host")}${updated.photo}`
-            : null;
-
+          const fullPhotoURL = updated.photo ? `${req.protocol}://${req.get('host')}${updated.photo}` : null;
           return res.json({
-            message: "Profile updated successfully",
+            message: 'Profile updated successfully',
             user: {
               id: updated.public_id || updated._id,
               email: updated.email,
               name: updated.name,
               phone: updated.phone,
               title: updated.title,
-              department: updated.department,
+              department: updated.department || null,
               role: updated.role,
               tenant_id: updated.tenant_id,
-              photo: fullPhotoURL,
-            },
+              photo: fullPhotoURL
+            }
           });
-        }
-      );
+        });
+      });
     });
   } catch (e) {
     console.error("PROFILE ERROR:", e);

@@ -258,10 +258,11 @@ global.io = io;
 app.use(bodyParser.urlencoded({ extended: false }))
 app.use(bodyParser.json())
 app.use(cors());
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Serve uploads from project root `uploads` directory (not src/uploads)
+app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 // Ensure uploads directory exists so static serving won't 404 for newly saved files
 try {
-  const uploadsDir = path.join(__dirname, 'uploads');
+  const uploadsDir = path.join(__dirname, '..', 'uploads');
   if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
   const profilesDir = path.join(uploadsDir, 'profiles');
   if (!fs.existsSync(profilesDir)) fs.mkdirSync(profilesDir, { recursive: true });

@@ -8,7 +8,7 @@ const buildRuleContext = (req, user, resource = {}) => {
     userDepartment: user ? user.department : null,
     resourceOwnerId: resource.ownerId || resource.userId || null,
     resourceId: resource.id || req.params.id || null,
-    action: req.method + '_' + (req.route && req.route.path ? req.route.path : req.path || req.url).replace(/\//g, '_').toUpperCase(),
+    action: req.method + '_' + (req.route && req.route.path ? req.route.path.replace(/^\//, '').replace(/\//g, '_').toUpperCase() : (req.path || req.url).replace(/^\//, '').replace(/\//g, '_').toUpperCase()),
     payload: req.body || {},
     recordStatus: resource.status || null,
     timestamp: new Date().toISOString(),

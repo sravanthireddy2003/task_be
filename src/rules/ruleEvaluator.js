@@ -4,12 +4,24 @@
 const evaluateCondition = (condition, context) => {
   // Simple condition evaluator (can be extended for complex logic)
   for (const [key, value] of Object.entries(condition)) {
+    const ctxVal = context[key];
+    // Helper: compare two values case-insensitively when they are strings
+    const equalsCI = (a, b) => {
+      if (typeof a === 'string' && typeof b === 'string') return a.toLowerCase() === b.toLowerCase();
+      return a === b;
+    };
+
     if (typeof value === 'object' && value !== null) {
-      if (value.$ne && context[key] === value.$ne) return false;
-      if (value.$eq && context[key] !== value.$eq) return false;
-      if (value.$gt && !(context[key] > value.$gt)) return false;
-      if (value.$lt && !(context[key] < value.$lt)) return false;
-      if (value.$in && !value.$in.includes(context[key])) return false;
+      if (value.$ne && equalsCI(ctxVal, value.$ne)) return false;
+      if (value.$eq && !equalsCI(ctxVal, value.$eq)) return false;
+      if (value.$gt && !(ctxVal > value.$gt)) return false;
+      if (value.$lt && !(ctxVal < value.$lt)) return false;
+      if (value.$in) {
+        // allow case-insensitive match for strings inside $in arrays
+        const lowered = value.$in.map(v => (typeof v === 'string' ? v.toLowerCase() : v));
+        const target = (typeof ctxVal === 'string') ? ctxVal.toLowerCase() : ctxVal;
+        if (!lowered.includes(target)) return false;
+      }
       if (value.$exists !== undefined) {
         const exists = context[key] !== undefined && context[key] !== null;
         if (value.$exists !== exists) return false;
@@ -29,7 +41,8 @@ const evaluateCondition = (condition, context) => {
         if (context[key] !== context[templateKey]) return false;
       }
     } else {
-      if (context[key] !== value) return false;
+      // simple value -> compare (case-insensitive for strings)
+      if (!equalsCI(context[key], value)) return false;
     }
   }
   return true;
