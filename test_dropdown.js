@@ -4,8 +4,8 @@ async function testProjectDropdown() {
   try {
     // Login
     const login = await axios.post('http://localhost:4000/api/auth/login', {
-      email: 'admin@example.com',
-      password: 'admin123'
+      email: 'korapatiashwini@gmail.com',
+      password: 'admin123'  // Assuming default password
     });
     const token = login.data.token;
     console.log('Login successful');

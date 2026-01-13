@@ -665,8 +665,8 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
 
               console.log('Preparing to send emails to users:', resolvedPublicIds);
 
-              // Get the existing email service function
-              const sendEmails = require(__root + 'utils/emailService').sendTaskAssignmentEmails;
+              // Use top-level emailService function
+              const sendEmails = emailService.sendTaskAssignmentEmails;
               
               // Send emails before committing transaction
               sendEmails({
@@ -2591,7 +2591,6 @@ router.put("/updatetask/:id", requireRole(['Admin', 'Manager']), async (req, res
           logger.info(`Sending email notifications for taskId=${taskId} to users: ${emails.join(', ')}`);
 
           try {
-            const emailService = require(__root + 'utils/emailService');
             const tpl = emailService.taskStatusTemplate({ taskId, stage, userNames });
             await emailService.sendEmail({ to: emails, subject: tpl.subject, text: tpl.text, html: tpl.html });
             logger.info(`Email notifications (status update) sent (or logged) for taskId=${taskId}`);
@@ -2862,7 +2861,6 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
 
     // Email manager with improved template
     try {
-      const emailService = require('../services/emailService');
       const taskLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/tasks/${fullTask.public_id}`;
       if (manager.email && !manager.email.includes('@example.com')) {
         const { subject, text, html } = emailService.taskReassignmentRequestTemplate({
@@ -3035,7 +3033,6 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
         await commitTransaction(connection);
 
         // Send notification emails using proper templates
-        const emailService = require('../services/emailService');
         const taskLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/tasks/${task.public_id}`;
 
         // Send emails for approval
@@ -3119,7 +3116,6 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
         await commitTransaction(connection);
 
         // Notify old assignee and managers/admins on rejection
-        const emailService = require('../services/emailService');
         const taskLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/tasks/${task.public_id}`;
 
         // Old assignee (rejection notification)
