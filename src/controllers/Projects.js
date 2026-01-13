@@ -3,11 +3,37 @@ const express = require('express');
 const router = express.Router();
 const logger = require(__root + 'logger');
 const crypto = require('crypto');
+const path = require('path');
+const fs = require('fs');
+const multer = require('multer');
+const mime = require('mime-types');
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const ruleEngine = require(__root + 'middleware/ruleEngine');
+const RULES = require(__root + 'rules/ruleCodes');
+/*
+  Rule codes used in this router:
+  - PROJECT_CREATE, PROJECT_VIEW, PROJECT_UPDATE, PROJECT_DELETE
+  Note: Department add/remove mapped to PROJECT_UPDATE for CRUD mapping.
+*/
 const NotificationService = require('../services/notificationService');
 require('dotenv').config();
 router.use(requireAuth);
+
+// Configure multer
+const uploadsRoot = path.join(__dirname, '..', 'uploads');
+if (!fs.existsSync(uploadsRoot)) fs.mkdirSync(uploadsRoot, { recursive: true });
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadsRoot);
+  },
+  filename: function (req, file, cb) {
+    const ext = path.extname(file.originalname) || '';
+    const base = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9-_\.]/g, '_');
+    const name = `${base}_${Date.now()}${ext}`;
+    cb(null, name);
+  }
+});
+const upload = multer({ storage });
  
 function q(sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -24,7 +50,7 @@ async function hasColumn(table, column) {
   }
 }
  
-router.post('/', ruleEngine('project_creation'), requireRole(['Admin', 'Manager']), async (req, res) => {
+router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { projectName, description, clientPublicId, projectManagerId, projectManagerPublicId, project_manager_id, department_ids = [], departmentIds = [], departmentPublicIds = [], priority = 'Medium', startDate, endDate, start_date, end_date, budget } = req.body;
  
@@ -180,6 +206,27 @@ router.post('/', ruleEngine('project_creation'), requireRole(['Admin', 'Manager'
         console.error('Project creation notification error:', notifErr);
       }
     })();
+
+    // Handle uploaded documents
+    const attachedDocuments = [];
+    if (req.files && Array.isArray(req.files) && req.files.length > 0) {
+      for (const file of req.files) {
+        try {
+          const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${encodeURIComponent(file.filename)}`;
+          const fileType = mime.lookup(file.originalname) || file.mimetype || null;
+          const documentId = crypto.randomBytes(8).toString('hex');
+          await q(
+            'INSERT INTO documents (documentId, entityType, entityId, uploadedBy, storageProvider, filePath, encrypted, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())',
+            [documentId, 'PROJECT', projectId, req.user._id, 'local', fileUrl, false]
+          );
+          attachedDocuments.push({ documentId, fileName: file.originalname, fileType, fileUrl });
+        } catch (e) {
+          logger.debug('Failed to attach document for project ' + projectId + ': ' + (e && e.message));
+        }
+      }
+    }
+
+    response.documents = attachedDocuments;
 
     res.status(201).json({ success: true, data: response });
   } catch (e) {
@@ -426,7 +473,7 @@ router.get('/:id', async (req, res) => {
  
 // ==================== UPDATE PROJECT ====================
 // PUT /api/projects/:id
-router.put('/:id', ruleEngine('project_update'), requireRole(['Admin', 'Manager']), async (req, res) => {
+router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { id } = req.params;
     // ✅ FIXED: Added ALL missing fields
@@ -566,7 +613,7 @@ router.put('/:id', ruleEngine('project_update'), requireRole(['Admin', 'Manager'
  
 // ==================== ADD DEPARTMENTS TO PROJECT ====================
 // POST /api/projects/:id/departments
-router.post('/:id/departments', ruleEngine('project_department_add'), requireRole(['Admin', 'Manager']), async (req, res) => {
+router.post('/:id/departments', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { id } = req.params;
     const { department_ids } = req.body;
@@ -629,7 +676,7 @@ router.post('/:id/departments', ruleEngine('project_department_add'), requireRol
  
 // ==================== REMOVE DEPARTMENT FROM PROJECT ====================
 // DELETE /api/projects/:id/departments/:deptId
-router.delete('/:id/departments/:deptId', ruleEngine('project_department_delete'), requireRole(['Admin', 'Manager']), async (req, res) => {
+router.delete('/:id/departments/:deptId', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { id, deptId } = req.params;
  
@@ -649,7 +696,7 @@ router.delete('/:id/departments/:deptId', ruleEngine('project_department_delete'
  
 // ==================== DELETE PROJECT ====================
 // DELETE /api/projects/:id
-router.delete('/:id', ruleEngine('project_delete'), requireRole(['Admin', 'Manager']), async (req, res) => {
+router.delete('/:id', ruleEngine(RULES.PROJECT_DELETE), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { id } = req.params;
  
@@ -845,6 +892,18 @@ router.get('/:id/tasks', async (req, res) => {
   } catch (e) {
     logger.error('Get project tasks error:', e.message);
     res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/projects/projectdropdown - Returns list of projects for dropdown
+router.get('/projectdropdown', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
+  try {
+    const query = "SELECT public_id as id, name FROM projects WHERE is_active = 1 ORDER BY name";
+    const results = await q(query);
+    res.status(200).json(results);
+  } catch (error) {
+    logger.error('Project dropdown error:', error.message);
+    res.status(500).json({ error: "Failed to fetch projects" });
   }
 });
 

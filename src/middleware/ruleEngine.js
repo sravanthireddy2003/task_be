@@ -1,7 +1,8 @@
 // src/middleware/ruleEngine.js
 // Middleware to integrate Rule Engine
 
-const ruleEngine = require('../rules/ruleEngine');
+// Use the new json-rules-engine backed Rule Engine (backward-compatible API)
+const ruleEngine = require('../rules/jsonRuleEngine');
 
 const ruleEngineMiddleware = (ruleCode = null) => {
   return async (req, res, next) => {

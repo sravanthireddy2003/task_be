@@ -6,6 +6,11 @@ const router = express.Router();
 // tenantMiddleware intentionally not applied here (only Tasks/Projects are tenant-scoped)
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const ruleEngine = require(__root + 'middleware/ruleEngine');
+const RULES = require(__root + 'rules/ruleCodes');
+/*
+  Rule codes used in this router:
+  - UPLOAD_CREATE, UPLOAD_VIEW, UPLOAD_DELETE
+*/
 require('dotenv').config();
 
 // Apply auth to uploads (tenant scoping removed — only Projects & Tasks will enforce tenant)
@@ -25,7 +30,7 @@ const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
 // POST route for file upload (Admin/Manager/Employee only)
-router.post('/upload', ruleEngine('upload_file'), requireRole(['Admin','Manager','Employee']), upload.single('file'), async (req, res) => {
+router.post('/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin','Manager','Employee']), upload.single('file'), async (req, res) => {
   try {
     const { taskId, userId } = req.body;
 
@@ -74,7 +79,7 @@ router.post('/upload', ruleEngine('upload_file'), requireRole(['Admin','Manager'
   }
 });
 
-router.get('/getuploads/:id', ruleEngine('upload_list'), requireRole(['Admin','Manager','Employee']), async (req, res) => {
+router.get('/getuploads/:id', ruleEngine(RULES.UPLOAD_VIEW), requireRole(['Admin','Manager','Employee']), async (req, res) => {
   const { id } = req.params;
   try {
     const baseQuery = `

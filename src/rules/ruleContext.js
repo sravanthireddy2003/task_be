@@ -8,7 +8,26 @@ const buildRuleContext = (req, user, resource = {}) => {
     userDepartment: user ? user.department : null,
     resourceOwnerId: resource.ownerId || resource.userId || null,
     resourceId: resource.id || req.params.id || null,
-    action: req.method + '_' + (req.route && req.route.path ? req.route.path.replace(/^\//, '').replace(/\//g, '_').toUpperCase() : (req.path || req.url).replace(/^\//, '').replace(/\//g, '_').toUpperCase()),
+    // Provide multiple action variants to improve matching against stored rule action formats
+    // - route-based (e.g., POST_CREATEJSON or POST_)
+    // - baseUrl+route (e.g., POST_API_PROJECTS_TASKS_CREATEJSON)
+    // - full path (e.g., POST_API_PROJECTS_TASKS_CREATEJSON)
+    action: (() => {
+      try {
+        const norm = s => (s || '').toString().replace(/^\//, '').replace(/\//g, '_').toUpperCase();
+        const routePart = req.route && req.route.path ? norm(req.route.path) : '';
+        const basePart = req.baseUrl ? norm(req.baseUrl) : '';
+        const pathPart = norm(req.path || req.url || '');
+        const variants = [];
+        variants.push(`${req.method}_${routePart}`); // primary
+        if (basePart && routePart) variants.push(`${req.method}_${basePart}_${routePart}`);
+        if (pathPart) variants.push(`${req.method}_${pathPart}`);
+        // Ensure unique
+        return Array.from(new Set(variants));
+      } catch (e) {
+        return `${req.method}_`;
+      }
+    })(),
     payload: req.body || {},
     recordStatus: resource.status || null,
     timestamp: new Date().toISOString(),

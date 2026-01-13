@@ -686,27 +686,37 @@ async function sendTaskAssignmentEmails({
       return results;
     }
 
-    // Keep only valid public_ids
-    const userPublicIds = finalAssigned.filter(
-      id => typeof id === 'string' && id.trim().length > 0
-    );
 
-    if (userPublicIds.length === 0) {
-      console.info('ℹ️ No valid user public_ids provided');
+    // Accept mixed identifiers: numeric internal ids or string public_ids
+    const publicIds = [];
+    const internalIds = [];
+    finalAssigned.forEach((id) => {
+      if (id === undefined || id === null) return;
+      const s = String(id).trim();
+      if (s === '') return;
+      if (/^\d+$/.test(s)) internalIds.push(Number(s));
+      else publicIds.push(s);
+    });
+
+    if (publicIds.length === 0 && internalIds.length === 0) {
+      console.info('ℹ️ No valid assigned user identifiers provided');
       return results;
     }
 
-    /**
-     * Fetch user details
-     */
+    // Build SQL to fetch users by public_id OR _id
     const users = await new Promise((resolve, reject) => {
-      const sql = `
-        SELECT name, email
-        FROM users
-        WHERE public_id IN (?)
-      `;
-
-      connection.query(sql, [userPublicIds], (err, rows) => {
+      const clauses = [];
+      const params = [];
+      if (publicIds.length) {
+        clauses.push('public_id IN (?)');
+        params.push(publicIds);
+      }
+      if (internalIds.length) {
+        clauses.push('_id IN (?)');
+        params.push(internalIds);
+      }
+      const sql = `SELECT _id, public_id, name, email FROM users WHERE ${clauses.join(' OR ')}`;
+      connection.query(sql, params, (err, rows) => {
         if (err) return reject(err);
         resolve(rows || []);
       });

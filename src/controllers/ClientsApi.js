@@ -52,6 +52,12 @@ function saveBase64ToUploads(base64data, filename) {
 }
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const ruleEngine = require(__root + 'middleware/ruleEngine');
+const RULES = require(__root + 'rules/ruleCodes');
+/*
+  Rule codes used in this router:
+  - CLIENT_CREATE, CLIENT_VIEW, CLIENT_UPDATE, CLIENT_DELETE
+  Note: Additional client-specific actions should map to these CRUD codes when possible.
+*/
 const emailService = require(__root + 'utils/emailService');
 require('dotenv').config();
  
@@ -149,7 +155,7 @@ async function ensureClientTables() {
   }
 }
  
-router.post('/', ruleEngine('client_creation'), requireRole('Admin'), async (req, res) => {
+router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE), requireRole('Admin'), async (req, res) => {
   try {
     await ensureClientTables();
     const {
@@ -314,8 +320,25 @@ router.post('/', ruleEngine('client_creation'), requireRole('Admin'), async (req
       logger.debug('Optional client fields update skipped: ' + e.message);
     }
  
-    // Insert documents
+    // Insert documents from uploaded files
     const attachedDocuments = [];
+    if (req.files && Array.isArray(req.files) && req.files.length > 0) {
+      for (const file of req.files) {
+        try {
+          const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${encodeURIComponent(file.filename)}`;
+          const fileType = mime.lookup(file.originalname) || file.mimetype || null;
+          const r = await q(`
+            INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active)
+            VALUES (?, ?, ?, ?, ?, NOW(), 1)
+          `, [clientId, fileUrl, file.originalname, fileType, req.user._id]);
+          attachedDocuments.push({ id: r.insertId, file_url: fileUrl, file_name: file.originalname, file_type: fileType });
+        } catch (e) {
+          logger.debug('Failed to attach document for client ' + clientId + ': ' + (e && e.message));
+        }
+      }
+    }
+
+    // Also handle documents array if provided (backward compatibility)
     if (Array.isArray(documents) && documents.length > 0) {
       for (const d of documents) {
         if (!d) continue;
@@ -323,11 +346,11 @@ router.post('/', ruleEngine('client_creation'), requireRole('Admin'), async (req
         if (!fileName) continue;
         const fileUrl = d.file_url || d.fileUrl || (`${req.protocol}://${req.get('host')}/uploads/${encodeURIComponent(fileName)}`);
         try {
-          const fileType = d.file_type || d.fileType || guessMimeType(fileName) || null;
+          const fileType = d.file_type || d.fileType || mime.lookup(fileName) || null;
           const r = await q(`
             INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active)
             VALUES (?, ?, ?, ?, ?, NOW(), 1)
-          `, [clientId, fileUrl, fileName, fileType, d.uploaded_by || d.uploadedBy || (req.user && req.user._id ? req.user._id : null)]);
+          `, [clientId, fileUrl, fileName, fileType, d.uploaded_by || d.uploadedBy || req.user._id]);
           attachedDocuments.push({ id: r.insertId, file_url: fileUrl, file_name: fileName, file_type: fileType });
         } catch (e) {
           logger.debug('Failed to attach document for client ' + clientId + ': ' + (e && e.message));
@@ -485,7 +508,7 @@ if (primaryContactEmail || email) {
   }
 });
  
-router.get('/', requireRole(['Admin','Manager','Client-Viewer']), async (req, res) => {
+router.get('/', ruleEngine(RULES.CLIENT_VIEW), requireRole(['Admin','Manager','Client-Viewer']), async (req, res) => {
   try {
     const page = parseInt(req.query.page || '1', 10); const perPage = Math.min(parseInt(req.query.perPage || '25', 10), 200);
     const search = req.query.search || null; const status = req.query.status || null; const includeDeleted = req.query.includeDeleted === '1' || req.query.includeDeleted === 'true';
@@ -569,7 +592,7 @@ router.get('/', requireRole(['Admin','Manager','Client-Viewer']), async (req, re
   } catch (e) { logger.error('Error listing clients: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
 });
  
-router.get('/:id', requireRole(['Admin','Manager','Client-Viewer']), async (req, res) => {
+router.get('/:id', ruleEngine(RULES.CLIENT_VIEW), requireRole(['Admin','Manager','Client-Viewer']), async (req, res) => {
   try {
     const id = req.params.id;
     // If client-viewer, ensure mapping matches requested client
@@ -653,7 +676,7 @@ router.get('/:id', requireRole(['Admin','Manager','Client-Viewer']), async (req,
   } catch (e) { logger.error('Error fetching client details: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
 });
  
-router.put('/:id', ruleEngine('client_update'), requireRole(['Admin','Manager']), async (req, res) => {
+router.put('/:id', ruleEngine(RULES.CLIENT_UPDATE), requireRole(['Admin','Manager']), async (req, res) => {
   try {
     const id = req.params.id;
     const payload = req.body || {};
@@ -721,7 +744,7 @@ async function permanentlyDeleteClientById(id) {
   await q('DELETE FROM client_viewers WHERE client_id = ?', [id]).catch(() => {});
 }
 
-router.delete('/:id', ruleEngine('client_delete'), requireRole('Admin'), async (req, res) => {
+router.delete('/:id', ruleEngine(RULES.CLIENT_DELETE), requireRole('Admin'), async (req, res) => {
   try {
     const id = req.params.id;
     await permanentlyDeleteClientById(id);
@@ -739,7 +762,7 @@ router.delete('/:id', ruleEngine('client_delete'), requireRole('Admin'), async (
   }
 });
  
-router.delete('/:id/permanent', ruleEngine('client_permanent_delete'), requireRole('Admin'), async (req, res) => {
+router.delete('/:id/permanent', ruleEngine(RULES.CLIENT_DELETE), requireRole('Admin'), async (req, res) => {
   try {
     const id = req.params.id;
     const viewerRows = await q('SELECT user_id FROM client_viewers WHERE client_id = ?', [id]).catch(() => []);
@@ -769,7 +792,7 @@ router.delete('/:id/permanent', ruleEngine('client_permanent_delete'), requireRo
   } catch (e) { logger.error('Error permanently deleting client: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
 });
  
-router.post('/:id/assign-manager', requireRole('Admin'), async (req, res) => {
+router.post('/:id/assign-manager', ruleEngine(RULES.CLIENT_UPDATE), requireRole('Admin'), async (req, res) => {
   try {
     const id = req.params.id;
     const { managerId, manager_id: managerIdSnake, managerPublicId } = req.body || {};
@@ -799,7 +822,7 @@ router.post('/:id/assign-manager', requireRole('Admin'), async (req, res) => {
 });
  
 // Create a client-viewer account and map it to this client
-router.post('/:id/create-viewer', requireRole('Admin'), async (req, res) => {
+router.post('/:id/create-viewer', ruleEngine(RULES.CLIENT_CREATE), requireRole('Admin'), async (req, res) => {
   try {
     const id = req.params.id;
     const { email, name } = req.body;
@@ -926,15 +949,15 @@ router.put('/:id/viewers/:userId/modules', requireRole(['Admin','Manager']), asy
   } catch (e) { logger.error('Error updating viewer modules: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
 });
  
-router.post('/:id/contacts', requireRole(['Admin','Manager']), async (req, res) => { try { const id = req.params.id; const { name, email, phone, designation, is_primary } = req.body; if (!name) return res.status(400).json({ success: false, error: 'name required' }); if (is_primary) { await q('UPDATE client_contacts SET is_primary = 0 WHERE client_id = ?', [id]); } const r = await q('INSERT INTO client_contacts (client_id, name, email, phone, designation, is_primary, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())', [id, name, email || null, phone || null, designation || null, is_primary ? 1 : 0]); return res.status(201).json({ success: true, data: { id: r.insertId } }); } catch (e) { logger.error('Error adding contact: '+e.message); return res.status(500).json({ success: false, error: e.message }); } });
+router.post('/:id/contacts', ruleEngine(RULES.CLIENT_CONTACT_ADD), requireRole(['Admin','Manager']), async (req, res) => { try { const id = req.params.id; const { name, email, phone, designation, is_primary } = req.body; if (!name) return res.status(400).json({ success: false, error: 'name required' }); if (is_primary) { await q('UPDATE client_contacts SET is_primary = 0 WHERE client_id = ?', [id]); } const r = await q('INSERT INTO client_contacts (client_id, name, email, phone, designation, is_primary, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())', [id, name, email || null, phone || null, designation || null, is_primary ? 1 : 0]); return res.status(201).json({ success: true, data: { id: r.insertId } }); } catch (e) { logger.error('Error adding contact: '+e.message); return res.status(500).json({ success: false, error: e.message }); } });
  
 router.put('/:id/contacts/:contactId', requireRole(['Admin','Manager']), async (req, res) => { try { const id = req.params.id; const contactId = req.params.contactId; const payload = req.body || {}; if (payload.is_primary) { await q('UPDATE client_contacts SET is_primary = 0 WHERE client_id = ?', [id]); } const allowed = ['name','email','phone','designation','is_primary']; const sets = []; const params = []; for (const k of allowed) if (payload[k] !== undefined) { sets.push(`${k} = ?`); params.push(payload[k]); } if (!sets.length) return res.status(400).json({ success: false, error: 'No fields' }); params.push(contactId); await q(`UPDATE client_contacts SET ${sets.join(', ')} WHERE id = ?`, params); return res.json({ success: true, message: 'Contact updated' }); } catch (e) { logger.error('Error updating contact: '+e.message); return res.status(500).json({ success: false, error: e.message }); } });
  
 router.delete('/:id/contacts/:contactId', requireRole(['Admin','Manager']), async (req, res) => { try { const contactId = req.params.contactId; await q('DELETE FROM client_contacts WHERE id = ?', [contactId]); return res.json({ success: true, message: 'Contact deleted' }); } catch (e) { logger.error('Error deleting contact: '+e.message); return res.status(500).json({ success: false, error: e.message }); } });
  
-router.post('/:id/contacts/:contactId/set-primary', requireRole(['Admin','Manager']), async (req, res) => { try { const id = req.params.id; const contactId = req.params.contactId; await q('UPDATE client_contacts SET is_primary = 0 WHERE client_id = ?', [id]); await q('UPDATE client_contacts SET is_primary = 1 WHERE id = ?', [contactId]); return res.json({ success: true, message: 'Primary contact set' }); } catch (e) { logger.error('Error setting primary contact: '+e.message); return res.status(500).json({ success: false, error: e.message }); } });
+router.post('/:id/contacts/:contactId/set-primary', ruleEngine(RULES.CLIENT_CONTACT_UPDATE), requireRole(['Admin','Manager']), async (req, res) => { try { const id = req.params.id; const contactId = req.params.contactId; await q('UPDATE client_contacts SET is_primary = 0 WHERE client_id = ?', [id]); await q('UPDATE client_contacts SET is_primary = 1 WHERE id = ?', [contactId]); return res.json({ success: true, message: 'Primary contact set' }); } catch (e) { logger.error('Error setting primary contact: '+e.message); return res.status(500).json({ success: false, error: e.message }); } });
  
-router.post('/:id/documents', requireRole(['Admin','Manager']), async (req, res) => {
+router.post('/:id/documents', ruleEngine(RULES.CLIENT_UPDATE), requireRole(['Admin','Manager']), async (req, res) => {
   try {
     const id = req.params.id;
     // Support both single document (file_url+file_name) or an array `documents: [{file_url, file_name, file_type, uploaded_by}, ...]`
@@ -968,7 +991,7 @@ router.post('/:id/documents', requireRole(['Admin','Manager']), async (req, res)
 });
  
 // Multipart file upload endpoint: accept files as form-data `files[]`
-router.post('/:id/upload', requireRole(['Admin','Manager']), upload.array('files', 20), async (req, res) => {
+router.post('/:id/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin','Manager']), upload.array('files', 20), async (req, res) => {
   try {
     const id = req.params.id;
     if (!req.files || req.files.length === 0) return res.status(400).json({ success: false, error: 'No files uploaded' });

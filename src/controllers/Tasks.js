@@ -1,4 +1,4 @@
-
+﻿
 const db = require(__root + 'db');
 const express = require('express');
 const router = express.Router();
@@ -1056,7 +1056,7 @@ router.get('/', async (req, res) => {
 
 // PUT /api/projects/tasks/:id - Update task
 // ✅ FIXED ROUTER - Matches YOUR task_resign_requests schema (no requester_email column)
-router.put('/:id', ruleEngine('task_update'), requireRole(['Admin', 'Manager']), async (req, res) => {
+router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
   const { id: taskId } = req.params;
   const {
     stage, title, priority, description, client_id, projectId, projectPublicId,
@@ -1066,7 +1066,8 @@ router.put('/:id', ruleEngine('task_update'), requireRole(['Admin', 'Manager']),
   logger.info(`[PUT /tasks/:id] Updating task: taskId=${taskId}`);
 
   try {
-    const taskRow = await q('SELECT id FROM tasks WHERE public_id = ?', [taskId]);
+    // Check if task exists by public_id or internal id
+    const taskRow = await q('SELECT id FROM tasks WHERE public_id = ? OR id = ?', [taskId, taskId]);
     if (taskRow.length === 0) {
       return res.status(404).json({ success: false, error: 'Task not found' });
     }
@@ -3235,7 +3236,6 @@ router.get('/reassign-requests', requireRole(['Manager']), async (req, res) => {
         FROM task_resign_requests r
         JOIN tasks t ON r.task_id = t.id
         JOIN users u ON r.requested_by = u._id
-        WHERE r.status = 'PENDING'
         ORDER BY r.requested_at DESC
       `, [], (err, rows) => err ? reject(err) : resolve([rows]))
     );

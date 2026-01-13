@@ -5,6 +5,11 @@ const logger = require(__root + 'logger');
 const crypto = require('crypto');
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const ruleEngine = require(__root + 'middleware/ruleEngine');
+const RULES = require(__root + 'rules/ruleCodes');
+/*
+  Rule codes used in this router:
+  - SUBTASK_CREATE, SUBTASK_VIEW, SUBTASK_UPDATE, SUBTASK_DELETE
+*/
 require('dotenv').config();
 
 function q(sql, params = []) {
@@ -24,7 +29,7 @@ async function hasColumn(table, column) {
 
 // ==================== CREATE SUBTASK ====================
 // POST /api/subtasks
-router.post('/', ruleEngine('subtask_creation'), requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
+router.post('/', ruleEngine(RULES.SUBTASK_CREATE), requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const { taskId, title, description, priority = 'Medium', assignedTo, estimatedHours } = req.body;
 
@@ -155,7 +160,7 @@ router.get('/:id', async (req, res) => {
 
 // ==================== UPDATE SUBTASK ====================
 // PUT /api/subtasks/:id
-router.put('/:id', ruleEngine('subtask_update'), requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
+router.put('/:id', ruleEngine(RULES.SUBTASK_UPDATE), requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const { id } = req.params;
     const { title, description, status, priority, assignedTo, estimatedHours, actualHours } = req.body;
@@ -204,7 +209,7 @@ router.put('/:id', ruleEngine('subtask_update'), requireRole(['Admin', 'Manager'
 
 // ==================== DELETE SUBTASK ====================
 // DELETE /api/subtasks/:id
-router.delete('/:id', ruleEngine('subtask_delete'), requireRole(['Admin', 'Manager']), async (req, res) => {
+router.delete('/:id', ruleEngine(RULES.SUBTASK_DELETE), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { id } = req.params;
     const subtask = await q('SELECT * FROM subtasks WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);

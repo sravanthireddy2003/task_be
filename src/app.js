@@ -258,6 +258,7 @@ global.io = io;
 app.use(bodyParser.urlencoded({ extended: false }))
 app.use(bodyParser.json())
 app.use(cors());
+// Note: rule engine is applied per-route where needed to avoid protecting public endpoints like /api/auth/login
 // Serve uploads from project root `uploads` directory (not src/uploads)
 app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 // Ensure uploads directory exists so static serving won't 404 for newly saved files
@@ -352,6 +353,9 @@ app.use('/api/notifications', notificationRoutes);
 
 const chatRoutes = require(__root + 'routes/chatRoutes');
 app.use('/api/projects', chatRoutes);
+
+const documentRoutes = require(__root + 'routes/documentRoutes');
+app.use('/api/documents', documentRoutes);
 
 
 module.exports = server;

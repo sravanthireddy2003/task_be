@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const ChatService = require('../services/chatService');
 const { requireRole } = require('../middleware/roles');
+const ruleEngine = require('../middleware/ruleEngine');
+const RULES = require('../rules/ruleCodes');
  
 // Helper function for database queries
 const q = (sql, params = []) => new Promise((resolve, reject) => {
@@ -13,7 +15,7 @@ const q = (sql, params = []) => new Promise((resolve, reject) => {
 });
  
 // GET /api/projects/:projectId/chat/messages - Get chat messages for a project
-router.get('/:projectId/chat/messages', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
+router.get('/:projectId/chat/messages', ruleEngine(RULES.PROJECT_VIEW), requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const { projectId } = req.params;
     const { limit = 50, offset = 0 } = req.query;
@@ -49,7 +51,7 @@ router.get('/:projectId/chat/messages', requireRole(['Admin', 'Manager', 'Employ
 });
  
 // GET /api/projects/:projectId/chat/participants - Get all project members
-router.get('/:projectId/chat/participants', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
+router.get('/:projectId/chat/participants', ruleEngine(RULES.PROJECT_VIEW), requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const { projectId } = req.params;
  
@@ -80,7 +82,7 @@ router.get('/:projectId/chat/participants', requireRole(['Admin', 'Manager', 'Em
 });
  
 // POST /api/projects/:projectId/chat/messages - Send a message (alternative to Socket.IO)
-router.post('/:projectId/chat/messages', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
+router.post('/:projectId/chat/messages', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const { projectId } = req.params;
     const { message } = req.body;
@@ -175,7 +177,7 @@ router.post('/:projectId/chat/messages', requireRole(['Admin', 'Manager', 'Emplo
 });
  
 // GET /api/projects/:projectId/chat/stats - Get chat statistics
-router.get('/:projectId/chat/stats', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
+router.get('/:projectId/chat/stats', ruleEngine(RULES.PROJECT_VIEW), requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const { projectId } = req.params;
  
@@ -206,7 +208,7 @@ router.get('/:projectId/chat/stats', requireRole(['Admin', 'Manager', 'Employee'
 });
  
 // DELETE /api/projects/:projectId/chat/messages/:messageId - Delete a message (Admin only)
-router.delete('/:projectId/chat/messages/:messageId', requireRole(['Admin']), async (req, res) => {
+router.delete('/:projectId/chat/messages/:messageId', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin']), async (req, res) => {
   try {
     const { projectId, messageId } = req.params;
  
