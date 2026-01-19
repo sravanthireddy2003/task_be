@@ -325,13 +325,16 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
     if (req.files && Array.isArray(req.files) && req.files.length > 0) {
       for (const file of req.files) {
         try {
-          const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${encodeURIComponent(file.filename)}`;
+          // store relative path in DB, but return full public URL in response
+          const relativePath = `/uploads/${encodeURIComponent(file.filename)}`;
+          const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
+          const publicUrl = `${baseUrl}${relativePath}`;
           const fileType = mime.lookup(file.originalname) || file.mimetype || null;
           const r = await q(`
             INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active)
             VALUES (?, ?, ?, ?, ?, NOW(), 1)
-          `, [clientId, fileUrl, file.originalname, fileType, req.user._id]);
-          attachedDocuments.push({ id: r.insertId, file_url: fileUrl, file_name: file.originalname, file_type: fileType });
+          `, [clientId, relativePath, file.originalname, fileType, req.user._id]);
+          attachedDocuments.push({ id: r.insertId, file_url: publicUrl, file_name: file.originalname, file_type: fileType });
         } catch (e) {
           logger.debug('Failed to attach document for client ' + clientId + ': ' + (e && e.message));
         }
@@ -344,13 +347,27 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
         if (!d) continue;
         const fileName = d.file_name || d.fileName || null;
         if (!fileName) continue;
-        const fileUrl = d.file_url || d.fileUrl || (`${req.protocol}://${req.get('host')}/uploads/${encodeURIComponent(fileName)}`);
+        // Normalize incoming file URL/name to a relative /uploads path to store in DB
+        const baseUrl = `${req.protocol}://${req.get('host')}`;
+        let relativePath = null;
+        if (d.file_url && String(d.file_url).startsWith('/uploads/')) {
+          relativePath = d.file_url;
+        } else if (d.file_url) {
+          try {
+            const parsed = new URL(d.file_url);
+            if (parsed.pathname && parsed.pathname.startsWith('/uploads/')) relativePath = parsed.pathname;
+          } catch (e) { /* ignore parse errors */ }
+        }
+        if (!relativePath) {
+          relativePath = `/uploads/${encodeURIComponent(fileName)}`;
+        }
+        const fileUrl = `${baseUrl}${relativePath}`;
         try {
           const fileType = d.file_type || d.fileType || mime.lookup(fileName) || null;
           const r = await q(`
             INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active)
             VALUES (?, ?, ?, ?, ?, NOW(), 1)
-          `, [clientId, fileUrl, fileName, fileType, d.uploaded_by || d.uploadedBy || req.user._id]);
+          `, [clientId, relativePath, fileName, fileType, d.uploaded_by || d.uploadedBy || req.user._id]);
           attachedDocuments.push({ id: r.insertId, file_url: fileUrl, file_name: fileName, file_type: fileType });
         } catch (e) {
           logger.debug('Failed to attach document for client ' + clientId + ': ' + (e && e.message));
