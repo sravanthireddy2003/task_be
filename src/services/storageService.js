@@ -61,7 +61,8 @@ class StorageService {
         throw new Error('No file data available to persist');
       }
 
-      return { storagePath: encodeURI('/uploads/' + filename), provider: 'local', key: filename };
+      // return uploads-relative path without percent-encoding; encoding is done when constructing public URLs
+      return { storagePath: '/uploads/' + filename, provider: 'local', key: filename };
     } catch (e) {
       const err = new Error('Failed to save uploaded file');
       err.cause = e;
@@ -123,10 +124,10 @@ class StorageService {
       if (resolvedP.startsWith(candidateUploads)) {
         const rel = path.relative(candidateUploads, resolvedP).replace(/\\/g, '/');
         // encode URI but preserve slashes
-        publicPath = encodeURI('/uploads/' + rel);
+         publicPath = '/uploads/' + rel;
       } else if (resolvedP.includes('/uploads/')) {
         const idx = resolvedP.indexOf('/uploads/');
-        publicPath = encodeURI(resolvedP.substring(idx).replace(/\\/g, '/'));
+         publicPath = resolvedP.substring(idx).replace(/\\/g, '/');
       }
 
       const result = { stream: fileStream };

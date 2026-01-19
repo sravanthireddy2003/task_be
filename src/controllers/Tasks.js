@@ -3255,6 +3255,10 @@ router.post('/:id/start', requireRole(['Employee']), async (req, res) => {
 
     // ✅ FIXED: Case-insensitive check
     const normalizedStatus = currentStatus?.toUpperCase().trim();
+    // If already in progress, treat as idempotent success
+    if (normalizedStatus === 'IN PROGRESS') {
+      return res.json({ success: true, message: 'Task already in progress' });
+    }
     if (normalizedStatus !== 'TO DO' && normalizedStatus !== 'PENDING') {
       return res.status(400).json({ 
         success: false, 

@@ -237,8 +237,30 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
  
 router.get('/', async (req, res) => {
   try {
+    // If caller requested a lightweight dropdown response, return minimal fields
+    if (req.query.dropdown === '1' || req.query.dropdown === 'true') {
+      let rows;
+      if (req.user.role === 'Admin' || req.user.role === 'Manager') {
+        rows = await q('SELECT public_id as projectId, name as projectName FROM projects WHERE is_active = 1 ORDER BY name');
+      } else if (req.user.role === 'Employee') {
+        rows = await q(`
+          SELECT DISTINCT p.public_id as projectId, p.name as projectName FROM projects p
+          JOIN tasks t ON p.id = t.project_id
+          JOIN taskassignments ta ON t.id = ta.task_id
+          WHERE ta.user_id = ? AND p.is_active = 1
+          ORDER BY p.name
+        `, [req.user._id]);
+      } else {
+        rows = [];
+      }
+
+      // Normalize camelCase response expected by frontend
+      const out = (rows || []).map(r => ({ projectId: r.projectId, projectName: r.projectName }));
+      return res.json(out);
+    }
+
     let projects;
- 
+
     if (req.user.role === 'Admin') {
       // Admins see all projects (no soft-delete filtering)
       projects = await q('SELECT * FROM projects ORDER BY created_at DESC');

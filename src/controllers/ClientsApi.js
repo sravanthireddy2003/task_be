@@ -325,13 +325,14 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
     if (req.files && Array.isArray(req.files) && req.files.length > 0) {
       for (const file of req.files) {
         try {
-          const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${encodeURIComponent(file.filename)}`;
+          // store only uploads-relative path in DB
+          const storedPath = '/uploads/' + encodeURIComponent(file.filename);
           const fileType = mime.lookup(file.originalname) || file.mimetype || null;
           const r = await q(`
             INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active)
             VALUES (?, ?, ?, ?, ?, NOW(), 1)
-          `, [clientId, fileUrl, file.originalname, fileType, req.user._id]);
-          attachedDocuments.push({ id: r.insertId, file_url: fileUrl, file_name: file.originalname, file_type: fileType });
+          `, [clientId, storedPath, file.originalname, fileType, req.user._id]);
+          attachedDocuments.push({ id: r.insertId, file_url: storedPath, file_name: file.originalname, file_type: fileType });
         } catch (e) {
           logger.debug('Failed to attach document for client ' + clientId + ': ' + (e && e.message));
         }
@@ -339,19 +340,55 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
     }
 
     // Also handle documents array if provided (backward compatibility)
+    // Only persist a document entry when the backend has saved the file (or the path already points to /uploads/).
     if (Array.isArray(documents) && documents.length > 0) {
       for (const d of documents) {
         if (!d) continue;
         const fileName = d.file_name || d.fileName || null;
         if (!fileName) continue;
-        const fileUrl = d.file_url || d.fileUrl || (`${req.protocol}://${req.get('host')}/uploads/${encodeURIComponent(fileName)}`);
+        const fileUrlCandidate = d.file_url || d.fileUrl || null;
+
+        let storedPath = null;
+
         try {
+          // If the client provided a server-side uploads path, preserve it
+          if (fileUrlCandidate && typeof fileUrlCandidate === 'string' && fileUrlCandidate.startsWith('/uploads/')) {
+            storedPath = fileUrlCandidate;
+          }
+
+          // If client supplied a base64 payload, save it to uploads
+          else if (fileUrlCandidate && typeof fileUrlCandidate === 'string' && fileUrlCandidate.startsWith('data:')) {
+            // derive a safe filename
+            const safeName = fileName.replace(/[^a-zA-Z0-9._()-]/g, '_');
+            const savedUrl = saveBase64ToUploads(fileUrlCandidate, safeName);
+            if (savedUrl) {
+              // savedUrl returns a full public URL; convert to uploads-relative
+              const parsed = savedUrl.replace(/^(?:https?:\/\/[^\/]+)?/, '');
+              storedPath = parsed.startsWith('/') ? parsed : '/' + parsed;
+            }
+          }
+
+          // If client provided a blob: URL or external local preview URL, skip — cannot persist server-side
+          else if (fileUrlCandidate && typeof fileUrlCandidate === 'string' && (fileUrlCandidate.startsWith('blob:') || /^https?:\/\//i.test(fileUrlCandidate))) {
+            logger.debug('Skipping external/blob document reference for client ' + clientId + ': ' + String(fileUrlCandidate).slice(0, 200));
+            storedPath = null;
+          }
+
+          // As a last resort, if the client only provided a filename and there is an already-uploaded file matching it, prefer that
+          else {
+            const uploadsDir = path.join(__dirname, '..', 'uploads');
+            const candidate = path.join(uploadsDir, fileName);
+            if (fs.existsSync(candidate)) storedPath = '/uploads/' + encodeURIComponent(fileName);
+          }
+
+          if (!storedPath) continue; // nothing saved for this entry; skip inserting a DB row
+
           const fileType = d.file_type || d.fileType || mime.lookup(fileName) || null;
           const r = await q(`
             INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active)
             VALUES (?, ?, ?, ?, ?, NOW(), 1)
-          `, [clientId, fileUrl, fileName, fileType, d.uploaded_by || d.uploadedBy || req.user._id]);
-          attachedDocuments.push({ id: r.insertId, file_url: fileUrl, file_name: fileName, file_type: fileType });
+          `, [clientId, storedPath, fileName, fileType, d.uploaded_by || d.uploadedBy || req.user._id]);
+          attachedDocuments.push({ id: r.insertId, file_url: storedPath, file_name: fileName, file_type: fileType });
         } catch (e) {
           logger.debug('Failed to attach document for client ' + clientId + ': ' + (e && e.message));
         }
@@ -653,7 +690,20 @@ router.get('/:id', ruleEngine(RULES.CLIENT_VIEW), requireRole(['Admin','Manager'
       client.manager_public_id = client.manager_public_id || null;
       client.manager_name = client.manager_name || null;
     }
-    const documents = await q('SELECT id, file_url, file_name, file_type, uploaded_at FROM client_documents WHERE client_id = ? AND is_active = 1 ORDER BY uploaded_at DESC', [id]).catch(() => []);
+    let documents = await q('SELECT id, file_url, file_name, file_type, uploaded_at FROM client_documents WHERE client_id = ? AND is_active = 1 ORDER BY uploaded_at DESC', [id]).catch(() => []);
+    try {
+      const base = req.protocol + '://' + req.get('host');
+      documents = (documents || []).map(d => {
+        try {
+          if (d && d.file_url && String(d.file_url).startsWith('/uploads/')) {
+            const rel = String(d.file_url).replace(/^\/uploads\//, '');
+            const parts = rel.split('/').map(p => encodeURIComponent(p));
+            return { ...d, file_url: base + '/uploads/' + parts.join('/') };
+          }
+        } catch (e) {}
+        return d;
+      });
+    } catch (e) {}
     const activities = await q('SELECT id, actor_id, action, details, created_at FROM client_activity_logs WHERE client_id = ? ORDER BY created_at DESC LIMIT 50', [id]).catch(() => []);
     let projectCount = 0, taskCount = 0, completedTasks = 0, pendingTasks = 0, billableHours = null, assignedManager = null;
     try {
@@ -969,11 +1019,14 @@ router.post('/:id/documents', ruleEngine(RULES.CLIENT_UPDATE), requireRole(['Adm
       if (!d) continue;
       const fileName = d.file_name || d.fileName || null;
       if (!fileName) continue;
-      const fileUrl = d.file_url || d.fileUrl || (`${req.protocol}://${req.get('host')}/uploads/${encodeURIComponent(fileName)}`);
+      // Normalize to uploads-relative path; never persist blob: or full URLs
+      const candidate = d.file_url || d.fileUrl || null;
+      let storedPath = '/uploads/' + encodeURIComponent(fileName);
+      if (candidate && typeof candidate === 'string' && candidate.startsWith('/uploads/')) storedPath = candidate;
       try {
         const fileType = d.file_type || d.fileType || guessMimeType(fileName) || null;
-        const r = await q('INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active) VALUES (?, ?, ?, ?, ?, NOW(), 1)', [id, fileUrl, fileName, fileType, d.uploaded_by || d.uploadedBy || (req.user && req.user._id ? req.user._id : null)]);
-        const docRec = { id: r.insertId, file_url: fileUrl, file_name: fileName, file_type: fileType };
+        const r = await q('INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active) VALUES (?, ?, ?, ?, ?, NOW(), 1)', [id, storedPath, fileName, fileType, d.uploaded_by || d.uploadedBy || (req.user && req.user._id ? req.user._id : null)]);
+        const docRec = { id: r.insertId, file_url: storedPath, file_name: fileName, file_type: fileType };
         inserted.push(docRec);
         // log activity per document
         await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'attach-document', JSON.stringify(docRec)]).catch(()=>{});
@@ -999,10 +1052,10 @@ router.post('/:id/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin'
     for (const f of req.files) {
       try {
         const fileName = f.originalname || f.filename;
-        const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${encodeURIComponent(f.filename)}`;
+        const storedPath = '/uploads/' + encodeURIComponent(f.filename);
         const fileType = f.mimetype || guessMimeType(fileName) || null;
-        const r = await q('INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active) VALUES (?, ?, ?, ?, ?, NOW(), 1)', [id, fileUrl, fileName, fileType, req.user && req.user._id ? req.user._id : null]);
-        const docRec = { id: r.insertId, file_url: fileUrl, file_name: fileName, file_type: fileType };
+        const r = await q('INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active) VALUES (?, ?, ?, ?, ?, NOW(), 1)', [id, storedPath, fileName, fileType, req.user && req.user._id ? req.user._id : null]);
+        const docRec = { id: r.insertId, file_url: storedPath, file_name: fileName, file_type: fileType };
         inserted.push(docRec);
         await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'attach-document', JSON.stringify(docRec)]).catch(()=>{});
       } catch (e) {

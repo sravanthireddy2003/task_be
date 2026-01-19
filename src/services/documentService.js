@@ -34,8 +34,8 @@ module.exports = {
         if (resolvedP.startsWith(candidateUploads)) {
           const rel = path.relative(candidateUploads, resolvedP).replace(/\\/g, '/');
           // encode URI components but preserve slashes
-          storageInfo.publicPath = encodeURI('/uploads/' + rel);
-          // Store encoded publicPath in DB filePath so API consumers can build full URL from it
+          storageInfo.publicPath = '/uploads/' + rel;
+          // Store publicPath in DB filePath (unencoded); controllers will encode when building URLs
           storageInfo.storagePath = storageInfo.publicPath;
         } else {
           // fallback: keep absolute path but also expose publicPath as empty

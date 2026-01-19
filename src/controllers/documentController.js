@@ -48,6 +48,16 @@ module.exports = {
       const ruleDecision = req.ruleDecision || { allowed: true, ruleCode: 'DOCUMENT_VIEW', reason: 'User has access to project documents' };
 
       const baseUrl = req.protocol + '://' + req.get('host');
+      const encodeUploads = (storedPath) => {
+        if (!storedPath) return '';
+        try {
+          if (!String(storedPath).startsWith('/uploads/')) return storedPath;
+          const rel = String(storedPath).replace(/^\/uploads\//, '');
+          const parts = rel.split('/').map(p => encodeURIComponent(p));
+          return baseUrl + '/uploads/' + parts.join('/');
+        } catch (e) { return baseUrl + storedPath; }
+      };
+
       const documents = await Promise.all((rows || []).map(async (r) => {
         const doc = {
           documentId: r.documentId || r.id || null,
@@ -71,11 +81,10 @@ module.exports = {
             doc.previewUrl = handle.redirectUrl;
             doc.downloadUrl = handle.redirectUrl;
           } else if (handle && handle.publicPath) {
-            const host = req.protocol + '://' + req.get('host');
             doc.previewAvailable = true;
             doc.downloadAllowed = true;
-            doc.previewUrl = host + encodeURI(handle.publicPath);
-            doc.downloadUrl = host + encodeURI(handle.publicPath);
+            doc.previewUrl = encodeUploads(handle.publicPath);
+            doc.downloadUrl = encodeUploads(handle.publicPath);
           }
         } catch (e) {
           // ignore storage errors per-item
@@ -102,7 +111,7 @@ module.exports = {
           else if (doc.previewUrl) doc.file_url = doc.previewUrl;
           else if (r && r.storagePath) {
             const sp = String(r.storagePath);
-            if (sp.startsWith('/uploads/')) doc.file_url = baseUrl + encodeURI(sp);
+            if (sp.startsWith('/uploads/')) doc.file_url = encodeUploads(sp);
             else if (/^https?:\/\//i.test(sp)) doc.file_url = sp;
             else doc.file_url = '';
           } else {
@@ -146,8 +155,10 @@ module.exports = {
           });
         }
         if (handle.publicPath) {
-          const host = req.protocol + '://' + req.get('host');
-          return res.json({ success: true, documentId: id, previewUrl: host + encodeURI(handle.publicPath), expiresInSeconds: 0 });
+          const base = req.protocol + '://' + req.get('host');
+          const rel = String(handle.publicPath).replace(/^\/uploads\//, '');
+          const parts = rel.split('/').map(p => encodeURIComponent(p));
+          return res.json({ success: true, documentId: id, previewUrl: base + '/uploads/' + parts.join('/'), expiresInSeconds: 0 });
         }
       } catch (e) {
         // fall through to streaming if no URL could be produced
@@ -173,8 +184,10 @@ module.exports = {
       if (download.redirectUrl) return res.redirect(download.redirectUrl);
       // If storage returned a publicPath for local files, prefer redirecting to that public URL
       if (download.publicPath) {
-        const host = req.protocol + '://' + req.get('host');
-        return res.redirect(host + encodeURI(download.publicPath));
+        const base = req.protocol + '://' + req.get('host');
+        const rel = String(download.publicPath).replace(/^\/uploads\//, '');
+        const parts = rel.split('/').map(p => encodeURIComponent(p));
+        return res.redirect(base + '/uploads/' + parts.join('/'));
       }
       res.set({ 'Content-Disposition': `attachment; filename="${download.fileName || 'file'}"`, ...(download.headers || {}) });
       if (download.stream) return download.stream.pipe(res);

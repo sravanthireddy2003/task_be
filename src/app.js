@@ -260,10 +260,26 @@ app.use(bodyParser.json())
 app.use(cors());
 // Note: rule engine is applied per-route where needed to avoid protecting public endpoints like /api/auth/login
 // Serve uploads from project root `uploads` directory (not src/uploads)
-app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
+// Normalize double-encoded percent sequences (e.g. "%2520") so legacy/incorrect
+// links like /uploads/Full%2520Name.pdf resolve to the actual file.
+app.use('/uploads', (req, res, next) => {
+  try {
+    if (req.url && req.url.indexOf('%25') !== -1) {
+      let u = req.url;
+      // Replace repeated %25 -> % until none remain (handles multiple encodings)
+      while (u.indexOf('%25') !== -1) u = u.replace(/%25/g, '%');
+      req.url = u;
+    }
+  } catch (e) {
+    // ignore normalization failures and proceed to static handler
+  }
+  return next();
+}, express.static(path.join(__dirname, '..', 'uploads')));
+
 // Ensure uploads directory exists so static serving won't 404 for newly saved files
 try {
   const uploadsDir = path.join(__dirname, '..', 'uploads');
+
   if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
   const profilesDir = path.join(uploadsDir, 'profiles');
   if (!fs.existsSync(profilesDir)) fs.mkdirSync(profilesDir, { recursive: true });
@@ -317,6 +333,12 @@ app.get('/api', function (req, res) {
 const AuthController = require(__root + 'controllers/AuthController');
 app.use('/api/auth', AuthController);
 
+// Audit log routes (admin/manager/employee)
+const auditRoutes = require(__root + 'routes/auditRoutes');
+app.use('/api/admin', auditRoutes.admin);
+app.use('/api/manager', auditRoutes.manager);
+app.use('/api/employee', auditRoutes.employee);
+
 // Client-Viewer Access Control Middleware
 // Enforces read-only access and endpoint restrictions for Client-Viewer users
 const clientViewerAccessControl = require(__root + 'middleware/clientViewerAccess');
@@ -356,6 +378,10 @@ app.use('/api/projects', chatRoutes);
 
 const documentRoutes = require(__root + 'routes/documentRoutes');
 app.use('/api/documents', documentRoutes);
+
+// Reports routes
+const reportRoutes = require(__root + 'routes/reportRoutes');
+app.use('/api/reports', reportRoutes);
 
 
 module.exports = server;
