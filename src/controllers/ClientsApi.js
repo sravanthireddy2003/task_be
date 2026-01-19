@@ -339,6 +339,7 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
       }
     }
 
+    // zsdfghjkmnbvf
     // Also handle documents array if provided (backward compatibility)
     // Only persist a document entry when the backend has saved the file (or the path already points to /uploads/).
     if (Array.isArray(documents) && documents.length > 0) {
