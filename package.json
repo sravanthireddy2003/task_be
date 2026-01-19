@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "nodemon index.js",
-    "migrate": "node scripts/migrate.js",
+    "migrate": "node migrate_rules.js",
     "seed": "node scripts/seed.js",
     "test": "echo \"Error: no test specified\" && exit 1",
     "test:rules": "node scripts/test_rules.js"

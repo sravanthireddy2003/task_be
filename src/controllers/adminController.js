@@ -61,9 +61,18 @@ async function fetchClientDocuments(clientIds = []) {
     'SELECT id, client_id, file_url, file_name, file_type, uploaded_at FROM client_documents WHERE client_id IN (?) AND is_active = 1 ORDER BY uploaded_at DESC',
     [clientIds]
   );
+  // convert stored uploads-relative paths to public URLs using configured base
+  const base = process.env.BASE_URL || process.env.FRONTEND_URL || 'http://localhost:4000';
   return (rows || []).reduce((memo, row) => {
     if (!row || row.client_id === undefined || row.client_id === null) return memo;
     if (!memo[row.client_id]) memo[row.client_id] = [];
+    try {
+      if (row && row.file_url && String(row.file_url).startsWith('/uploads/')) {
+        const rel = String(row.file_url).replace(/^\/uploads\//, '');
+        const parts = rel.split('/').map(p => encodeURIComponent(p));
+        row.file_url = base + '/uploads/' + parts.join('/');
+      }
+    } catch (e) {}
     memo[row.client_id].push(row);
     return memo;
   }, {});

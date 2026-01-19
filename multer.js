@@ -13,16 +13,26 @@ const ensureUploadsDir = async () => {
   }
 };
 
+
+// Use disk storage so uploaded files have a filesystem path (used by storageService)
+// Use memory storage: multer will expose `file.buffer` and we'll persist it in `storageService.upload`
 const storage = multer.memoryStorage();
 
 const upload = multer({
   storage,
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB
+    fileSize: 25 * 1024 * 1024, // 25MB
   },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) cb(null, true);
-    else cb(new Error("Only image files allowed"), false);
+    const allowed = [
+      'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'text/plain'
+    ];
+    if (allowed.includes(file.mimetype) || file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('File type not allowed'), false);
   },
 });
 
