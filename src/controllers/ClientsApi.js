@@ -322,29 +322,17 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
  
     // Insert documents from uploaded files
     const attachedDocuments = [];
+    const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
     if (req.files && Array.isArray(req.files) && req.files.length > 0) {
       for (const file of req.files) {
         try {
-<<<<<<< HEAD
-          // store relative path in DB, but return full public URL in response
-          const relativePath = `/uploads/${encodeURIComponent(file.filename)}`;
-          const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
-          const publicUrl = `${baseUrl}${relativePath}`;
-=======
-          // store only uploads-relative path in DB
           const storedPath = '/uploads/' + encodeURIComponent(file.filename);
->>>>>>> origin/feature/doc-upload-memory-storage
           const fileType = mime.lookup(file.originalname) || file.mimetype || null;
           const r = await q(`
             INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active)
             VALUES (?, ?, ?, ?, ?, NOW(), 1)
-<<<<<<< HEAD
-          `, [clientId, relativePath, file.originalname, fileType, req.user._id]);
-          attachedDocuments.push({ id: r.insertId, file_url: publicUrl, file_name: file.originalname, file_type: fileType });
-=======
-          `, [clientId, storedPath, file.originalname, fileType, req.user._id]);
-          attachedDocuments.push({ id: r.insertId, file_url: storedPath, file_name: file.originalname, file_type: fileType });
->>>>>>> origin/feature/doc-upload-memory-storage
+          `, [clientId, storedPath, file.originalname, fileType, req.user && req.user._id ? req.user._id : null]);
+          attachedDocuments.push({ id: r.insertId, file_url: `${baseUrl}${storedPath}`, file_name: file.originalname, file_type: fileType });
         } catch (e) {
           logger.debug('Failed to attach document for client ' + clientId + ': ' + (e && e.message));
         }
@@ -358,28 +346,9 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
         if (!d) continue;
         const fileName = d.file_name || d.fileName || null;
         if (!fileName) continue;
-<<<<<<< HEAD
-        // Normalize incoming file URL/name to a relative /uploads path to store in DB
-        const baseUrl = `${req.protocol}://${req.get('host')}`;
-        let relativePath = null;
-        if (d.file_url && String(d.file_url).startsWith('/uploads/')) {
-          relativePath = d.file_url;
-        } else if (d.file_url) {
-          try {
-            const parsed = new URL(d.file_url);
-            if (parsed.pathname && parsed.pathname.startsWith('/uploads/')) relativePath = parsed.pathname;
-          } catch (e) { /* ignore parse errors */ }
-        }
-        if (!relativePath) {
-          relativePath = `/uploads/${encodeURIComponent(fileName)}`;
-        }
-        const fileUrl = `${baseUrl}${relativePath}`;
-=======
         const fileUrlCandidate = d.file_url || d.fileUrl || null;
 
         let storedPath = null;
-
->>>>>>> origin/feature/doc-upload-memory-storage
         try {
           // If the client provided a server-side uploads path, preserve it
           if (fileUrlCandidate && typeof fileUrlCandidate === 'string' && fileUrlCandidate.startsWith('/uploads/')) {
@@ -388,17 +357,20 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
 
           // If client supplied a base64 payload, save it to uploads
           else if (fileUrlCandidate && typeof fileUrlCandidate === 'string' && fileUrlCandidate.startsWith('data:')) {
-            // derive a safe filename
             const safeName = fileName.replace(/[^a-zA-Z0-9._()-]/g, '_');
             const savedUrl = saveBase64ToUploads(fileUrlCandidate, safeName);
             if (savedUrl) {
-              // savedUrl returns a full public URL; convert to uploads-relative
-              const parsed = savedUrl.replace(/^(?:https?:\/\/[^\/]+)?/, '');
-              storedPath = parsed.startsWith('/') ? parsed : '/' + parsed;
+              try {
+                const parsed = new URL(savedUrl);
+                storedPath = parsed.pathname || savedUrl.replace(/^(?:https?:\/\/[^\/]+)?/, '');
+              } catch (e) {
+                storedPath = savedUrl.replace(/^(?:https?:\/\/[^\/]+)?/, '');
+                if (!storedPath.startsWith('/')) storedPath = '/' + storedPath;
+              }
             }
           }
 
-          // If client provided a blob: URL or external local preview URL, skip — cannot persist server-side
+          // If client provided a blob: URL or external URL, skip — cannot persist server-side
           else if (fileUrlCandidate && typeof fileUrlCandidate === 'string' && (fileUrlCandidate.startsWith('blob:') || /^https?:\/\//i.test(fileUrlCandidate))) {
             logger.debug('Skipping external/blob document reference for client ' + clientId + ': ' + String(fileUrlCandidate).slice(0, 200));
             storedPath = null;
@@ -417,13 +389,8 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
           const r = await q(`
             INSERT INTO client_documents (client_id, file_url, file_name, file_type, uploaded_by, uploaded_at, is_active)
             VALUES (?, ?, ?, ?, ?, NOW(), 1)
-<<<<<<< HEAD
-          `, [clientId, relativePath, fileName, fileType, d.uploaded_by || d.uploadedBy || req.user._id]);
-          attachedDocuments.push({ id: r.insertId, file_url: fileUrl, file_name: fileName, file_type: fileType });
-=======
-          `, [clientId, storedPath, fileName, fileType, d.uploaded_by || d.uploadedBy || req.user._id]);
-          attachedDocuments.push({ id: r.insertId, file_url: storedPath, file_name: fileName, file_type: fileType });
->>>>>>> origin/feature/doc-upload-memory-storage
+          `, [clientId, storedPath, fileName, fileType, d.uploaded_by || d.uploadedBy || (req.user && req.user._id ? req.user._id : null)]);
+          attachedDocuments.push({ id: r.insertId, file_url: `${baseUrl}${storedPath}`, file_name: fileName, file_type: fileType });
         } catch (e) {
           logger.debug('Failed to attach document for client ' + clientId + ': ' + (e && e.message));
         }

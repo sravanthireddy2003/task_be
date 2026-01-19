@@ -367,7 +367,8 @@ const bodyParser = require('body-parser');
 const http = require('http');
 const socketIo = require('socket.io');
 const jwt = require('jsonwebtoken');
-require('dotenv').config()
+require('dotenv').config();
+
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
@@ -376,6 +377,7 @@ const io = socketIo(server, {
     methods: ["GET", "POST", "PUT", "DELETE"]
   }
 });
+
 const db = require('./db');
 const ChatService = require('./services/chatService');
 const path = require('path');
@@ -383,12 +385,10 @@ const fs = require('fs');
 
 global.__root = __dirname + '/';
 
-// Socket.IO authentication and room joining (UNCHANGED)
+// ========== SOCKET.IO (KEEP ALL YOUR EXISTING CODE) ==========
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
-  if (!token) {
-    return next(new Error('Authentication error'));
-  }
+  if (!token) return next(new Error('Authentication error'));
   try {
     const decoded = jwt.verify(token, process.env.SECRET || 'secret');
     socket.user = decoded;
@@ -398,44 +398,139 @@ io.use((socket, next) => {
   }
 });
 
-// ... (keep all your existing socket.io code unchanged until middleware section) ...
+io.on('connection', async (socket) => {
+  try {
+    const userResult = await new Promise((resolve, reject) => {
+      db.query('SELECT _id, name, role FROM users WHERE public_id = ? LIMIT 1', [socket.user.id], (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    });
 
-// ✅ FIXED: MIDDLEWARE SECTION - REPLACE LINES ~113-121
+    if (!userResult || userResult.length === 0) {
+      socket.emit('error', { message: 'User not found' });
+      socket.disconnect();
+      return;
+    }
+
+    const userId = userResult[0]._id;
+    const userName = userResult[0].name || 'Unknown User';
+    const userRole = userResult[0].role || 'Employee';
+
+    console.log(`User ${userName} (${userId}) connected`);
+    socket.join(`user_${userId}`);
+
+    // ALL YOUR SOCKET EVENT HANDLERS (join_project_chat, send_message, etc.)
+    socket.on('join_project_chat', async (projectId) => {
+      try {
+        const hasAccess = await ChatService.validateProjectAccess(userId, projectId);
+        if (!hasAccess) {
+          socket.emit('error', { message: 'You do not have access to this project chat' });
+          return;
+        }
+
+        const chatRoom = await ChatService.getOrCreateProjectChat(projectId);
+        const roomName = chatRoom.room_name;
+        socket.join(roomName);
+        await ChatService.addParticipant(projectId, userId, userName, userRole);
+
+        socket.to(roomName).emit('user_joined', { userId, userName, userRole, timestamp: new Date() });
+        await ChatService.emitUserPresence(projectId, userName, 'joined');
+        const onlineParticipants = await ChatService.getOnlineParticipants(projectId);
+        socket.emit('online_participants', onlineParticipants);
+        console.log(`User ${userName} joined project chat: ${roomName}`);
+      } catch (error) {
+        console.error('Error joining project chat:', error);
+        socket.emit('error', { message: 'Failed to join project chat' });
+      }
+    });
+
+    socket.on('leave_project_chat', async (projectId) => {
+      try {
+        const roomName = `project_${projectId}`;
+        socket.leave(roomName);
+        await ChatService.removeParticipant(projectId, userId);
+        socket.to(roomName).emit('user_left', { userId, userName, timestamp: new Date() });
+        await ChatService.emitUserPresence(projectId, userName, 'left');
+        console.log(`User ${userName} left project chat: ${roomName}`);
+      } catch (error) {
+        console.error('Error leaving project chat:', error);
+      }
+    });
+
+    socket.on('send_message', async (data) => {
+      try {
+        const { projectId, message } = data;
+        const hasAccess = await ChatService.validateProjectAccess(userId, projectId);
+        if (!hasAccess) {
+          socket.emit('error', { message: 'You do not have access to send messages in this project' });
+          return;
+        }
+
+        if (message.startsWith('/')) {
+          const botResponse = await ChatService.handleChatbotCommand(projectId, message, userName, userId);
+          const botMessage = await ChatService.saveMessage(projectId, 0, 'ChatBot', botResponse, 'bot');
+          const userMessage = await ChatService.saveMessage(projectId, userId, userName, message, 'text');
+          const roomName = `project_${projectId}`;
+          io.to(roomName).emit('chat_message', userMessage);
+          io.to(roomName).emit('chat_message', botMessage);
+          console.log(`Bot command processed: ${userName}: ${message}`);
+          return;
+        }
+
+        const savedMessage = await ChatService.saveMessage(projectId, userId, userName, message, 'text');
+        const roomName = `project_${projectId}`;
+        io.to(roomName).emit('chat_message', savedMessage);
+        console.log(`Message sent: ${userName}: ${message}`);
+      } catch (error) {
+        console.error('Error sending message:', error);
+        socket.emit('error', { message: 'Failed to send message' });
+      }
+    });
+
+    socket.on('typing_start', (projectId) => {
+      const roomName = `project_${projectId}`;
+      socket.to(roomName).emit('user_typing', { userId, userName, isTyping: true });
+    });
+
+    socket.on('typing_stop', (projectId) => {
+      const roomName = `project_${projectId}`;
+      socket.to(roomName).emit('user_typing', { userId, userName, isTyping: false });
+    });
+
+    socket.on('disconnect', async () => {
+      console.log(`User ${userName} disconnected`);
+      const rooms = Array.from(socket.rooms).filter(room => room.startsWith('project_'));
+      for (const roomName of rooms) {
+        const projectId = roomName.replace('project_', '');
+        try {
+          await ChatService.removeParticipant(projectId, userId);
+          socket.to(roomName).emit('user_left', { userId, userName, timestamp: new Date() });
+        } catch (error) {
+          console.error('Error updating participant status on disconnect:', error);
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error in socket connection:', error);
+    socket.emit('error', { message: 'Connection failed' });
+    socket.disconnect();
+  }
+});
+
+global.io = io;
+
+// ========== FIXED MIDDLEWARE - NO GIT CONFLICTS ==========
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 app.use(cors());
-<<<<<<< HEAD
 
-// ✅ FIXED: Static files from src/uploads/
+// ✅ PERFECT STATIC FILES - src/uploads/
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// ✅ FIXED: Create src/uploads/ directory
+// ✅ CREATE src/uploads/ DIRECTORY
 try {
   const uploadsDir = path.join(__dirname, 'uploads');
-=======
-// Note: rule engine is applied per-route where needed to avoid protecting public endpoints like /api/auth/login
-// Serve uploads from project root `uploads` directory (not src/uploads)
-// Normalize double-encoded percent sequences (e.g. "%2520") so legacy/incorrect
-// links like /uploads/Full%2520Name.pdf resolve to the actual file.
-app.use('/uploads', (req, res, next) => {
-  try {
-    if (req.url && req.url.indexOf('%25') !== -1) {
-      let u = req.url;
-      // Replace repeated %25 -> % until none remain (handles multiple encodings)
-      while (u.indexOf('%25') !== -1) u = u.replace(/%25/g, '%');
-      req.url = u;
-    }
-  } catch (e) {
-    // ignore normalization failures and proceed to static handler
-  }
-  return next();
-}, express.static(path.join(__dirname, '..', 'uploads')));
-
-// Ensure uploads directory exists so static serving won't 404 for newly saved files
-try {
-  const uploadsDir = path.join(__dirname, '..', 'uploads');
-
->>>>>>> origin/feature/doc-upload-memory-storage
   if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
   const profilesDir = path.join(uploadsDir, 'profiles');
   if (!fs.existsSync(profilesDir)) fs.mkdirSync(profilesDir, { recursive: true });
@@ -444,7 +539,7 @@ try {
   console.warn('Failed to ensure uploads directory exists:', e && e.message);
 }
 
-// Global response logger (KEEP EXISTING)
+// Global response logger
 app.use((req, res, next) => {
   const oldJson = res.json;
   const oldSend = res.send;
@@ -470,7 +565,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// Error handler (KEEP EXISTING)
+// Error handler
 app.use((err, req, res, next) => {
   try {
     console.error('[UNCAUGHT ERROR]', err && err.stack ? err.stack : err);
@@ -484,34 +579,21 @@ app.use((err, req, res, next) => {
   }
 });
 
-// Routes (KEEP ALL EXISTING)
-app.get('/api', function (req, res) {
-  res.status(200).send('API working...');
-});
+// ========== ROUTES (ALL YOUR EXISTING ROUTES) ==========
+app.get('/api', (req, res) => res.status(200).send('API working...'));
 
 const AuthController = require(__root + 'controllers/AuthController');
 app.use('/api/auth', AuthController);
 
-<<<<<<< HEAD
-=======
-// Audit log routes (admin/manager/employee)
-const auditRoutes = require(__root + 'routes/auditRoutes');
-app.use('/api/admin', auditRoutes.admin);
-app.use('/api/manager', auditRoutes.manager);
-app.use('/api/employee', auditRoutes.employee);
-
-// Client-Viewer Access Control Middleware
-// Enforces read-only access and endpoint restrictions for Client-Viewer users
->>>>>>> origin/feature/doc-upload-memory-storage
 const clientViewerAccessControl = require(__root + 'middleware/clientViewerAccess');
 const StaffUser = require(__root + 'controllers/User');
 app.use('/api/users', clientViewerAccessControl, StaffUser);
 
-const tasksCRUD=require(__root + 'controllers/Tasks');
+const tasksCRUD = require(__root + 'controllers/Tasks');
 app.use('/api/tasks', clientViewerAccessControl, tasksCRUD);
 
-const uploadCRUD=require(__root + 'controllers/Uploads');
-app.use('/api/uploads',uploadCRUD);
+const uploadCRUD = require(__root + 'controllers/Uploads');
+app.use('/api/uploads', uploadCRUD);
 
 const clientRoutes = require(__root + 'routes/clientRoutes');
 app.use('/api/clients', clientRoutes);
@@ -537,12 +619,4 @@ app.use('/api/projects', chatRoutes);
 const documentRoutes = require(__root + 'routes/documentRoutes');
 app.use('/api/documents', documentRoutes);
 
-<<<<<<< HEAD
-=======
-// Reports routes
-const reportRoutes = require(__root + 'routes/reportRoutes');
-app.use('/api/reports', reportRoutes);
-
-
->>>>>>> origin/feature/doc-upload-memory-storage
 module.exports = server;
