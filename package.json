@@ -5,9 +5,10 @@
   "main": "index.js",
   "scripts": {
     "dev": "nodemon index.js",
-    "migrate": "node scripts/migrate.js",
+    "migrate": "node migrate_rules.js",
     "seed": "node scripts/seed.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "test:rules": "node scripts/test_rules.js"
   },
   "repository": {
     "type": "git",
@@ -50,5 +51,7 @@
     "speakeasy": "^2.0.0",
     "winston": "^3.17.0",
     "zxcvbn": "^4.4.2"
+    ,
+    "json-rules-engine": "^5.0.0"
   }
 }

@@ -3,6 +3,7 @@ const router = express.Router();
 const auth = require(__root + 'middleware/auth');
 const { allowRoles } = require(__root + 'middleware/role');
 const Admin = require(__root + 'controllers/adminController');
+const ruleEngine = require(__root + 'rules/jsonRuleEngine');
 
 router.use(auth, allowRoles('Admin'));
 
@@ -22,5 +23,21 @@ router.get('/modules/:id', Admin.getModuleById);
 router.post('/modules', Admin.createModule);
 router.put('/modules/:id', Admin.updateModule);
 router.delete('/modules/:id', Admin.deleteModule);
+
+// Admin: reload business rules at runtime (secured by auth+allowRoles('Admin'))
+router.post('/rules/reload', async (req, res) => {
+	try {
+		// force reload
+		if (ruleEngine && typeof ruleEngine.loadRules === 'function') {
+			ruleEngine.loaded = false;
+			await ruleEngine.loadRules();
+			return res.json({ success: true, message: 'Rules reloaded', count: ruleEngine.rules ? ruleEngine.rules.length : 0 });
+		}
+		return res.status(500).json({ success: false, error: 'Rule engine not available' });
+	} catch (e) {
+		console.error('Failed reloading rules:', e && e.message);
+		return res.status(500).json({ success: false, error: e && e.message });
+	}
+});
 
 module.exports = router;

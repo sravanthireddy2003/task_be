@@ -8,6 +8,13 @@ const jwt = require('jsonwebtoken');
 const otpService = require(__root + 'utils/otpService');
 const emailService = require(__root + 'utils/emailService');
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
+const ruleEngine = require(__root + 'middleware/ruleEngine');
+const RULES = require(__root + 'rules/ruleCodes');
+/*
+  Rule codes used in this router:
+  - USER_CREATE, USER_VIEW, USER_LIST, USER_UPDATE, USER_DELETE
+  Note: `USER_LIST` covers the user listing endpoint.
+*/
 const NotificationService = require('../services/notificationService');
 require('dotenv').config();
 
@@ -19,7 +26,7 @@ const queryAsync = (sql, params = []) =>
 router.use(requireAuth);
 
 // Get all users
-router.get("/getusers", requireRole('Admin','Manager'), async (req, res) => {
+router.get("/getusers", ruleEngine(RULES.USER_LIST), requireRole('Admin','Manager'), async (req, res) => {
   const query = `
     SELECT 
       u._id, u.public_id, u.name, u.title, u.email, u.role, u.isActive, u.phone, u.isGuest,
@@ -136,7 +143,7 @@ router.get("/getusers", requireRole('Admin','Manager'), async (req, res) => {
 });
 
 // ✅ FIXED: Create user - Supports BOTH departmentId AND departmentName
-router.post('/create', requireRole('Admin'), async (req, res) => {
+router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), async (req, res) => {
   try {
     const { name, email, phone, role, departmentId, departmentName, title, isActive, isGuest } = req.body;
 
@@ -301,7 +308,7 @@ router.post('/create', requireRole('Admin'), async (req, res) => {
 });
 
 // ✅ FIXED: Update user - Supports departmentId AND departmentName
-router.put("/update/:id", requireRole('Admin'), async (req, res) => {
+router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), async (req, res) => {
   const { id } = req.params;
   const { name, title, email, role, isActive, phone, departmentId, departmentName } = req.body;
 
@@ -388,7 +395,7 @@ router.put("/update/:id", requireRole('Admin'), async (req, res) => {
 });
 
 // Get user by ID
-router.get("/getuserbyid/:id", requireRole('Admin','Manager'), (req, res) => {
+router.get("/getuserbyid/:id", ruleEngine(RULES.USER_VIEW), requireRole('Admin','Manager'), (req, res) => {
   const { id } = req.params;
   const isNumeric = /^\d+$/.test(String(id));
   const query = `
@@ -420,7 +427,7 @@ router.get("/getuserbyid/:id", requireRole('Admin','Manager'), (req, res) => {
 });
 
 // Delete user
-router.delete("/delete/:user_id", requireRole('Admin'), (req, res) => {
+router.delete("/delete/:user_id", ruleEngine(RULES.USER_DELETE), requireRole('Admin'), (req, res) => {
   const { user_id } = req.params;
   const isNumeric = /^\d+$/.test(String(user_id));
   const sqlDelete = isNumeric ? `DELETE FROM users WHERE _id = ?` : `DELETE FROM users WHERE public_id = ?`;
