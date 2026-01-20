@@ -9,6 +9,7 @@ adminRouter.use(requireAuth);
 adminRouter.use(requireRole(['Admin']));
 adminRouter.get('/audit-logs', auditController.admin);
 
+// GJKNDHJKMNB
 // Manager routes
 const managerRouter = express.Router();
 managerRouter.use(requireAuth);
