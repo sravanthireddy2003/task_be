@@ -21,6 +21,7 @@ const winston = require("winston");
 const { google } = require("googleapis");
 const dayjs = require('dayjs');
 const NotificationService = require(__root + 'services/notificationService');
+const { makeFrontendLink } = require(__root + 'utils/url');
 router.use(requireAuth);        // ✅ Sets req.user from JWT
 router.use(tenantMiddleware); 
 
@@ -657,33 +658,38 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
 
               // Send emails before committing to use the connection
               const assignedBy = (req.user && req.user.name) || 'System';
-              const link = `${process.env.FRONTEND_URL || process.env.BASE_URL || 'http://localhost:3000'}/tasks/${taskId}`;
+              const link = makeFrontendLink('/tasks/' + taskId);
               const projectName = null;
               const priority = finalPriority;
               const taskDateVal = taskDate || null;
               const descriptionVal = description || null;
 
-              console.log('Preparing to send emails to users:', resolvedPublicIds);
+              console.log('Preparing to send emails to users (public ids):', resolvedPublicIds);
 
               // Use top-level emailService function
               const sendEmails = emailService.sendTaskAssignmentEmails;
-              
-              // Send emails before committing transaction
-              sendEmails({
-                finalAssigned: resolvedPublicIds,
-                taskTitle: title,
-                taskId,
-                priority,
-                taskDate: taskDateVal,
-                description: descriptionVal,
-                projectName,
-                projectPublicId: projectPublicId || null,
-                assignedBy,
-                taskLink: link,
-                connection
-              }).catch(emailError => {
-                console.error("Email sending failed:", emailError);
-              });
+
+              // Run and await email sending in background but log results so failures are visible
+              (async () => {
+                try {
+                  const emailResults = await sendEmails({
+                    finalAssigned: resolvedPublicIds,
+                    taskTitle: title,
+                    taskId,
+                    priority,
+                    taskDate: taskDateVal,
+                    description: descriptionVal,
+                    projectName,
+                    projectPublicId: projectPublicId || null,
+                    assignedBy,
+                    taskLink: link,
+                    connection
+                  });
+                  console.log('Email send results:', emailResults);
+                } catch (emailError) {
+                  console.error('Email sending failed (unexpected error):', emailError);
+                }
+              })();
 
               // Commit transaction regardless of email success
               connection.commit((err) => {
@@ -1229,7 +1235,8 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
                   GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
                   GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
                   GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names,
-                  GROUP_CONCAT(DISTINCT u.email) AS assigned_user_emails
+                  GROUP_CONCAT(DISTINCT u.email) AS assigned_user_emails,
+                  GROUP_CONCAT(DISTINCT COALESCE(ta.is_read_only, 0)) AS assigned_user_read_only
                 FROM tasks t
                 LEFT JOIN clientss c ON t.client_id = c.id
                 LEFT JOIN taskassignments ta ON ta.task_Id = t.id
@@ -1254,14 +1261,15 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
                   id: rows[0].assigned_user_public_ids?.split(',')[i] || uid,
                   internalId: String(uid),
                   name: rows[0].assigned_user_names?.split(',')[i] || null,
-                  email: rows[0].assigned_user_emails?.split(',')[i] || null
+                  email: rows[0].assigned_user_emails?.split(',')[i] || null,
+                  isReadOnly: (rows[0].assigned_user_read_only?.split(',')[i] || '0') === '1'
                 }))
               } : { taskId };
 
               // 7. ✅ SEND EMAILS (Valid emails only)
               if (reassigned && Array.isArray(taskObj.assignedUsers)) {
                 try {
-                  const baseUrl = process.env.FRONTEND_URL || 'http://localhost:4000';
+                  const baseUrl = process.env.FRONTEND_URL || process.env.BASE_URL || null;
                   const taskLink = `${baseUrl}/tasks/${taskId}`;
                   
                   const isValidEmail = (email) => {
@@ -1271,7 +1279,8 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
                   };
 
                   const requesterId = req.user?._id ? String(req.user._id) : null;
-                  const newAssignees = taskObj.assignedUsers.filter(u => u.internalId !== requesterId);
+                  // Only treat users who are not read-only as new assignees to notify
+                  const newAssignees = taskObj.assignedUsers.filter(u => u.internalId !== requesterId && !u.isReadOnly);
 
                   // New assignees
                   for (const user of newAssignees) {
@@ -1283,19 +1292,22 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
                           taskId,
                           oldAssignee: oldAssigneeName,
                           newAssignee: user.name,
+                          reassignedBy: req.user?.name || null,
                           taskLink
                         })
                       });
                     }
                   }
 
-                  // Old assignee (requester)
+                  // Old assignee (requester) - use approved-old template to include who reassigned
                   if (isValidEmail(oldAssigneeEmail)) {
                     await emailService.sendEmail({
                       to: oldAssigneeEmail,
-                      ...emailService.taskReassignmentOldAssigneeTemplate({
+                      ...emailService.taskReassignmentApprovedOldTemplate({
                         taskTitle: taskObj.title,
-                        newAssignees: newAssignees.map(u => u.name).join(', '),
+                        oldAssignee: oldAssigneeName,
+                        newAssignee: newAssignees.map(u => u.name).join(', '),
+                        reassignedBy: req.user?.name || null,
                         taskLink
                       })
                     });
@@ -1360,10 +1372,11 @@ router.patch('/:taskId/reassign/:userId', ruleEngine('task_reassign'), requireRo
       const [[oldUser], [newUser], [task]] = await Promise.all([
         q('SELECT name, email FROM users WHERE _id = ?', [userId]),
         newAssigneeId ? q('SELECT name, email FROM users WHERE _id = ?', [newAssigneeId]) : [{}],
-        q('SELECT title FROM tasks WHERE id = ?', [taskId])
+        q('SELECT title, public_id FROM tasks WHERE id = ?', [taskId])
       ]);
-      const baseUrl = process.env.FRONTEND_URL || 'http://localhost:4000';
-      const taskLink = `${baseUrl}/tasks/${taskId}`;
+      const baseUrl = process.env.FRONTEND_URL || process.env.BASE_URL || '';
+      const taskPublic = task?.public_id || taskId;
+      const taskLink = `${baseUrl}/tasks/${taskPublic}`;
       // To new assignee
       if (newUser && newUser.email) {
         await emailService.sendEmail({
@@ -1372,6 +1385,7 @@ router.patch('/:taskId/reassign/:userId', ruleEngine('task_reassign'), requireRo
             taskTitle: task?.title || '',
             oldAssignee: oldUser?.name || '',
             newAssignee: newUser?.name || '',
+            reassignedBy: req.user?.name || null,
             taskLink
           })
         });
@@ -1380,9 +1394,11 @@ router.patch('/:taskId/reassign/:userId', ruleEngine('task_reassign'), requireRo
       if (oldUser && oldUser.email) {
         await emailService.sendEmail({
           to: oldUser.email,
-          ...emailService.taskReassignmentOldAssigneeTemplate({
+          ...emailService.taskReassignmentApprovedOldTemplate({
             taskTitle: task?.title || '',
+            oldAssignee: oldUser?.name || '',
             newAssignee: newUser?.name || '',
+            reassignedBy: req.user?.name || null,
             taskLink
           })
         });
@@ -1398,7 +1414,7 @@ router.patch('/:taskId/reassign/:userId', ruleEngine('task_reassign'), requireRo
         q('SELECT name, email FROM users WHERE _id = ?', [userId]),
         q('SELECT title FROM tasks WHERE id = ?', [taskId])
       ]);
-      const baseUrl = process.env.FRONTEND_URL || 'http://localhost:4000';
+      const baseUrl = process.env.FRONTEND_URL || process.env.BASE_URL || null;
       const taskLink = `${baseUrl}/tasks/${taskId}`;
       if (oldUser && oldUser.email) {
         await emailService.sendEmail({
@@ -2861,7 +2877,7 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
 
     // Email manager with improved template
     try {
-      const taskLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/tasks/${fullTask.public_id}`;
+      const taskLink = makeFrontendLink('/tasks/' + fullTask.public_id);
       if (manager.email && !manager.email.includes('@example.com')) {
         const { subject, text, html } = emailService.taskReassignmentRequestTemplate({
           taskTitle: fullTask.title,
@@ -2897,16 +2913,24 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
     });
   });
 
+  const safeRelease = (connection) => {
+    try {
+      if (connection && typeof connection.release === 'function') connection.release();
+    } catch (e) {
+      // Ignore double-release or already released errors
+    }
+  };
+
   const commitTransaction = (connection) => new Promise((resolve, reject) => {
     connection.commit(err => {
-      connection.release();
+      safeRelease(connection);
       err ? reject(err) : resolve();
     });
   });
 
   const rollbackTransaction = (connection) => new Promise((resolve, reject) => {
     connection.rollback(() => {
-      connection.release();
+      safeRelease(connection);
       resolve();
     });
   });
@@ -2937,43 +2961,72 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
 
     // Validate new assignee exists (for approve)
     let newAssigneeUser = null;
-    if (action.toUpperCase() === 'APPROVE' && resignRequest.new_assignee_id) {
+    // track whether `new_assignee_id` column exists so we can persist it inside the transaction
+    let hasNewAssigneeCol = false;
+    // Accept many possible input names/types for the new assignee (internal id, public id, or email)
+    let rawNewAssignee = null;
+    if (req.body) {
+      rawNewAssignee = req.body.new_assignee_id || req.body.newAssigneeId || req.body.new_assignee_public_id || req.body.newAssigneePublicId || req.body.new_assignee || req.body.newAssignee || req.body.email || null;
+    }
+
+    // Resolve raw input to internal user _id when possible
+    let requestedNewAssigneeId = null;
+    if (rawNewAssignee) {
+      const rawStr = String(rawNewAssignee).trim();
+      if (/^\d+$/.test(rawStr)) {
+        requestedNewAssigneeId = Number(rawStr);
+      } else {
+        // Try resolving by public_id or email
+        const [resolvedRows] = await new Promise((resolve, reject) =>
+          db.query('SELECT _id FROM users WHERE public_id = ? OR email = ? LIMIT 1', [rawStr, rawStr], (err, rows) => err ? reject(err) : resolve([rows]))
+        );
+        if (resolvedRows && resolvedRows.length) requestedNewAssigneeId = resolvedRows[0]._id;
+      }
+    }
+
+    // Fallback to the stored new_assignee_id on the resign request
+    if (!requestedNewAssigneeId && resignRequest && resignRequest.new_assignee_id) {
+      requestedNewAssigneeId = resignRequest.new_assignee_id;
+    }
+
+    if (action.toUpperCase() === 'APPROVE') {
+      if (!requestedNewAssigneeId) {
+        return res.status(400).json({ success: false, error: 'No new assignee specified for approval. Provide new_assignee_id (internal id), public id, or email.' });
+      }
       const [newUserRows] = await new Promise((resolve, reject) =>
-        db.query('SELECT _id, name, email FROM users WHERE _id = ?', [resignRequest.new_assignee_id], (err, rows) => err ? reject(err) : resolve([rows]))
+        db.query('SELECT _id, name, email FROM users WHERE _id = ?', [requestedNewAssigneeId], (err, rows) => err ? reject(err) : resolve([rows]))
       );
       if (!newUserRows?.length) {
         return res.status(400).json({ success: false, error: 'New assignee not found' });
       }
       newAssigneeUser = newUserRows[0];
+      // We'll persist the chosen new assignee id inside the DB transaction below (if schema supports it).
+      // Check once whether the column exists so we can conditionally update within the transaction.
+      let hasNewAssigneeCol = false;
+      try {
+        hasNewAssigneeCol = await hasColumn('task_resign_requests', 'new_assignee_id');
+      } catch (e) {
+        logger && logger.warn && logger.warn('Could not check for new_assignee_id column: ' + (e && e.message));
+        hasNewAssigneeCol = false;
+      }
     }
+
     // Get old assignee user
     const [oldUserRows] = await new Promise((resolve, reject) =>
       db.query('SELECT _id, name, email FROM users WHERE _id = ?', [resignRequest.requested_by], (err, rows) => err ? reject(err) : resolve([rows]))
     );
     const oldAssigneeUser = oldUserRows?.[0];
-    // Get all managers/admins
-    const managers = await q('SELECT name, email FROM users WHERE role IN ("Manager", "Admin")');
 
-    // Manager details
-    const newStatus = action.toUpperCase();
-    const managerId = req.user._id;
-    const managerName = req.user.name;
-
-    // Get task, previous assignees, and assignee details
+    // Get task details
     const [taskRows] = await new Promise((resolve, reject) =>
       db.query('SELECT * FROM tasks WHERE id = ?', [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
     );
     if (!taskRows?.length) return res.status(404).json({ success: false, error: 'Task not found' });
     const task = taskRows[0];
 
-    const prevAssignees = await new Promise((resolve, reject) =>
-      db.query('SELECT user_id FROM taskassignments WHERE task_id = ?', [taskId], (err, rows) => err ? reject(err) : resolve(rows))
-    );
-
-    const prevAssigneeUser = await new Promise((resolve, reject) =>
-      db.query('SELECT name, email FROM users WHERE _id = ?', [resignRequest.requested_by], (err, rows) => err ? reject(err) : resolve(rows))
-    );
-    const prevAssigneeName = prevAssigneeUser?.[0]?.name || 'Previous Assignee';
+    // Manager details
+    const newStatus = action.toUpperCase();
+    const managerName = req.user.name;
 
     // Start transaction
     const connection = await dbTransaction();
@@ -2981,118 +3034,72 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
     try {
       // Update request status
       await new Promise((resolve, reject) => {
-        db.query(
+        connection.query(
           `UPDATE task_resign_requests 
            SET status = ?, responded_at = NOW(), responded_by = ?, responder_name = ? 
            WHERE id = ?`,
-          [newStatus, managerId, managerName, requestId],
-          (err) => err ? reject(err) : resolve(),
-          connection
+          [newStatus, req.user._id, managerName, requestId],
+          (err) => err ? reject(err) : resolve()
         );
       });
 
       if (newStatus === 'APPROVE') {
         // Lock task and reassign atomically
         await new Promise((resolve, reject) => {
-          db.query(
+          connection.query(
             `UPDATE tasks SET status = 'Request Approved', is_locked = 1 WHERE id = ?`,
             [taskId],
-            (err) => err ? reject(err) : resolve(),
-            connection
+            (err) => err ? reject(err) : resolve()
           );
         });
 
-        // Single-user ownership: always full reassignment
         // Remove all current assignees
         await new Promise((resolve, reject) => {
-          db.query('DELETE FROM taskassignments WHERE task_id = ?', [taskId], (err) => err ? reject(err) : resolve(), connection);
+          connection.query('DELETE FROM taskassignments WHERE task_id = ?', [taskId], (err) => err ? reject(err) : resolve());
         });
 
-        // Assign to new employee (if specified)
-        if (resignRequest.new_assignee_id) {
+        // Assign to new employee (if specified) - use requestedNewAssigneeId (from body or request)
+        if (requestedNewAssigneeId) {
           await new Promise((resolve, reject) => {
-            db.query(
+            connection.query(
               'INSERT INTO taskassignments (task_id, user_id) VALUES (?, ?)',
-              [taskId, resignRequest.new_assignee_id],
-              (err) => err ? reject(err) : resolve(),
-              connection
+              [taskId, requestedNewAssigneeId],
+              (err) => err ? reject(err) : resolve()
             );
           });
         }
 
-        // Give previous assignee read-only access for reference
+        // Give previous assignee read-only access
         await new Promise((resolve, reject) => {
-          db.query(
+          connection.query(
             'INSERT INTO taskassignments (task_id, user_id, is_read_only) VALUES (?, ?, 1)',
             [taskId, resignRequest.requested_by],
-            (err) => err ? reject(err) : resolve(),
-            connection
+            (err) => err ? reject(err) : resolve()
           );
         });
+
+        // Persist new_assignee_id on the request row inside the same transaction if schema supports it
+        if (hasNewAssigneeCol) {
+          await new Promise((resolve, reject) => {
+            connection.query(
+              'UPDATE task_resign_requests SET new_assignee_id = ? WHERE id = ?',
+              [requestedNewAssigneeId, requestId],
+              (err) => err ? reject(err) : resolve()
+            );
+          });
+        }
 
         await commitTransaction(connection);
 
-        // Send notification emails using proper templates
-        const taskLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/tasks/${task.public_id}`;
-
-        // Send emails for approval
-        try {
-          // Get new assignee info if assigned
-          let newAssigneeUser = null;
-          if (resignRequest.new_assignee_id) {
-            const [newAssigneeRows] = await new Promise((resolve, reject) =>
-              db.query('SELECT name, email FROM users WHERE _id = ?', [resignRequest.new_assignee_id], (err, rows) => err ? reject(err) : resolve([rows]))
-            );
-            newAssigneeUser = newAssigneeRows[0];
-          }
-
-          // Single-user ownership: always notify the previous assignee (read-only access)
-          if (oldAssigneeUser?.email) {
-            const oldAssigneeTemplate = emailService.taskReassignmentOldAssigneeTemplate({
-              taskTitle: task.title || 'Task',
-              newAssignee: newAssigneeUser?.name || 'New Assignee',
-              taskLink
-            });
-            await emailService.sendEmail({
-              to: oldAssigneeUser.email,
-              ...oldAssigneeTemplate
-            }).catch(console.error);
-          }
-
-          // Notify new assignee if assigned
-          if (newAssigneeUser?.email) {
-            const approvedTemplate = emailService.taskReassignmentApprovedTemplate({
-              taskTitle: task.title || 'Task',
-              oldAssignee: oldAssigneeUser?.name || 'Previous Assignee',
-              newAssignee: newAssigneeUser.name,
-              taskLink
-            });
-            await emailService.sendEmail({
-              to: newAssigneeUser.email,
-              ...approvedTemplate
-            }).catch(console.error);
-          }
-
-          // Notify managers/admins
-          const managerTemplate = emailService.taskReassignmentManagerTemplate({
-            taskTitle: task.name || task.title || 'Task',
-            oldAssignee: oldAssigneeUser?.name || 'Previous Assignee',
-            newAssignee: newAssigneeUser?.name || 'New Assignee',
-            taskLink
-          });
-
-          for (const mgr of managers) {
-            if (mgr.email) {
-              await emailService.sendEmail({
-                to: mgr.email,
-                ...managerTemplate
-              }).catch(console.error);
-            }
-          }
-        } catch (emailError) {
-          console.error('Error sending approval emails:', emailError);
-          // Don't fail the request due to email errors
-        }
+        // Send approval emails AFTER commit
+        const taskLink = makeFrontendLink('/tasks/' + task.public_id);
+        await emailService.sendApproveEmails({
+          task,
+          oldAssigneeUser,
+          newAssigneeUser,
+          managerName,
+          taskLink
+        });
 
         return res.json({
           success: true,
@@ -3105,50 +3112,26 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
       } else if (newStatus === 'REJECT') {
         // Unlock and resume task atomically
         await new Promise((resolve, reject) => {
-          db.query(
+          connection.query(
             `UPDATE tasks SET status = 'In Progress', is_locked = 0 WHERE id = ?`,
             [taskId],
-            (err) => err ? reject(err) : resolve(),
-            connection
+            (err) => err ? reject(err) : resolve()
           );
         });
 
         await commitTransaction(connection);
 
-        // Notify old assignee and managers/admins on rejection
-        const taskLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/tasks/${task.public_id}`;
-
-        // Old assignee (rejection notification)
-        if (oldAssigneeUser?.email) {
-          const rejectedTemplate = emailService.taskReassignmentRejectedTemplate({
-            taskTitle: task.name || task.title || 'Task',
-            taskLink
-          });
-          await emailService.sendEmail({
-            to: oldAssigneeUser.email,
-            ...rejectedTemplate
-          }).catch(console.error);
-        }
-
-        // Managers/Admins (rejection notification)
-        const rejectedManagerTemplate = emailService.taskReassignmentRejectedManagerTemplate({
-          taskTitle: task.name || task.title || 'Task',
-          oldAssignee: oldAssigneeUser?.name || 'Previous Assignee',
+        // Send rejection emails AFTER commit
+        const taskLink = makeFrontendLink('/tasks/' + task.public_id);
+        await emailService.sendRejectEmails({
+          task,
+          oldAssigneeUser,
           taskLink
         });
 
-        for (const mgr of managers) {
-          if (mgr.email) {
-            await emailService.sendEmail({
-              to: mgr.email,
-              ...rejectedManagerTemplate
-            }).catch(console.error);
-          }
-        }
-
         return res.json({
           success: true,
-          message: `Reassignment rejected. Task resumed for ${oldAssigneeUser?.name}.`,
+          message: `Reassignment rejected. Task resumed for ${oldAssigneeUser?.name || 'assignee'}.`,
           action_taken: newStatus,
           task_status: 'In Progress',
           locked: false
@@ -3158,8 +3141,7 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
         await rollbackTransaction(connection);
         return res.status(400).json({ success: false, error: 'Invalid action (approve|reject)' });
       }
-    }
-    catch (txError) {
+    } catch (txError) {
       await rollbackTransaction(connection);
       throw txError;
     }
@@ -3169,7 +3151,6 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
     res.status(500).json({ success: false, error: error.message });
   }
 });
-
 // GET /tasks/:id/reassign-requests
 router.get('/:id/reassign-requests', requireRole(['Employee', 'Manager']), async (req, res) => {
   let taskId = req.params.id;

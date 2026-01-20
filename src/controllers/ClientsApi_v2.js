@@ -317,7 +317,7 @@
 //           await q('INSERT INTO client_viewers (client_id, user_id, created_at) VALUES (?, ?, NOW())', [clientId, newUserId]).catch(() => {});
 //         }
 //         try {
-//           const setupLink = `${process.env.FRONTEND_URL || process.env.BASE_URL || 'http://localhost:3000'}/auth/setup?uid=${encodeURIComponent(publicId)}`;
+//           const setupLink = makeFrontendLink('/auth/setup?uid=' + encodeURIComponent(publicId));
 //           const emailResult = await emailService.sendCredentials(contacts[0].email, contacts[0].name || name, publicId, tempPassword, setupLink);
 //           logger.info(`Viewer credentials sent to ${contacts[0].email}: ${emailResult.sent ? 'Success' : 'Failed'}`);
 //         } catch (e) {
@@ -726,7 +726,7 @@
 //     }
 
 //     try {
-//       const setupLink = `${process.env.FRONTEND_URL || process.env.BASE_URL || 'http://localhost:3000'}/auth/setup?uid=${encodeURIComponent(publicId)}`;
+//       const setupLink = makeFrontendLink('/auth/setup?uid=' + encodeURIComponent(publicId));
 //       const emailResult = await emailService.sendCredentials(email, name || 'Client Viewer', publicId, tempPassword, setupLink);
 //       logger.info(`Viewer credentials sent to ${email}: ${emailResult.sent ? 'Success' : 'Failed'}`);
 //     } catch (e) {

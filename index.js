@@ -32,7 +32,7 @@ async function start() {
   }
 
   const server = app.listen(port, () => {
-    const message = `Server is running on http://localhost:${port}`;
+    const message = process.env.BASE_URL ? `Server is running on ${process.env.BASE_URL}` : `Server is running on port ${port}`;
     logger.info(message);
     console.log(message);
   });

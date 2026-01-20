@@ -3,7 +3,12 @@ const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
 
-const BASE_URL = 'http://localhost:3000';
+const BASE_URL = process.env.BASE_URL || process.env.FRONTEND_URL;
+
+if (!BASE_URL) {
+  console.error('BASE_URL not set. Set BASE_URL or FRONTEND_URL in environment.');
+  process.exit(1);
+}
 
 // Test credentials
 const TEST_CREDENTIALS = {

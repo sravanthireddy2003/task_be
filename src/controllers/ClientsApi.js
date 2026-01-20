@@ -8,6 +8,7 @@ const fs = require('fs');
 const multer = require('multer');
 const mime = require('mime-types');
 const NotificationService = require('../services/notificationService');
+const bcrypt = require('bcryptjs');
  
 // configure multer to save files into uploads/ directory
 const uploadsRoot = path.join(__dirname, '..', 'uploads');
@@ -44,7 +45,9 @@ function saveBase64ToUploads(base64data, filename) {
     const b64 = matched ? matched[2] : base64data;
     const buffer = Buffer.from(b64, 'base64');
     fs.writeFileSync(targetPath(), buffer);
-    return `${process.env.BASE_URL || process.env.FRONTEND_URL || 'http://localhost:4000'}/uploads/${encodeURIComponent(targetName)}`;
+    const base = process.env.BASE_URL || process.env.FRONTEND_URL || null;
+    if (base) return `${String(base).replace(/\/$/, '')}/uploads/${encodeURIComponent(targetName)}`;
+    return `/uploads/${encodeURIComponent(targetName)}`;
   } catch (e) {
     logger.debug('Failed to save base64 file: ' + (e && e.message));
     return null;
@@ -60,6 +63,17 @@ const RULES = require(__root + 'rules/ruleCodes');
 */
 const emailService = require(__root + 'utils/emailService');
 require('dotenv').config();
+// Helper: build frontend/full links without hardcoding defaults
+function makeFrontendLink(pathSuffix) {
+  if (process.env.FRONTEND_URL) return String(process.env.FRONTEND_URL).replace(/\/$/, '') + pathSuffix;
+  return pathSuffix;
+}
+
+function makePublicUploadsUrl(filename) {
+  const base = process.env.BASE_URL || process.env.FRONTEND_URL || null;
+  if (base) return String(base).replace(/\/$/, '') + '/uploads/' + encodeURIComponent(filename);
+  return '/uploads/' + encodeURIComponent(filename);
+}
  
 router.use(requireAuth);
 const clientViewer = require(__root + 'middleware/clientViewer');
@@ -243,7 +257,6 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
 
     // Create user accounts for each contact that has an email (store in users table and map to client_viewers)
     if (Array.isArray(contacts) && contacts.length > 0) {
-      const bcrypt = require('bcryptjs');
       for (const c of contacts) {
         try {
           if (!c || !c.email) continue;
@@ -286,7 +299,7 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
 
             // send credentials email
             try {
-              const setupLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/auth/setup?uid=${publicId}`;
+              const setupLink = makeFrontendLink('/auth/setup?uid=' + publicId);
               const tpl = emailService.welcomeTemplate({ name: displayName, email: emailAddr, role: 'Client-Viewer', title: 'Client Portal Access', tempPassword, createdBy: 'System Admin', createdAt: new Date(), setupLink });
               await emailService.sendEmail({ to: emailAddr, subject: tpl.subject, text: tpl.text, html: tpl.html });
             } catch (e) {
@@ -424,7 +437,6 @@ if ((createViewer || enableClientPortal) && (primaryContactEmail || email)) {
   const publicId = crypto.randomBytes(8).toString('hex');
 
   try {
-    const bcrypt = require('bcryptjs');
     const hashed = await new Promise((resolve, reject) => {
       bcrypt.hash(tempPassword, 10, (err, hash) => (err ? reject(err) : resolve(hash)));
     });
@@ -456,7 +468,7 @@ if ((createViewer || enableClientPortal) && (primaryContactEmail || email)) {
     }
 
     // send credentials email using welcomeTemplate
-    const setupLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/auth/setup?uid=${publicId}`;
+    const setupLink = makeFrontendLink('/auth/setup?uid=' + publicId);
     const userTemplate = emailService.welcomeTemplate({
       name: displayName,
       email: userEmail,
@@ -481,13 +493,12 @@ if ((createViewer || enableClientPortal) && (primaryContactEmail || email)) {
 let clientCredentials = null;
 if (primaryContactEmail || email) {
   const clientEmail = primaryContactEmail || email;
-  const clientPortalLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/client-portal/${ref}`;
+  const clientPortalLink = makeFrontendLink('/client-portal/' + ref);
 
   // Ensure a `users` row exists for the client email. If missing, create one and persist temp password.
   try {
     const existing = await q('SELECT _id FROM users WHERE email = ? LIMIT 1', [clientEmail]).catch(() => []);
     if (!existing || existing.length === 0) {
-      const bcrypt = require('bcryptjs');
       const clientTempPassword = crypto.randomBytes(6).toString('hex');
       const hashed = await new Promise((resolve, reject) => bcrypt.hash(clientTempPassword, 10, (err, hash) => (err ? reject(err) : resolve(hash))));
       const publicIdForClient = crypto.randomBytes(8).toString('hex');
@@ -893,7 +904,7 @@ router.post('/:id/create-viewer', ruleEngine(RULES.CLIENT_CREATE), requireRole('
     logger.info(`[CREATE-VIEWER] Generated tempPassword: ${tempPassword}`);
     
     const hashed = await new Promise((resH, rejH) => {
-      require('bcryptjs').hash(tempPassword, 10, (e, h) => e ? rejH(e) : resH(h));
+      bcrypt.hash(tempPassword, 10, (e, h) => e ? rejH(e) : resH(h));
     });
     logger.info('[CREATE-VIEWER] Password hashed successfully');
 

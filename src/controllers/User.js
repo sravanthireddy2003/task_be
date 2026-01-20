@@ -17,6 +17,7 @@ const RULES = require(__root + 'rules/ruleCodes');
 */
 const NotificationService = require('../services/notificationService');
 require('dotenv').config();
+const { makeFrontendLink } = require(__root + 'utils/url');
 
 const queryAsync = (sql, params = []) =>
   new Promise((resolve, reject) =>
@@ -239,8 +240,7 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), asyn
 
     // Send welcome/setup email
     const setupToken = jwt.sign({ id: publicId, step: 'setup' }, process.env.JWT_SECRET || process.env.SECRET || 'change_this_secret', { expiresIn: '7d' });
-    const setupUrlBase = process.env.FRONTEND_URL || process.env.BASE_URL || 'http://localhost:3000';
-    const setupLink = `${setupUrlBase.replace(/\/$/, '')}/setup-password?token=${encodeURIComponent(setupToken)}`;
+    const setupLink = makeFrontendLink('/setup-password?token=' + encodeURIComponent(setupToken));
 
     const tpl = emailService.welcomeTemplate({
       name,

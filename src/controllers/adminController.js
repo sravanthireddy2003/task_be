@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const NotificationService = require('../services/notificationService');
+const { makePublicUploadsUrl } = require(__root + 'utils/url');
 
 const MODULES_FILE = path.join(__root, 'data', 'modules.json');
 
@@ -62,7 +63,6 @@ async function fetchClientDocuments(clientIds = []) {
     [clientIds]
   );
   // convert stored uploads-relative paths to public URLs using configured base
-  const base = process.env.BASE_URL || process.env.FRONTEND_URL || 'http://localhost:4000';
   return (rows || []).reduce((memo, row) => {
     if (!row || row.client_id === undefined || row.client_id === null) return memo;
     if (!memo[row.client_id]) memo[row.client_id] = [];
@@ -70,7 +70,7 @@ async function fetchClientDocuments(clientIds = []) {
       if (row && row.file_url && String(row.file_url).startsWith('/uploads/')) {
         const rel = String(row.file_url).replace(/^\/uploads\//, '');
         const parts = rel.split('/').map(p => encodeURIComponent(p));
-        row.file_url = base + '/uploads/' + parts.join('/');
+        row.file_url = makePublicUploadsUrl('/uploads/' + parts.join('/'));
       }
     } catch (e) {}
     memo[row.client_id].push(row);

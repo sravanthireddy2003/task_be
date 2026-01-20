@@ -4,10 +4,19 @@
 const io = require('socket.io-client');
 const fetch = require('node-fetch'); // npm install node-fetch
 
-// Configuration
-const BASE_URL = 'http://localhost:4000';
-const PROJECT_ID = 'TEST_PROJECT_123'; // Replace with actual project ID
-const JWT_TOKEN = 'YOUR_JWT_TOKEN_HERE'; // Replace with actual token
+// Configuration read from environment
+const BASE_URL = process.env.BASE_URL;
+const PROJECT_ID = process.env.TEST_PROJECT_ID || 'TEST_PROJECT_123';
+const JWT_TOKEN = process.env.JWT_TOKEN;
+
+if (!BASE_URL) {
+  console.error('BASE_URL is not set in environment. Set BASE_URL before running this test.');
+  process.exit(1);
+}
+if (!JWT_TOKEN) {
+  console.error('JWT_TOKEN is not set in environment. Set JWT_TOKEN before running this test.');
+  process.exit(1);
+}
 
 class ChatAPITester {
   constructor() {

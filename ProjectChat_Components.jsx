@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
 
+// Read base URL from environment (React apps typically use REACT_APP_BASE_URL)
+const DEFAULT_BASE_URL = (typeof process !== 'undefined' && process.env && (process.env.REACT_APP_BASE_URL || process.env.BASE_URL)) || (typeof window !== 'undefined' && window.__env && window.__env.BASE_URL) || '';
+
 // ChatAPI Service
 class ChatAPI {
-  constructor(baseURL = 'http://localhost:4000') {
-    this.baseURL = baseURL;
+  constructor(baseURL) {
+    this.baseURL = baseURL || DEFAULT_BASE_URL;
     this.token = localStorage.getItem('authToken');
   }
 
@@ -124,7 +127,8 @@ function ProjectChat({ projectId, currentUser }) {
     const token = localStorage.getItem('authToken');
     if (!token) return;
 
-    const newSocket = io('http://localhost:4000', {
+    const socketBase = (typeof process !== 'undefined' && process.env && (process.env.REACT_APP_BASE_URL || process.env.BASE_URL)) || DEFAULT_BASE_URL;
+    const newSocket = io(socketBase || undefined, {
       auth: { token }
     });
 

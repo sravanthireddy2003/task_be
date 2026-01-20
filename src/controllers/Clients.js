@@ -201,7 +201,7 @@
 //     // 🔹 Email to CLIENT ONLY
 //     if (primaryEmail) {
 //       const portalLink =
-//         `${process.env.FRONTEND_URL || 'http://localhost:4000'}/client-portal/${ref}`;
+//         makeFrontendLink('/client-portal/' + ref);
  
 //       const template = emailService.welcomeTemplate({
 //         name: primaryName,

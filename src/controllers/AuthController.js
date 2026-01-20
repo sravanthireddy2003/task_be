@@ -893,7 +893,7 @@ router.get('/profile', requireAuth, async (req, res) => {
           phone: row.phone || null,
           title: row.title || null,
           department: row.department || null,
-          photo: photoUrl, // ✅ Full URL: http://localhost:3000/uploads/profiles/...
+          photo: photoUrl, // ✅ Full URL: <BASE_URL>/uploads/profiles/...
           accountStatus: Boolean(row.isActive) ? 'Active' : 'Inactive',
           memberSince: (row.created_at || row.createdAt) 
             ? new Date(row.created_at || row.createdAt).toISOString() 

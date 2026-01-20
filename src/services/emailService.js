@@ -1,5 +1,6 @@
 const nodemailer = require('nodemailer');
 require('dotenv').config();
+const { makeFrontendLink } = require(__root + 'utils/url');
 
 const SMTP_HOST = process.env.SMTP_HOST;
 const SMTP_PORT = parseInt(process.env.SMTP_PORT || '587', 10);
@@ -8,6 +9,18 @@ const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
 const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER;
 const COMPANY_NAME = process.env.COMPANY_NAME || "Your Company";
+
+// Helper: format ISO date to date-only string (YYYY-MM-DD)
+function formatDateISO(dateInput) {
+  if (!dateInput) return '';
+  try {
+    const d = new Date(dateInput);
+    if (isNaN(d.getTime())) return String(dateInput);
+    return d.toISOString().split('T')[0];
+  } catch (e) {
+    return String(dateInput);
+  }
+}
 
 let transporter = null;
 const smtpConfigured = SMTP_HOST && SMTP_USER && SMTP_PASS;
@@ -168,22 +181,19 @@ Setup Link: ${setupLink}
 
 // TASK ASSIGNED TEMPLATE
 function taskAssignedTemplate({ taskTitle, assignedBy, link, assignedTo }) {
-  return {
-    subject: `New Task Assigned: ${taskTitle}`,
-    text: `
-${assignedBy} assigned you a new task.
-
-Task: ${taskTitle}
-Assigned To: ${assignedTo}
-View Task: ${link}
-`.trim(),
-    html: `
-      <h2>New Task Assigned</h2>
-      <p><strong>${assignedBy}</strong> assigned a task to <strong>${assignedTo}</strong>.</p>
-      <p><strong>Task:</strong> ${taskTitle}</p>
-      <p><a href="${link}">View Task</a></p>
-    `
-  };
+  const subject = `New Task Assigned: ${taskTitle}`;
+  return unifiedTaskEmail({
+    subject,
+    heading: 'New Task Assigned',
+    intro: `${assignedBy} assigned a new task to ${assignedTo}.`,
+    details: [
+      { label: 'Task', value: taskTitle },
+      { label: 'Assigned To', value: assignedTo }
+    ],
+    ctaText: 'View Task',
+    ctaLink: link,
+    footerNote: `${COMPANY_NAME}`
+  });
 }
 
 // TASK STATUS UPDATE TEMPLATE
@@ -205,79 +215,132 @@ Notified: ${userNames.join(', ')}
   };
 }
 
+// Unified Task Email Generator - consistent professional template for all task emails
+function unifiedTaskEmail({ subject, heading, intro, details = [], ctaText = 'View Task', ctaLink = '#', footerNote = '' }) {
+  const plainDetails = details.map(d => `${d.label}: ${d.value}`).join('\n');
+  const text = [intro, plainDetails, ctaLink, footerNote].filter(Boolean).join('\n\n');
+
+  const html = `
+    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width:700px; margin:auto; padding:22px; color:#222;">
+      <div style="border-bottom:1px solid #eee; padding-bottom:12px; margin-bottom:18px;">
+        <h2 style="margin:0; font-size:20px; color:#111;">${heading}</h2>
+        ${intro ? `<p style="margin:6px 0 0; color:#555;">${intro}</p>` : ''}
+      </div>
+
+      <div style="background:#ffffff; border:1px solid #f0f0f0; padding:14px; border-radius:8px;">
+        ${details.map(d => `<p style="margin:6px 0;"><strong style="display:inline-block; width:140px; color:#333;">${d.label}:</strong> <span style="color:#555;">${d.value}</span></p>`).join('')}
+      </div>
+
+      <div style="text-align:left; margin-top:18px;">
+        <a href="${ctaLink}" style="display:inline-block; background:#007bff; color:#fff; padding:10px 16px; border-radius:6px; text-decoration:none; font-weight:600;">${ctaText}</a>
+      </div>
+
+      ${footerNote ? `<p style="font-size:12px; color:#999; margin-top:18px;">${footerNote}</p>` : ''}
+
+      <p style="font-size:12px; color:#aaa; text-align:center; margin-top:20px;">&copy; ${new Date().getFullYear()} ${COMPANY_NAME}</p>
+    </div>
+  `;
+
+  return { subject, text, html };
+}
+
 // TASK REASSIGNMENT TEMPLATES
 // ===========================
 
 // Task Reassignment Request (to Manager)
 function taskReassignmentRequestTemplate({ taskTitle, requesterName, reason, taskLink }) {
-  return {
-    subject: `Task Reassignment Requested: ${taskTitle}`,
-    text: `A reassignment request has been submitted.\n\nTask: ${taskTitle}\nRequested by: ${requesterName}\nReason: ${reason}\nReview and take action: ${taskLink}`,
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
-        <h2 style="color:#007bff;">Task Reassignment Requested</h2>
-        <p><strong>Task:</strong> ${taskTitle}</p>
-        <p><strong>Requested by:</strong> ${requesterName}</p>
-        <p><strong>Reason:</strong> ${reason}</p>
-        <p>
-          <a href="${taskLink}" style="background:#007bff;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;">Review Request</a>
-        </p>
-      </div>
-    `
-  };
+  const subject = `Task Reassignment Requested: ${taskTitle}`;
+  return unifiedTaskEmail({
+    subject,
+    heading: 'Task Reassignment Requested',
+    intro: `A reassignment request has been submitted by ${requesterName}.`,
+    details: [
+      { label: 'Task', value: taskTitle },
+      { label: 'Requested by', value: requesterName },
+      { label: 'Reason', value: reason }
+    ],
+    ctaText: 'Review Request',
+    ctaLink: taskLink
+  });
 }
 
 // Task Reassignment Approved (to New Assignee)
-function taskReassignmentApprovedTemplate({ taskTitle, oldAssignee, newAssignee, taskLink }) {
-  return {
-    subject: `Task Reassigned: ${taskTitle}`,
-    text: `You have been assigned a new task.\nTask: ${taskTitle}\nPrevious Assignee: ${oldAssignee}\nTask Link: ${taskLink}`,
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
-        <h2 style="color:#28a745;">Task Reassigned</h2>
-        <p>You have been assigned a new task.</p>
-        <ul>
-          <li><b>Task:</b> ${taskTitle}</li>
-          <li><b>Previous Assignee:</b> ${oldAssignee}</li>
-        </ul>
-        <p><a href="${taskLink}" style="background:#28a745;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;">View Task</a></p>
-      </div>
-    `
-  };
+function taskReassignmentApprovedTemplate({ taskTitle, oldAssignee, newAssignee, reassignedBy, taskLink, priority, taskDate, description }) {
+  const subject = `Task Reassigned: ${taskTitle} (from ${oldAssignee} to ${newAssignee})`;
+  return unifiedTaskEmail({
+    subject,
+    heading: 'Task Reassignment Approved',
+    intro: `Task has been reassigned from ${oldAssignee} to ${newAssignee}${reassignedBy ? ` by ${reassignedBy}` : ''}.`,
+    details: [
+      { label: 'Task', value: taskTitle },
+      { label: 'Previous Assignee', value: oldAssignee },
+      { label: 'New Assignee', value: newAssignee },
+      { label: 'Priority', value: priority || 'N/A' },
+      { label: 'Due Date', value: taskDate ? formatDateISO(taskDate) : 'N/A' }
+    ],
+    ctaText: 'View Task',
+    ctaLink: taskLink,
+    footerNote: description ? description.replace(/\n/g, ' ') : ''
+  });
+}
+
+// Task Reassignment Approved (to Old Assignee — Approved + Read-Only notice)
+function taskReassignmentApprovedOldTemplate({ taskTitle, oldAssignee, newAssignee, reassignedBy, taskLink, priority, taskDate, description }) {
+  const subject = `Task Reassignment Approved (Read-Only): ${taskTitle}`;
+  return unifiedTaskEmail({
+    subject,
+    heading: 'Task Reassignment Approved (Read-Only)',
+    intro: `Your task has been reassigned to ${newAssignee}${reassignedBy ? ` by ${reassignedBy}` : ''} and is now read-only.`,
+    details: [
+      { label: 'Task', value: taskTitle },
+      { label: 'New Assignee', value: newAssignee },
+      { label: 'Priority', value: priority || 'N/A' },
+      { label: 'Due Date', value: taskDate ? formatDateISO(taskDate) : 'N/A' }
+    ],
+    ctaText: 'View Task',
+    ctaLink: taskLink,
+    footerNote: description ? description : ''
+  });
 }
 
 // Task Reassignment Approved (to Old Assignee - Read-Only)
-function taskReassignmentOldAssigneeTemplate({ taskTitle, newAssignee, taskLink }) {
-  return {
-    subject: `Task Reassigned (Read-Only): ${taskTitle}`,
-    text: `Your task has been reassigned and is now read-only.\nTask: ${taskTitle}\nNew Assignee: ${newAssignee}\nTask Link: ${taskLink}`,
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
-        <h2 style="color:#ffc107;">Task Reassigned (Read-Only)</h2>
-        <p>Your task has been reassigned and is now <b>read-only</b>.</p>
-        <ul>
-          <li><b>Task:</b> ${taskTitle}</li>
-          <li><b>New Assignee:</b> ${newAssignee}</li>
-        </ul>
-        <p><a href="${taskLink}" style="background:#ffc107;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;">View Task</a></p>
-      </div>
-    `
-  };
+function taskReassignmentOldAssigneeTemplate({ taskTitle, newAssignee, taskLink, priority, taskDate, description }) {
+  const subject = `Task Reassigned (Read-Only): ${taskTitle}`;
+  return unifiedTaskEmail({
+    subject,
+    heading: 'Task Reassigned (Read-Only)',
+    intro: `Your task has been reassigned and is now read-only.`,
+    details: [
+      { label: 'Task', value: taskTitle },
+      { label: 'New Assignee', value: newAssignee },
+      { label: 'Priority', value: priority || 'N/A' },
+      { label: 'Due Date', value: taskDate ? formatDateISO(taskDate) : 'N/A' }
+    ],
+    ctaText: 'View Task',
+    ctaLink: taskLink,
+    footerNote: description ? description : ''
+  });
 }
 
 // Task Reassignment Approved (to Managers/Admins)
-function taskReassignmentManagerTemplate({ taskTitle, oldAssignee, newAssignee, taskLink }) {
+function taskReassignmentManagerTemplate({ taskTitle, oldAssignee, newAssignee, reassignedBy, taskLink, priority, taskDate, description }) {
+  const byPart = reassignedBy ? ` by ${reassignedBy}` : '';
+  const due = taskDate ? formatDateISO(taskDate) : null;
   return {
-    subject: `Task Reassignment Completed: ${taskTitle}`,
-    text: `Task reassignment completed.\nTask: ${taskTitle}\nNew Assignee: ${newAssignee}\nOld Assignee: ${oldAssignee}\nTask Link: ${taskLink}`,
+    subject: `Task Reassignment Completed: ${taskTitle} (from ${oldAssignee} to ${newAssignee})`,
+    text: `Task "${taskTitle}" has been reassigned from ${oldAssignee} to ${newAssignee}${byPart}.\nPriority: ${priority || 'N/A'}\nDue Date: ${due || 'N/A'}\nTask Link: ${taskLink}`,
     html: `
       <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
         <h2 style="color:#17a2b8;">Task Reassignment Completed</h2>
+        <p>Task <strong>${taskTitle}</strong> has been reassigned from <strong>${oldAssignee}</strong> to <strong>${newAssignee}</strong>${byPart ? ` by <strong>${reassignedBy}</strong>` : ''}.</p>
         <ul>
           <li><b>Task:</b> ${taskTitle}</li>
           <li><b>New Assignee:</b> ${newAssignee}</li>
           <li><b>Old Assignee:</b> ${oldAssignee}</li>
+          <li><b>Priority:</b> ${priority || 'N/A'}</li>
+          <li><b>Due Date:</b> ${due || 'N/A'}</li>
         </ul>
+        ${description ? `<div style="background:#f7f7f7;padding:10px;border-radius:6px;margin:10px 0;"><strong>Description:</strong><div>${description}</div></div>` : ''}
         <p><a href="${taskLink}" style="background:#17a2b8;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;">View Task</a></p>
       </div>
     `
@@ -483,16 +546,23 @@ ${COMPANY_NAME}
 
 // SEND EMAIL
 async function sendEmail({ to, subject, text, html }) {
+  // Log recipient(s) for debugging unexpected recipients
+  try {
+    console.log('emailService: sending email', { to, subject: subject });
+  } catch (e) {
+    // ignore logging errors
+  }
+
   if (transporter) {
     try {
-      await transporter.sendMail({
+      const info = await transporter.sendMail({
         from: SMTP_FROM,
         to,
         subject,
         text,
         html
       });
-      return { sent: true };
+      return { sent: true, messageId: info && info.messageId };
     } catch (e) {
       console.error('emailService: sendMail failed', e && e.message);
       return { sent: false, error: e && e.message };
@@ -603,7 +673,7 @@ function taskAssignedToEmployeeTemplate({
           </tr>
           <tr>
             <td style="padding: 8px; font-weight: bold;">Due Date</td>
-            <td style="padding: 8px;">${taskDate}</td>
+            <td style="padding: 8px;">${formatDateISO(taskDate)}</td>
           </tr>
           <tr>
             <td style="padding: 8px; font-weight: bold;">Assigned By</td>
@@ -653,11 +723,9 @@ function taskAssignedToEmployeeTemplate({
           <strong>Task Management System</strong>
         </p>
       </div>
-    `,
-  };
-}
-
-module.exports = taskAssignedToEmployeeTemplate;
+        `,
+      };
+    }
 
 async function sendTaskAssignmentEmails({
   finalAssigned = [],
@@ -728,6 +796,7 @@ async function sendTaskAssignmentEmails({
     }
 
     console.log(`📧 Preparing to send ${users.length} task assignment emails`);
+    console.log('Target users:', users.map(u => ({ _id: u._id, email: u.email, name: u.name })));
 
     /**
      * Send emails
@@ -779,7 +848,55 @@ async function sendTaskAssignmentEmails({
     return results;
   }
 }
- 
+ const sendApproveEmails = async ({ task, oldAssigneeUser, newAssigneeUser, managerName, taskLink }) => {
+  try {
+    // Old assignee: read-only access notification
+    if (oldAssigneeUser?.email) {
+      const template = taskReassignmentApprovedOldTemplate({
+        taskTitle: task.title || 'Task',
+        oldAssignee: oldAssigneeUser.name || 'Previous Assignee',
+        newAssignee: newAssigneeUser?.name || 'New Assignee',
+        reassignedBy: managerName,
+        taskLink,
+        priority: task.priority,
+        taskDate: task.taskDate,
+        description: task.description
+      });
+      await sendEmail({ to: oldAssigneeUser.email, ...template }).catch(console.error);
+    }
+
+    // New assignee notification (if specified)
+    if (newAssigneeUser?.email) {
+      const template = taskReassignmentApprovedTemplate({
+        taskTitle: task.title || 'Task',
+        oldAssignee: oldAssigneeUser?.name || 'Previous Assignee',
+        newAssignee: newAssigneeUser.name,
+        reassignedBy: managerName,
+        taskLink,
+        priority: task.priority,
+        taskDate: task.taskDate,
+        description: task.description
+      });
+      await sendEmail({ to: newAssigneeUser.email, ...template }).catch(console.error);
+    }
+  } catch (error) {
+    console.error('Approve email error:', error);
+  }
+};
+
+const sendRejectEmails = async ({ task, oldAssigneeUser, taskLink }) => {
+  try {
+    if (oldAssigneeUser?.email) {
+      const template = taskReassignmentRejectedTemplate({
+        taskTitle: task.title || task.name || 'Task',
+        taskLink
+      });
+      await sendEmail({ to: oldAssigneeUser.email, ...template }).catch(console.error);
+    }
+  } catch (error) {
+    console.error('Reject email error:', error);
+  }
+};
 module.exports = {
   sendEmail,
   otpTemplate,
@@ -798,13 +915,15 @@ module.exports = {
   ,taskReassignmentOldAssigneeTemplate
   ,taskReassignmentManagerTemplate
   ,taskReassignmentRejectedTemplate
-  ,taskReassignmentRejectedManagerTemplate
+  ,taskReassignmentRejectedManagerTemplate,
+  sendApproveEmails,
+  sendRejectEmails,
 };
  
 // Convenience: send credentials/welcome email to newly created users
 async function sendCredentials(to, name, publicId, tempPassword, setupLink) {
   try {
-    const link = setupLink || `${process.env.BASE_URL || process.env.FRONTEND_URL || 'http://localhost:4000'}/auth/setup?uid=${encodeURIComponent(publicId)}`;
+    const link = setupLink || makeFrontendLink('/auth/setup?uid=' + encodeURIComponent(publicId));
     const tpl = welcomeTemplate(name || '', to || '', tempPassword || '', link);
     const r = await sendEmail({ to, subject: tpl.subject, text: tpl.text, html: tpl.html });
     return r;

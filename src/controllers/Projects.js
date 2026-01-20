@@ -16,6 +16,7 @@ const RULES = require(__root + 'rules/ruleCodes');
   Note: Department add/remove mapped to PROJECT_UPDATE for CRUD mapping.
 */
 const NotificationService = require('../services/notificationService');
+const { makeFrontendLink, makePublicUploadsUrl } = require(__root + 'utils/url');
 require('dotenv').config();
 router.use(requireAuth);
 
@@ -179,7 +180,7 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
  
     const emailService = require(__root + 'utils/emailService');
    
-    const projectLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/projects/${publicId}`;
+    const projectLink = makeFrontendLink('/projects/' + publicId);
     const creatorName = req.user.name || 'Administrator';
    
     const emailResults = await emailService.sendProjectNotifications({
@@ -212,7 +213,7 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
     if (req.files && Array.isArray(req.files) && req.files.length > 0) {
       for (const file of req.files) {
         try {
-          const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${encodeURIComponent(file.filename)}`;
+          const fileUrl = (req && req.protocol && req.get) ? `${req.protocol}://${req.get('host')}/uploads/${encodeURIComponent(file.filename)}` : makePublicUploadsUrl('/uploads/' + encodeURIComponent(file.filename));
           const fileType = mime.lookup(file.originalname) || file.mimetype || null;
           const documentId = crypto.randomBytes(8).toString('hex');
           await q(

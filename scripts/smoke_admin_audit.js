@@ -4,7 +4,8 @@ const jwt = require('jsonwebtoken');
 require('dotenv').config();
 const ADMIN_PUBLIC_ID = 'ac510b2dd0e311f088c200155daedf50'; // from users table
 const SECRET = process.env.SECRET || process.env.JWT_SECRET || 'change_this_secret';
-const BASE = process.env.BASE_URL || 'http://localhost:4000';
+const BASE = process.env.BASE_URL || process.env.FRONTEND_URL || null;
+if (!BASE) { console.error('BASE_URL not set. Set BASE_URL or FRONTEND_URL in environment.'); process.exit(1); }
 
 async function main() {
   try {

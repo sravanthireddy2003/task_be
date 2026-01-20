@@ -1,6 +1,7 @@
 const axios = require('axios');
 
-const BASE = process.env.BASE_URL || 'http://localhost:4000';
+const BASE = process.env.BASE_URL || process.env.FRONTEND_URL || null;
+if (!BASE) { console.error('BASE_URL not set. Set BASE_URL or FRONTEND_URL in environment.'); process.exit(1); }
 const TOKEN = process.env.TOKEN || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6ImFjNTEwYjJkZDBlMzExZjA4OGMyMDAxNTVkYWVkZjUwIiwiaWF0IjoxNzY4ODA1NDE4LCJleHAiOjE3Njg4MDYzMTh9.j0kWa5hp9hUVIjTf7-ZMV68-i8p-7T2t1Ancz_UF67k';
 
 async function main() {

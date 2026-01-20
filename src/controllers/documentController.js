@@ -15,7 +15,13 @@ class LocalStorage {
   }
   
   getPublicUrl(relativePath, req) {
-    const base = req ? `${req.protocol}://${req.get('host')}` : (process.env.BASE_URL || 'http://localhost:4000');
+    const baseFromReq = req ? `${req.protocol}://${req.get('host')}` : null;
+    const envBase = process.env.BASE_URL || process.env.FRONTEND_URL || null;
+    const base = baseFromReq || envBase;
+    if (!base) {
+      if (relativePath?.startsWith('/uploads/')) return relativePath;
+      return `/uploads/${relativePath?.replace(/^\//, '') || ''}`;
+    }
     if (relativePath?.startsWith('/uploads/')) return `${base}${relativePath}`;
     return `${base}/uploads/${relativePath?.replace(/^\//, '') || ''}`;
   }
