@@ -1,210 +1,247 @@
-// Thin document controller — parses requests, delegates to services, formats responses
-const upload = require(__root + 'multer');
-const documentService = require(__root + 'services/documentService');
-const documentAccessService = require(__root + 'services/documentAccessService');
-const storageService = require(__root + 'services/storageService');
 const db = require(__root + 'db');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const { uploadDocument } = require('../middleware/multer');
 
-// Controllers are intentionally thin: they validate/parses request inputs,
-// call the service layer, and forward errors to the centralized error handler.
+// ✅ Local storage helper (matches your existing uploads system)
+class LocalStorage {
+  constructor() { 
+    this.type = 'local'; 
+  }
+  
+  getRelativePath(filename) {
+    return `/uploads/${filename}`;
+  }
+  
+  getPublicUrl(relativePath, req) {
+    const base = req ? `${req.protocol}://${req.get('host')}` : (process.env.BASE_URL || 'http://localhost:4000');
+    if (relativePath?.startsWith('/uploads/')) return `${base}${relativePath}`;
+    return `${base}/uploads/${relativePath?.replace(/^\//, '') || ''}`;
+  }
+}
+
+const storageProvider = new LocalStorage();
+const q = (sql, params = []) => new Promise((resolve, reject) => {
+  db.query(sql, params, (err, rows) => err ? reject(err) : resolve(rows));
+});
+
 module.exports = {
-  // POST /api/documents/upload
+  // ✅ POST /api/documents/upload - Multer + Local Storage
   uploadDocument: [
-    upload.single('document'),
-    async (req, res, next) => {
+    uploadDocument.single('document'),
+    async (req, res) => {
       try {
-        const result = await documentService.uploadDocument({ file: req.file, body: req.body, user: req.user });
-        // Build full URL for local uploads (encode to ensure spaces/special chars are safe)
-        try {
-          const baseUrl = req.protocol + '://' + req.get('host');
-          if (result && result.storagePath) {
-            const sp = String(result.storagePath);
-            if (sp.startsWith('/uploads/')) result.file_url = baseUrl + encodeURI(sp);
-            else if (/^https?:\/\//i.test(sp)) result.file_url = sp;
-            else result.file_url = '';
-          }
-        } catch (e) {
-          // ignore URL build errors
+        const { entityType, entityId } = req.body;
+        const userId = req.user?._id;
+
+        if (!req.file) {
+          return res.status(400).json({ success: false, error: 'No file uploaded' });
         }
-        return res.json({ success: true, data: result });
-      } catch (err) {
-        return next(err);
+
+        if (!['CLIENT', 'PROJECT', 'TASK'].includes(entityType)) {
+          fs.unlinkSync(req.file.path);
+          return res.status(400).json({ success: false, error: 'Invalid entity type' });
+        }
+
+        // ✅ Verify entity exists (matches your table names)
+        let entityTable, entityIdColumn;
+        switch (entityType) {
+          case 'CLIENT': entityTable = 'clientss'; entityIdColumn = 'id'; break;
+          case 'PROJECT': entityTable = 'projects'; entityIdColumn = 'id'; break;
+          case 'TASK': entityTable = 'tasks'; entityIdColumn = 'id'; break;
+        }
+
+        const entityExists = await q(`SELECT 1 FROM ${entityTable} WHERE ${entityIdColumn} = ?`, [entityId]);
+        if (!entityExists.length) {
+          fs.unlinkSync(req.file.path);
+          return res.status(404).json({ success: false, error: 'Entity not found' });
+        }
+
+        const relativePath = storageProvider.getRelativePath(req.file.filename);
+        const documentId = crypto.randomBytes(8).toString('hex');
+
+        await q(
+          `INSERT INTO documents 
+           (documentId, entityType, entityId, uploadedBy, storageProvider, filePath, fileName, fileSize, mimeType, encrypted, createdAt) 
+           VALUES (?, ?, ?, ?, 'local', ?, ?, ?, ?, false, NOW())`,
+          [documentId, entityType, entityId, userId, relativePath, req.file.originalname, req.file.size, req.file.mimetype]
+        );
+
+        const publicUrl = storageProvider.getPublicUrl(relativePath, req);
+        res.status(201).json({
+          success: true,
+          data: {
+            documentId,
+            entityType,
+            entityId,
+            fileName: req.file.originalname,
+            fileSize: req.file.size,
+            mimeType: req.file.mimetype,
+            filePath: relativePath,
+            publicUrl,
+            file_url: publicUrl  // ✅ For your existing frontend components
+          }
+        });
+      } catch (error) {
+        if (req.file) fs.unlinkSync(req.file.path);
+        res.status(500).json({ success: false, error: error.message });
       }
     }
   ],
 
-  // GET /api/documents
-  listDocuments: async (req, res, next) => {
+  // ✅ GET /api/documents - List with headers/query params
+  listDocuments: async (req, res) => {
     try {
-      const filter = {
-        projectId: req.headers['project-id'] || req.query.projectId || req.query.project_id || req.body.project_id || req.query.project_public_id || req.query.public_id,
-        // also expose original public id separately for services that may resolve it
-        projectPublicId: req.query.project_public_id || req.query.public_id,
-        clientId: req.query.clientId || req.query.client_id || req.headers['client-id']
-      };
-      const rows = await documentService.listDocuments({ filter, user: req.user });
+      const projectPublicId = req.headers['project-id'] || req.headers['project-public-id'] || req.headers['projectid'] || req.query.projectId;
+      const clientId = req.headers['client-id'] || req.headers['clientid'] || req.query.clientId;
+      const taskId = req.headers['task-id'] || req.headers['taskid'] || req.query.taskId;
+      const userId = req.user?._id;
+      const userRole = req.user?.role;
 
-      // Build response to match requested shape
-      const ruleDecision = req.ruleDecision || { allowed: true, ruleCode: 'DOCUMENT_VIEW', reason: 'User has access to project documents' };
-
-      const baseUrl = req.protocol + '://' + req.get('host');
-      const encodeUploads = (storedPath) => {
-        if (!storedPath) return '';
-        try {
-          if (!String(storedPath).startsWith('/uploads/')) return storedPath;
-          const rel = String(storedPath).replace(/^\/uploads\//, '');
-          const parts = rel.split('/').map(p => encodeURIComponent(p));
-          return baseUrl + '/uploads/' + parts.join('/');
-        } catch (e) { return baseUrl + storedPath; }
-      };
-
-      const documents = await Promise.all((rows || []).map(async (r) => {
-        const doc = {
-          documentId: r.documentId || r.id || null,
-          fileName: r.fileName,
-          fileType: r.mimeType || r.fileType || null,
-          entityType: r.entityType,
-          entityId: r.entityId,
-          uploadedBy: { userId: r.uploadedBy || r.uploaded_by || null, name: null },
-          accessLevel: null,
-          storageProvider: r.storageProvider || r.storage_provider || null,
-          previewAvailable: false,
-          downloadAllowed: false,
-          createdAt: r.createdAt || r.created_at || null
-        };
-
-        try {
-          const handle = await storageService.getDownloadHandle({ storagePath: r.storagePath || r.filePath, key: r.storageKey });
-          if (handle && handle.redirectUrl) {
-            doc.previewAvailable = true;
-            doc.downloadAllowed = true;
-            doc.previewUrl = handle.redirectUrl;
-            doc.downloadUrl = handle.redirectUrl;
-          } else if (handle && handle.publicPath) {
-            doc.previewAvailable = true;
-            doc.downloadAllowed = true;
-            doc.previewUrl = encodeUploads(handle.publicPath);
-            doc.downloadUrl = encodeUploads(handle.publicPath);
-          }
-        } catch (e) {
-          // ignore storage errors per-item
+      let entityId = null, entityType = null;
+      
+      if (projectPublicId) {
+        const project = await q('SELECT id FROM projects WHERE public_id = ?', [projectPublicId]);
+        if (project.length) { 
+          entityId = project[0].id; 
+          entityType = 'PROJECT'; 
         }
+      } else if (clientId) { 
+        entityId = clientId; 
+        entityType = 'CLIENT'; 
+      } else if (taskId) { 
+        entityId = taskId; 
+        entityType = 'TASK'; 
+      }
 
-        // Enrich uploadedBy.name if missing
-        try {
-          const uploaderId = doc.uploadedBy && (doc.uploadedBy.userId || doc.uploadedBy.userId === 0) ? doc.uploadedBy.userId : null;
-          if (uploaderId && !doc.uploadedBy.name) {
-            const urows = await new Promise((resolve, reject) => db.query('SELECT name FROM users WHERE _id = ? OR id = ? LIMIT 1', [uploaderId, uploaderId], (err, rows) => (err ? reject(err) : resolve(rows))));
-            if (urows && urows.length > 0) doc.uploadedBy.name = urows[0].name || '';
-            else doc.uploadedBy.name = '';
-          }
-        } catch (e) {
-          doc.uploadedBy.name = doc.uploadedBy.name || '';
-        }
+      let whereClause = '', params = [];
+      if (entityId && entityType) {
+        whereClause = 'AND d.entityType = ? AND d.entityId = ?';
+        params = [entityType, entityId];
+      }
 
-        // set accessLevel based on downloadAllowed
-        doc.accessLevel = doc.downloadAllowed ? 'VIEW_DOWNLOAD' : 'VIEW';
+      // ✅ Role-based access (simplified for local storage)
+      if (userRole === 'EMPLOYEE') {
+        whereClause += ' AND d.uploadedBy = ?';
+        params.push(userId);
+      }
 
-        // Ensure file_url is present: prefer downloadUrl, then previewUrl, then storagePath
-        try {
-          if (doc.downloadUrl) doc.file_url = doc.downloadUrl;
-          else if (doc.previewUrl) doc.file_url = doc.previewUrl;
-          else if (r && r.storagePath) {
-            const sp = String(r.storagePath);
-            if (sp.startsWith('/uploads/')) doc.file_url = encodeUploads(sp);
-            else if (/^https?:\/\//i.test(sp)) doc.file_url = sp;
-            else doc.file_url = '';
-          } else {
-            doc.file_url = '';
-          }
-        } catch (e) {
-          doc.file_url = '';
-        }
+      const documents = await q(`
+        SELECT d.*, u.name as uploadedByName
+        FROM documents d
+        LEFT JOIN users u ON u._id = d.uploadedBy
+        WHERE 1=1 ${whereClause}
+        ORDER BY d.createdAt DESC
+      `, params);
 
-        return doc;
+      const docsWithUrls = documents.map(doc => ({
+        documentId: doc.documentId,
+        fileName: doc.fileName,
+        fileType: doc.mimeType,
+        entityType: doc.entityType,
+        entityId: doc.entityId,
+        uploadedBy: { 
+          userId: doc.uploadedBy, 
+          name: doc.uploadedByName || null 
+        },
+        storageProvider: 'local',
+        filePath: doc.filePath,
+        previewAvailable: true,
+        downloadAllowed: true,
+        createdAt: doc.createdAt,
+        file_url: storageProvider.getPublicUrl(doc.filePath, req),
+        publicUrl: storageProvider.getPublicUrl(doc.filePath, req),
+        previewUrl: storageProvider.getPublicUrl(doc.filePath, req),
+        downloadUrl: storageProvider.getPublicUrl(doc.filePath, req)
       }));
 
-      return res.json({
-        success: true,
-        message: 'Documents fetched successfully',
-        ruleDecision,
-        data: {
-          projectId: filter.projectPublicId || filter.projectId || null,
-          documents
-        }
+      res.json({ 
+        success: true, 
+        data: { 
+          projectId: projectPublicId || entityId,
+          documents: docsWithUrls 
+        } 
       });
-    } catch (err) {
-      return next(err);
+    } catch (error) {
+      res.status(500).json({ success: false, error: error.message });
     }
   },
 
-  // GET /api/documents/preview/:id
-  getDocumentPreview: async (req, res, next) => {
+  // ✅ GET /api/documents/preview/:id
+  getDocumentPreview: async (req, res) => {
     try {
-      const id = req.params.id;
-      const preview = await documentService.getDocumentPreview({ id, user: req.user });
-      // Prefer a preview URL (signed URL for S3 or public URL for local uploads)
-      try {
-        const handle = await storageService.getDownloadHandle({ storagePath: preview.storagePath, key: preview.storageKey }, { expiresIn: 300 });
-        if (handle.redirectUrl) {
-          return res.json({
-            success: true,
-            documentId: id,
-            previewUrl: handle.redirectUrl,
-            expiresInSeconds: handle.expiresInSeconds || 300
-          });
-        }
-        if (handle.publicPath) {
-          const base = req.protocol + '://' + req.get('host');
-          const rel = String(handle.publicPath).replace(/^\/uploads\//, '');
-          const parts = rel.split('/').map(p => encodeURIComponent(p));
-          return res.json({ success: true, documentId: id, previewUrl: base + '/uploads/' + parts.join('/'), expiresInSeconds: 0 });
-        }
-      } catch (e) {
-        // fall through to streaming if no URL could be produced
+      const { id } = req.params;
+      const doc = await q('SELECT * FROM documents WHERE documentId = ?', [id]);
+      
+      if (!doc.length) {
+        return res.status(404).json({ success: false, error: 'Document not found' });
       }
 
-      // Fallback: if storage returns a streamable response, stream it
-      if (preview.stream) {
-        res.set(preview.headers || {});
-        return preview.stream.pipe(res);
-      }
-
-      return res.status(404).json({ success: false, error: 'Preview not available' });
-    } catch (err) {
-      return next(err);
+      const previewUrl = storageProvider.getPublicUrl(doc[0].filePath, req);
+      res.json({ 
+        success: true,
+        documentId: id,
+        previewUrl,
+        file_url: previewUrl,
+        publicUrl: previewUrl,
+        expiresInSeconds: 0,  // Local storage = permanent
+        metadata: doc[0]
+      });
+    } catch (error) {
+      res.status(500).json({ success: false, error: error.message });
     }
   },
 
-  // GET /api/documents/download/:id
-  downloadDocument: async (req, res, next) => {
+  // ✅ GET /api/documents/download/:id - Direct redirect
+  downloadDocument: async (req, res) => {
     try {
-      const id = req.params.id;
-      const download = await documentService.downloadDocument({ id, user: req.user });
-      if (download.redirectUrl) return res.redirect(download.redirectUrl);
-      // If storage returned a publicPath for local files, prefer redirecting to that public URL
-      if (download.publicPath) {
-        const base = req.protocol + '://' + req.get('host');
-        const rel = String(download.publicPath).replace(/^\/uploads\//, '');
-        const parts = rel.split('/').map(p => encodeURIComponent(p));
-        return res.redirect(base + '/uploads/' + parts.join('/'));
+      const { id } = req.params;
+      const userId = req.user?._id;
+      const userRole = req.user?.role;
+
+      const doc = await q(`
+        SELECT d.* FROM documents d 
+        WHERE d.documentId = ? AND (d.uploadedBy = ? OR ? IN ('ADMIN', 'MANAGER'))
+      `, [id, userId, userRole]);
+
+      if (!doc.length) {
+        return res.status(403).json({ success: false, error: 'Access denied' });
       }
-      res.set({ 'Content-Disposition': `attachment; filename="${download.fileName || 'file'}"`, ...(download.headers || {}) });
-      if (download.stream) return download.stream.pipe(res);
-      return res.send(download.body || {});
-    } catch (err) {
-      return next(err);
+
+      const downloadUrl = storageProvider.getPublicUrl(doc[0].filePath, req);
+      
+      // ✅ Direct redirect to file (fastest UX)
+      return res.redirect(downloadUrl);
+    } catch (error) {
+      res.status(500).json({ success: false, error: error.message });
     }
   },
 
-  // POST /api/documents/assign-access
-  assignDocumentAccess: async (req, res, next) => {
+  // ✅ POST /api/documents/assign-access
+  assignDocumentAccess: async (req, res) => {
     try {
-      const { documentId, assigneeId, accessType } = req.body;
-      const result = await documentAccessService.assignAccess({ documentId, assigneeId, accessType, user: req.user });
-      return res.json({ success: true, data: result });
-    } catch (err) {
-      return next(err);
+      const { id } = req.params;
+      const { userId: assigneeId, accessType } = req.body;
+      const assignerRole = req.user?.role;
+
+      if (!['ADMIN', 'MANAGER'].includes(assignerRole)) {
+        return res.status(403).json({ success: false, error: 'Access denied' });
+      }
+
+      const docExists = await q('SELECT 1 FROM documents WHERE documentId = ?', [id]);
+      if (!docExists.length) {
+        return res.status(404).json({ success: false, error: 'Document not found' });
+      }
+
+      await q(
+        'INSERT INTO document_access (documentId, userId, accessType) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE accessType = ?',
+        [id, assigneeId, accessType, accessType]
+      );
+
+      res.json({ success: true, message: 'Access assigned successfully' });
+    } catch (error) {
+      res.status(500).json({ success: false, error: error.message });
     }
   }
 };

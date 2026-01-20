@@ -1,83 +1,87 @@
 const db = require(__root + "db");
 const express = require('express');
-const multer = require('multer');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const path = require('path');
+const fs = require('fs');
+const { uploadDocument } = require(__root + 'middleware/multer');
 const router = express.Router();
-// tenantMiddleware intentionally not applied here (only Tasks/Projects are tenant-scoped)
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const ruleEngine = require(__root + 'middleware/ruleEngine');
 const RULES = require(__root + 'rules/ruleCodes');
-/*
-  Rule codes used in this router:
-  - UPLOAD_CREATE, UPLOAD_VIEW, UPLOAD_DELETE
-*/
 require('dotenv').config();
 
-// Apply auth to uploads (tenant scoping removed — only Projects & Tasks will enforce tenant)
+if (process.env.NODE_ENV !== 'production') {
+  router.post('/debug-upload', uploadDocument.single('file'), async (req, res) => {
+    try {
+      const { taskId, userId } = req.body;
+      if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+      if (!taskId || !userId) return res.status(400).json({ error: 'Task ID and User ID are required' });
+      
+      const relativePath = `/uploads/${req.file.filename}`;
+      const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
+      const publicUrl = `${baseUrl}${relativePath}`;
+
+      const doInsert = (resolvedUserId) => {
+        const sql = `INSERT INTO files (file_url, file_name, file_type, file_size, task_id, user_id, uploaded_at, isActive) VALUES (?, ?, ?, ?, ?, ?, NOW(), 1)`;
+        const params = [relativePath, req.file.originalname, req.file.mimetype, req.file.size, taskId, resolvedUserId];
+        db.query(sql, params, (err) => {
+          if (err) return res.status(500).json({ error: 'Failed to save file details to the database' });
+          return res.status(201).json({ message: 'Debug upload successful', fileUrl: publicUrl, filePath: relativePath });
+        });
+      };
+
+      if (!/^\d+$/.test(String(userId))) {
+        db.query('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [userId], (uErr, uRows) => {
+          if (uErr) return res.status(500).json({ error: 'Failed to resolve userId' });
+          if (!uRows || uRows.length === 0) return res.status(400).json({ error: 'Invalid userId' });
+          doInsert(uRows[0]._id);
+        });
+      } else {
+        doInsert(userId);
+      }
+    } catch (e) { 
+      return res.status(500).json({ error: 'Internal error' }); 
+    }
+  });
+}
+
 router.use(requireAuth);
 
-// AWS S3 Client Setup
-const s3 = new S3Client({
-  region: process.env.AWS_REGION,
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  },
-});
+const upload = uploadDocument;
 
-// Multer Storage Setup (in-memory storage for file upload)
-const storage = multer.memoryStorage();
-const upload = multer({ storage });
-
-// POST route for file upload (Admin/Manager/Employee only)
 router.post('/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin','Manager','Employee']), upload.single('file'), async (req, res) => {
   try {
     const { taskId, userId } = req.body;
-
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     if (!taskId || !userId) return res.status(400).json({ error: 'Task ID and User ID are required' });
 
-    // Generate unique file name and upload to S3 (if configured) or store in uploads
-    const uniqueName = `${Date.now()}-${req.file.originalname.replace(/[^a-zA-Z0-9._()-]/g, '_')}`;
-
-    let fileUrl = null;
-    let storedPath = null;
-
-    if (process.env.AWS_S3_BUCKET_NAME) {
-      const uploadParams = {
-        Bucket: process.env.AWS_S3_BUCKET_NAME,
-        Key: uniqueName,
-        Body: req.file.buffer,
-        ContentType: req.file.mimetype,
-      };
-      await s3.send(new PutObjectCommand(uploadParams));
-      fileUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${uniqueName}`;
-      // Do NOT persist full HTTP URL in DB; store s3 pseudo-path instead
-      storedPath = `s3://${process.env.AWS_S3_BUCKET_NAME}/${uniqueName}`;
-    } else {
-      // persist to local uploads folder
-      const uploadsDir = path.join(process.cwd(), 'uploads');
-      try { fs.mkdirSync(uploadsDir, { recursive: true }); } catch (e) {}
-      const dest = path.join(uploadsDir, uniqueName);
-      fs.writeFileSync(dest, req.file.buffer);
-      storedPath = '/uploads/' + encodeURIComponent(uniqueName);
-      fileUrl = `${req.protocol}://${req.get('host')}${storedPath}`;
-    }
+    // ✅ LOCAL STORAGE ONLY - Perfect for your src/uploads/ setup
+    const relativePath = `/uploads/${req.file.filename}`;
+    const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
+    const publicUrl = `${baseUrl}${relativePath}`;
 
     const doInsert = (resolvedUserId) => {
       const sql = `INSERT INTO files (file_url, file_name, file_type, file_size, task_id, user_id, uploaded_at, isActive) VALUES (?, ?, ?, ?, ?, ?, NOW(), 1)`;
-      const params = [storedPath, req.file.originalname, req.file.mimetype, req.file.size, taskId, resolvedUserId];
+      const params = [relativePath, req.file.originalname, req.file.mimetype, req.file.size, taskId, resolvedUserId];
       db.query(sql, params, (err) => {
         if (err) {
           console.error('Database Error:', err);
           return res.status(500).json({ error: 'Failed to save file details to the database' });
         }
-        return res.status(201).json({ message: 'File uploaded successfully', fileUrl });
+        return res.status(201).json({ 
+          success: true,
+          message: 'File uploaded successfully', 
+          data: {
+            fileUrl: publicUrl,
+            filePath: relativePath,
+            fileName: req.file.originalname,
+            fileSize: req.file.size,
+            fileType: req.file.mimetype
+          }
+        });
       });
     };
 
     if (!/^\d+$/.test(String(userId))) {
-      // resolve public_id -> _id
       db.query('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [userId], (uErr, uRows) => {
         if (uErr) {
           console.error('User lookup error:', uErr);
@@ -120,6 +124,7 @@ router.get('/getuploads/:id', ruleEngine(RULES.UPLOAD_VIEW), requireRole(['Admin
         sql += ' AND f.user_id = ? ORDER BY f.uploaded_at DESC';
         params.push(resolvedUserId);
       }
+      
       db.query(sql, params, (err, results) => {
         if (err) {
           console.error('Database Error:', err);
@@ -130,23 +135,27 @@ router.get('/getuploads/:id', ruleEngine(RULES.UPLOAD_VIEW), requireRole(['Admin
         try {
           const userIds = Array.from(new Set(results.map(r => r.user_id).filter(Boolean)));
           if (userIds.length === 0) return res.status(200).json({ message: 'File upload fetched successfully', data: results });
+          
           db.query('SELECT _id, public_id FROM users WHERE _id IN (?)', [userIds], (uErr, uRows) => {
             if (uErr || !Array.isArray(uRows)) return res.status(200).json({ message: 'File upload fetched successfully', data: results });
+            
             const map = {};
             uRows.forEach(u => { map[u._id] = u.public_id || u._id; });
-            const base = req.protocol + '://' + req.get('host');
-            const out = results.map(r => {
-              const rec = { ...r, user_id: map[r.user_id] || r.user_id };
-              try {
-                if (rec.file_url && String(rec.file_url).startsWith('/uploads/')) {
-                  const rel = String(rec.file_url).replace(/^\/uploads\//, '');
-                  const parts = rel.split('/').map(p => encodeURIComponent(p));
-                  rec.file_url = base + '/uploads/' + parts.join('/');
-                }
-              } catch (e) {}
-              return rec;
+            const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
+            
+            const out = results.map(r => ({
+              ...r,
+              user_id: map[r.user_id] || r.user_id,
+              // ✅ Convert relative path to full public URL
+              file_url: r.file_url && String(r.file_url).startsWith('/uploads/') ? `${baseUrl}${r.file_url}` : r.file_url,
+              publicUrl: r.file_url && String(r.file_url).startsWith('/uploads/') ? `${baseUrl}${r.file_url}` : r.file_url
+            }));
+            
+            return res.status(200).json({ 
+              success: true,
+              message: 'File upload fetched successfully', 
+              data: out 
             });
-            return res.status(200).json({ message: 'File upload fetched successfully', data: out });
           });
         } catch (e) {
           return res.status(200).json({ message: 'File upload fetched successfully', data: results });
@@ -156,7 +165,10 @@ router.get('/getuploads/:id', ruleEngine(RULES.UPLOAD_VIEW), requireRole(['Admin
 
     if (filterUserParam) {
       const isNumeric = /^\d+$/.test(String(filterUserParam));
-      if (isNumeric) { runQuery(filterUserParam); return; }
+      if (isNumeric) { 
+        runQuery(filterUserParam); 
+        return; 
+      }
       db.query('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [filterUserParam], (err, rows) => {
         if (err) return res.status(500).json({ error: 'DB error resolving userId' });
         if (!rows || rows.length === 0) return res.status(404).json({ message: 'User not found for provided userId' });
@@ -173,6 +185,3 @@ router.get('/getuploads/:id', ruleEngine(RULES.UPLOAD_VIEW), requireRole(['Admin
 });
 
 module.exports = router;
-
-
-
