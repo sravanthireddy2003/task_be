@@ -17,6 +17,12 @@ router.post('/upload', ruleEngine('DOCUMENT_UPLOAD'), DocumentController.uploadD
 // List documents (supports project-id header for backward compatibility)
 router.get('/', DocumentController.listDocuments);
 
+// Get user's documents inbox
+router.get('/my', DocumentController.getMyDocuments);
+
+// Get project members for access assignment
+router.get('/project/:projectId/members', DocumentController.getProjectMembers);
+
 // Preview and Download routes — rule engine checks applied per-route
 router.get('/:id/preview', ruleEngine('DOCUMENT_PREVIEW'), DocumentController.getDocumentPreview);
 router.get('/:id/download', ruleEngine('DOCUMENT_DOWNLOAD'), DocumentController.downloadDocument);
@@ -27,5 +33,7 @@ router.get('/download/:id', ruleEngine('DOCUMENT_DOWNLOAD'), DocumentController.
 
 // Assign access — rule engine decides whether this user may assign access
 router.post('/:id/assign-access', ruleEngine('DOCUMENT_ASSIGN_ACCESS'), DocumentController.assignDocumentAccess);
+// New convenience endpoint: assign/revoke access by payload
+router.post('/access', ruleEngine('DOCUMENT_ASSIGN_ACCESS'), DocumentController.assignDocumentAccess);
 
 module.exports = router;

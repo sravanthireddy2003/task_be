@@ -31,6 +31,13 @@ const ruleEngineMiddleware = (ruleCode = null) => {
       if (!decision.allowed) {
         // Fallback: when no matching rule exists, allow common project-scoped actions
         if (decision.ruleCode === 'NO_RULE_MATCH') {
+          // Allow Admin/Manager to proceed for task creation when no explicit rule exists
+          const role = user && (user.role || '').toLowerCase();
+          const code = (ruleCode || '').toLowerCase();
+          if (code === 'task_creation' && (role === 'admin' || role === 'manager')) {
+            return next();
+          }
+
           try {
             const isProjectRule = String(ruleCode || '').toLowerCase().includes('project') || (req.baseUrl && req.baseUrl.includes('/projects'));
             if (isProjectRule) {
