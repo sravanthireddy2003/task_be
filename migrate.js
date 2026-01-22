@@ -60,6 +60,34 @@ async function runMigrations() {
       }
     }
 
+    // Add task_day (date-only) column and backfill from taskDate
+    try {
+      await q("ALTER TABLE tasks ADD COLUMN task_day DATE NULL");
+      console.log('Added task_day column to tasks');
+
+      // Backfill from existing taskDate if present
+      try {
+        await q("UPDATE tasks SET task_day = DATE(taskDate) WHERE taskDate IS NOT NULL");
+        console.log('Backfilled task_day from taskDate');
+      } catch (be) {
+        console.log('Note: task_day backfill skipped or failed:', be.message);
+      }
+
+      // Add index for faster queries by day
+      try {
+        await q("CREATE INDEX idx_tasks_task_day ON tasks(task_day)");
+        console.log('Created index idx_tasks_task_day');
+      } catch (ie) {
+        console.log('Note: creating idx_tasks_task_day skipped or failed:', ie.message);
+      }
+    } catch (e) {
+      if (e.code === 'ER_DUP_FIELDNAME' || e.code === 'ER_COLUMN_EXISTS_ERROR') {
+        console.log('task_day column already exists');
+      } else {
+        throw e;
+      }
+    }
+
     // Create task_time_logs table
     await q(`
       CREATE TABLE IF NOT EXISTS task_time_logs (

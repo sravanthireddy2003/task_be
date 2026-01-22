@@ -280,6 +280,8 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
           description: r.description || null,
           stage: r.stage || null,
           taskDate: r.taskDate ? new Date(r.taskDate).toISOString() : null,
+          day: r.taskDate ? (new Date(r.taskDate).toISOString().split('T')[0]) : null,
+          dayName: r.taskDate ? dayjs(r.taskDate).format('ddd') : null,
           priority: r.priority || null,
           timeAlloted: r.time_alloted != null ? Number(r.time_alloted) : null,
           estimatedHours: r.estimated_hours != null ? Number(r.estimated_hours) : (r.time_alloted != null ? Number(r.time_alloted) : null),
@@ -593,6 +595,20 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
 
         const taskId = result.insertId;
         console.log('Task inserted with ID:', taskId);
+
+        // Persist a date-only day column if present (task_day or day)
+        try {
+          const dayStr = taskDate ? (new Date(taskDate).toISOString().split('T')[0]) : null;
+          if (dayStr) {
+            if (await checkColumn('task_day')) {
+              await new Promise((res2, rej2) => connection.query('UPDATE tasks SET task_day = ? WHERE id = ?', [dayStr, taskId], (e) => e ? rej2(e) : res2()));
+            } else if (await checkColumn('day')) {
+              await new Promise((res2, rej2) => connection.query('UPDATE tasks SET day = ? WHERE id = ?', [dayStr, taskId], (e) => e ? rej2(e) : res2()));
+            }
+          }
+        } catch (e) {
+          console.error('Failed to persist day column for task:', e && e.message);
+        }
 
         if (!taskId || !Array.isArray(assigned_to) || assigned_to.length === 0) {
           return connection.rollback(() => {
@@ -1021,6 +1037,8 @@ router.get('/', async (req, res) => {
           description: r.description || null,
           stage: r.stage || null,
           taskDate: r.taskDate ? new Date(r.taskDate).toISOString() : null,
+          day: r.taskDate ? (new Date(r.taskDate).toISOString().split('T')[0]) : null,
+          dayName: r.taskDate ? dayjs(r.taskDate).format('ddd') : null,
           priority: r.priority || null,
           timeAlloted: r.time_alloted != null ? Number(r.time_alloted) : null,
           estimatedHours: r.estimated_hours != null ? Number(r.estimated_hours) : (r.time_alloted != null ? Number(r.time_alloted) : null),
@@ -1247,6 +1265,8 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
                 description: rows[0].description,
                 stage: rows[0].stage,
                 taskDate: rows[0].taskDate ? new Date(rows[0].taskDate).toISOString() : null,
+                day: rows[0].taskDate ? (new Date(rows[0].taskDate).toISOString().split('T')[0]) : null,
+                dayName: rows[0].taskDate ? dayjs(rows[0].taskDate).format('ddd') : null,
                 priority: rows[0].priority,
                 timeAlloted: rows[0].time_alloted ? Number(rows[0].time_alloted) : null,
                 client: rows[0].client_id ? { id: String(rows[0].client_id), name: rows[0].client_name } : null,
@@ -1257,6 +1277,19 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
                   email: rows[0].assigned_user_emails?.split(',')[i] || null
                 }))
               } : { taskId };
+
+              // Persist day-only column on update if present
+              try {
+                const dayStr = rows[0].taskDate ? (new Date(rows[0].taskDate).toISOString().split('T')[0]) : null;
+                if (dayStr) {
+                  if (await hasColumn('tasks', 'task_day')) {
+                    await new Promise((res2, rej2) => connection.query('UPDATE tasks SET task_day = ? WHERE id = ?', [dayStr, internalTaskId], (e) => e ? rej2(e) : res2()));
+                  }
+                  if (await hasColumn('tasks', 'day')) {
+                    await new Promise((res2, rej2) => connection.query('UPDATE tasks SET day = ? WHERE id = ?', [dayStr, internalTaskId], (e) => e ? rej2(e) : res2()));
+                  }
+                }
+              } catch (e) { logger.warn('Failed to persist day column on update: ' + (e && e.message)); }
 
               // 7. ✅ SEND EMAILS (Valid emails only)
               if (reassigned && Array.isArray(taskObj.assignedUsers)) {
@@ -1623,6 +1656,8 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
           stage: t.stage,
           status: t.status,
           taskDate: t.taskDate,
+          day: t.taskDate ? (new Date(t.taskDate).toISOString().split('T')[0]) : null,
+          dayName: t.taskDate ? dayjs(t.taskDate).format('ddd') : null,
         },
         // Project aggregate working hours
         project_total_time_seconds: projectHours,
@@ -1884,6 +1919,8 @@ router.get("/gettaskss", (req, res) => {
             description: row.description,
             stage: row.stage,
             taskDate: row.taskDate,
+            day: row.taskDate ? (new Date(row.taskDate).toISOString().split('T')[0]) : null,
+            dayName: row.taskDate ? dayjs(row.taskDate).format('ddd') : null,
             priority: row.priority,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
@@ -2066,6 +2103,8 @@ router.get("/gettasks", (req, res) => {
             title: row.title,
             stage: row.stage,
             taskDate: row.taskDate,
+            day: row.taskDate ? (new Date(row.taskDate).toISOString().split('T')[0]) : null,
+            dayName: row.taskDate ? dayjs(row.taskDate).format('ddd') : null,
             priority: row.priority,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
@@ -3458,3 +3497,51 @@ router.get('/:id/timeline', requireRole(['Admin', 'Manager', 'Employee']), async
 });
 
 module.exports = router;
+
+// GET /api/projects/tasks/weekday-activity
+// Returns last 7 days activity grouped by day with optional task lists
+router.get('/weekday-activity', requireRole(['Admin','Manager','Employee']), async (req, res) => {
+  try {
+    // Determine which date column to use: prefer task_day, then taskDate, then createdAt
+    const useTaskDay = await hasColumn('tasks', 'task_day');
+    const useTaskDate = await hasColumn('tasks', 'taskDate');
+    const dateExpr = useTaskDay ? 'DATE(task_day)' : (useTaskDate ? 'DATE(taskDate)' : 'DATE(createdAt)');
+
+    // Fetch counts per day for last 7 days
+    const countsSql = `SELECT ${dateExpr} as day, COUNT(*) as tasks FROM tasks WHERE ${dateExpr} BETWEEN DATE_SUB(CURDATE(), INTERVAL 6 DAY) AND CURDATE() GROUP BY ${dateExpr} ORDER BY ${dateExpr}`;
+    const counts = await q(countsSql);
+
+    // Fetch task rows in the same range to populate tasksList
+    const tasksSql = `SELECT id, public_id, title, status, priority, ${useTaskDay ? 'task_day as dueDate' : (useTaskDate ? 'taskDate as dueDate' : 'createdAt as dueDate')} FROM tasks WHERE ${dateExpr} BETWEEN DATE_SUB(CURDATE(), INTERVAL 6 DAY) AND CURDATE() ORDER BY ${dateExpr} ASC, id ASC`;
+    const taskRows = await q(tasksSql);
+
+    // Map tasks by date string
+    const tasksByDate = {};
+    (taskRows || []).forEach(t => {
+      const dt = t.dueDate ? new Date(t.dueDate).toISOString().split('T')[0] : null;
+      if (!dt) return;
+      if (!tasksByDate[dt]) tasksByDate[dt] = [];
+      tasksByDate[dt].push({ id: t.id, title: t.title, status: t.status, priority: t.priority || 'Medium', dueDate: t.dueDate ? new Date(t.dueDate).toISOString() : null });
+    });
+
+    // Build payload for last 7 calendar days (oldest -> newest)
+    const payload = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dayStr = d.toISOString().split('T')[0];
+      const weekday = dayjs(d).format('ddd');
+      const countRow = (counts || []).find(r => r.day && (new Date(r.day).toISOString().split('T')[0] === dayStr));
+      const cnt = countRow ? Number(countRow.tasks) : 0;
+      // simple color selection
+      const color = cnt >= 8 ? '#10B981' : (cnt >= 4 ? '#3B82F6' : '#F59E0B');
+      const status = cnt >= 8 ? 'High Activity' : (cnt >=4 ? 'Medium Activity' : 'Low Activity');
+      payload.push({ day: weekday, tasks: cnt, color, status, tasksList: tasksByDate[dayStr] || [] });
+    }
+
+    return res.json({ status: 'success', data: payload, requestId: `REQ-${Math.floor(Math.random()*100000)}`, timestamp: new Date().toISOString() });
+  } catch (e) {
+    console.error('weekday-activity error:', e && e.message);
+    return res.status(500).json({ status: 'error', message: 'Unable to fetch weekday activity', error: e && e.message });
+  }
+});

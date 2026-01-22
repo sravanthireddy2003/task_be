@@ -383,5 +383,17 @@ app.use('/api/documents', documentRoutes);
 const reportRoutes = require(__root + 'routes/reportRoutes');
 app.use('/api/reports', reportRoutes);
 
+// Backwards-compatible redirect: support callers hitting /projects (legacy)
+// Redirect to /api/projects preserving method and query string (307 Temporary Redirect)
+app.use('/projects', (req, res) => {
+  return res.redirect(307, '/api/projects' + req.url);
+});
+
+// Backwards-compatible redirect: support callers hitting /documents (legacy)
+// Redirect to /api/documents preserving method and query string (307 Temporary Redirect)
+app.use('/documents', (req, res) => {
+  return res.redirect(307, '/api/documents' + req.url);
+});
+
 
 module.exports = server;

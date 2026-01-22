@@ -267,9 +267,22 @@ module.exports = {
       const filters = { from: req.query.from, to: req.query.to, action: req.query.action };
       const base = await buildBaseQuery(filters);
 
-      // Restrict to logs where actor_id is the requesting user
-      const whereClause = base.whereClause ? (base.whereClause + ' AND a.actor_id = ?') : 'WHERE a.actor_id = ?';
-      const params = [...base.params, req.user && (req.user._id || req.user.id)];
+      // Restrict to logs where actor_id matches the requesting user.
+      // Support both internal (`_id`) and public (`public_id` or `id`) identifiers because
+      // audit entries may store either form depending on how they were created.
+      const actorInternal = req.user && (req.user._id || null);
+      const actorPublic = req.user && (req.user.public_id || req.user.id || null);
+      const actorIds = [];
+      if (actorInternal !== null && actorInternal !== undefined) actorIds.push(actorInternal);
+      if (actorPublic !== null && actorPublic !== undefined && actorPublic !== actorInternal) actorIds.push(actorPublic);
+
+      if (actorIds.length === 0) {
+        // No actor identifiers available on the request — return empty result rather than a DB error
+        return res.json({ success: true, data: { total: 0, page, perPage, logs: [] } });
+      }
+
+      const whereClause = base.whereClause ? (base.whereClause + ' AND (a.actor_id IN (?))') : 'WHERE (a.actor_id IN (?))';
+      const params = [...base.params, actorIds];
 
       // employee: support all=true (but still restricted to own actor_id)
       const returnAll = String(req.query.all || '').toLowerCase() === 'true';
