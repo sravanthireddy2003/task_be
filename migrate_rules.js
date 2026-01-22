@@ -122,10 +122,9 @@ const rules = [
   // Task Management Rules
   {
     ruleCode: 'task_creation',
-    description: 'Validate task creation permissions and data',
+    description: 'Allow Admin and Manager to create tasks',
     conditions: JSON.stringify({
-      userRole: 'MANAGER',
-      action: 'POST__TASKS_CREATEJSON',
+      userRole: { $in: ['ADMIN', 'MANAGER', 'Admin', 'Manager'] },
       payload: {
         title: { $exists: true },
         projectId: { $exists: true }

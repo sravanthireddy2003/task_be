@@ -539,6 +539,26 @@ if (primaryContactEmail || email) {
       }
     })();
 
+    // Return detailed success response
+    return res.status(201).json({
+      success: true,
+      message: 'Client created successfully',
+      data: {
+        id: clientId,
+        ref,
+        name,
+        company,
+        email: primaryContactEmail || email || null,
+        phone,
+        status,
+        managerId: resolvedManagerId,
+        documentsCount: attachedDocuments.length,
+        contactsCount: (Array.isArray(contacts) ? contacts.length : 0),
+        viewerInfo: viewerInfo || null,
+        clientCredentials: clientCredentials ? { email: clientCredentials.email, publicId: clientCredentials.publicId } : null
+      }
+    });
+
   } catch (e) {
     logger.error('Error creating client: ' + e.message);
     return res.status(500).json({ success: false, error: e.message });
@@ -726,47 +746,161 @@ router.get('/:id', ruleEngine(RULES.CLIENT_VIEW), requireRole(['Admin','Manager'
   } catch (e) { logger.error('Error fetching client details: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
 });
  
-router.put('/:id', ruleEngine(RULES.CLIENT_UPDATE), requireRole(['Admin','Manager']), async (req, res) => {
-  try {
-    const id = req.params.id;
-    const payload = req.body || {};
-    delete payload.id;
-    delete payload.ref;
-    if (payload.managerId !== undefined && payload.manager_id === undefined) {
-      payload.manager_id = payload.managerId;
+router.put(
+  '/:id',
+  ruleEngine(RULES.CLIENT_UPDATE),
+  requireRole(['Admin', 'Manager']),
+  async (req, res) => {
+    try {
+      const id = req.params.id;
+
+      /* 1️⃣ Fetch existing client */
+      const existing = await q(
+        `SELECT 
+          id, name, company, billing_address, office_address,
+          gst_number, tax_id, industry, notes, status,
+          manager_id, email, phone, district, state, pincode
+         FROM clientss
+         WHERE id = ?
+         LIMIT 1`,
+        [id]
+      );
+
+      if (!existing || existing.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'Client not found'
+        });
+      }
+
+      const before = existing[0];
+
+      /* 2️⃣ Prepare payload */
+      let payload = req.body || {};
+      delete payload.id;
+      delete payload.ref;
+
+      // camelCase → snake_case
+      if (payload.managerId !== undefined) payload.manager_id = payload.managerId;
+      if (payload.taxId !== undefined) payload.tax_id = payload.taxId;
+      if (payload.billingAddress !== undefined) payload.billing_address = payload.billingAddress;
+      if (payload.officeAddress !== undefined) payload.office_address = payload.officeAddress;
+      if (payload.gstNumber !== undefined) payload.gst_number = payload.gstNumber;
+
+      // address fallback
+      if (payload.address !== undefined && !payload.billing_address) {
+        payload.billing_address = payload.address;
+      }
+
+      // cleanup camelCase
       delete payload.managerId;
-    }
-    if (payload.manager_id !== undefined) {
-      if (!isEmptyValue(payload.manager_id)) {
-        const resolved = await resolveUserId(payload.manager_id);
-        if (resolved === null) {
-          return res.status(404).json({ success: false, error: 'Manager not found' });
+      delete payload.taxId;
+      delete payload.billingAddress;
+      delete payload.officeAddress;
+      delete payload.gstNumber;
+      delete payload.address;
+
+      /* 3️⃣ Resolve manager ID */
+      if (payload.manager_id !== undefined) {
+        if (payload.manager_id) {
+          const resolved = await resolveUserId(payload.manager_id);
+          if (!resolved) {
+            return res.status(404).json({
+              success: false,
+              message: 'Manager not found'
+            });
+          }
+          payload.manager_id = resolved;
+        } else {
+          payload.manager_id = null;
         }
-        payload.manager_id = resolved;
-      } else {
-        payload.manager_id = null;
       }
+
+      /* 4️⃣ Build update query (only changed fields) */
+      const allowed = [
+        'name', 'company', 'billing_address', 'office_address',
+        'gst_number', 'tax_id', 'industry', 'notes', 'status',
+        'manager_id', 'email', 'phone', 'district', 'state', 'pincode'
+      ];
+
+      const setCols = [];
+      const params = [];
+
+      for (const key of allowed) {
+        if (payload[key] !== undefined && String(payload[key]) !== String(before[key])) {
+          setCols.push(`${key} = ?`);
+          params.push(payload[key]);
+        }
+      }
+
+      /* 5️⃣ No changes */
+      if (setCols.length === 0) {
+        return res.json({
+          success: true,
+          message: 'No changes detected',
+          data: before
+        });
+      }
+
+      /* 6️⃣ Update */
+      params.push(id);
+      await q(
+        `UPDATE clientss SET ${setCols.join(', ')} WHERE id = ?`,
+        params
+      );
+
+      /* 7️⃣ Fetch updated client */
+      const updated = await q(
+        `SELECT 
+          id, name, company, billing_address, office_address,
+          gst_number, tax_id, industry, notes, status,
+          manager_id, email, phone, district, state, pincode
+         FROM clientss
+         WHERE id = ?
+         LIMIT 1`,
+        [id]
+      );
+
+      /* 8️⃣ Activity log (non-blocking) */
+      q(
+        `INSERT INTO client_activity_logs 
+         (client_id, actor_id, action, details, created_at)
+         VALUES (?, ?, 'update', ?, NOW())`,
+        [
+          id,
+          req.user?._id || null,
+          JSON.stringify(payload)
+        ]
+      ).catch(() => {});
+
+      /* 9️⃣ Notification (non-blocking) */
+      NotificationService.createAndSendToRoles(
+        ['Admin'],
+        'Client Updated',
+        `Client "${updated[0].name}" was updated`,
+        'CLIENT_UPDATED',
+        'client',
+        id,
+        req.user?.tenant_id
+      ).catch(() => {});
+
+      /* 🔟 FINAL CLEAN RESPONSE */
+      return res.json({
+        success: true,
+        message: 'Client updated successfully',
+        data: updated[0]
+      });
+
+    } catch (err) {
+      logger.error('Client update error:', err);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update client'
+      });
     }
-    const allowed = ['name','company','billing_address','office_address','gst_number','tax_id','industry','notes','status','manager_id'];
-    const setCols = [];
-    const params = [];
-    for (const k of allowed) if (payload[k] !== undefined) { setCols.push(`${k} = ?`); params.push(payload[k]); }
-    if (setCols.length === 0) return res.status(400).json({ success: false, error: 'No updatable fields provided' });
-    params.push(id);
-    await q(`UPDATE clientss SET ${setCols.join(', ')} WHERE id = ?`, params);
-    await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [id, req.user && req.user._id ? req.user._id : null, 'update', JSON.stringify(payload)]).catch(()=>{});    // Send notification
-    (async () => {
-      try {
-        await NotificationService.createAndSendToRoles(['Admin'], 'Client Updated', `Client with ID "${id}" has been updated`, 'CLIENT_UPDATED', 'client', id, req.user ? req.user.tenant_id : null);
-      } catch (notifErr) {
-        console.error('Client update notification error:', notifErr);
-      }
-    })();    return res.json({ success: true, message: 'Client updated' });
-  } catch (e) {
-    logger.error('Error updating client: ' + e.message);
-    return res.status(500).json({ success: false, error: e.message });
   }
-});
+);
+
  
 async function permanentlyDeleteClientById(id) {
   const viewerRows = await q('SELECT user_id FROM client_viewers WHERE client_id = ?', [id]).catch(() => []);
