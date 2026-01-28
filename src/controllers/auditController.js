@@ -1,4 +1,4 @@
-const db = require(__root + 'db');
+const db = require('../db');
 
 const q = (sql, params = []) => new Promise((resolve, reject) => db.query(sql, params, (e, r) => e ? reject(e) : resolve(r)));
 
@@ -108,6 +108,20 @@ function normalizeLogRow(r) {
 }
 
 module.exports = {
+  // Generic programmatic audit logger used by other modules
+  log: async (entry) => {
+    try {
+      const actorId = entry.user_id || entry.actor_id || null;
+      const tenantId = entry.tenant_id || null;
+      const action = entry.action || 'ACTION';
+      const entity = entry.entity || null;
+      const entityId = entry.entity_id || entry.entityId || null;
+      const details = entry.metadata || entry.details || {};
+      await q(`INSERT INTO audit_logs (actor_id, tenant_id, action, entity, entity_id, details, createdAt) VALUES (?, ?, ?, ?, ?, ?, NOW())`, [actorId, tenantId, action, entity, entityId, JSON.stringify(details)]);
+    } catch (e) {
+      console.error('auditController.log failed:', e && e.message);
+    }
+  },
   // GET /api/admin/audit-logs
   admin: async (req, res, next) => {
     try {
@@ -169,7 +183,7 @@ module.exports = {
       // gather accessible client ids from RoleBasedLoginResponse if available
       let assignedClientIds = [];
       try {
-        const RoleBasedLoginResponse = require(__root + 'controller/utils/RoleBasedLoginResponse');
+        const RoleBasedLoginResponse = require('../controller/utils/RoleBasedLoginResponse');
         const resources = await RoleBasedLoginResponse.getAccessibleResources(managerInternalId, req.user.role, req.user.tenant_id, managerPublicId);
         if (resources && Array.isArray(resources.assignedClientIds)) assignedClientIds = resources.assignedClientIds;
       } catch (e) {

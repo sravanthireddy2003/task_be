@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const path = require('path');
 
 const NotificationService = require('../services/notificationService');
+const workflowService = require(__root + 'workflow/workflowService');
 
 const q = (sql, params = []) => new Promise((resolve, reject) => db.query(sql, params, (e, r) => e ? reject(e) : resolve(r)));
 
@@ -135,6 +136,23 @@ module.exports = {
         if (storageResult && storageResult.storagePath && String(storageResult.storagePath).startsWith('/uploads/')) {
           publicUrl = baseUrl + storageResult.storagePath.split('/').map(encodeURIComponent).join('/').replace('%2F', '/');
         } else if (storageResult && storageResult.storagePath) publicUrl = storageResult.storagePath;
+
+        // If upload is marked sensitive, trigger approval workflow (best-effort)
+        try {
+          const sensitiveFlag = (req.body && (req.body.sensitive === '1' || String(req.body.sensitive).toLowerCase() === 'true' || String(req.body.sensitivity).toLowerCase() === 'high'));
+          if (sensitiveFlag) {
+            const tenantId = req.user && req.user.tenant_id;
+            if (tenantId) {
+              const templates = await workflowService.listTemplates(tenantId);
+              const tpl = (templates || []).find(t => String(t.trigger_event).toUpperCase() === 'DOCUMENT_SENSITIVE_UPLOAD');
+              if (tpl) {
+                await workflowService.createInstance({ tenant_id: tenantId, template_id: tpl.id, entity_type: 'DOCUMENT', entity_id: docId, created_by: (req.user && (req.user._id || req.user.id)) || null });
+              }
+            }
+          }
+        } catch (e) {
+          console.error('Workflow trigger (sensitive upload) failed:', e && e.message);
+        }
 
         return res.status(201).json({ success: true, data: { documentId: docId, fileName: file.originalname, fileType: file.mimetype, fileSize: file.size, file_url: publicUrl } });
       } catch (err) {

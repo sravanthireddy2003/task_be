@@ -3,23 +3,16 @@ const router = express.Router();
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const auditController = require(__root + 'controllers/auditController');
 
-// Admin routes
+// Admin routes - protect only the audit-logs endpoint, not all /api/admin paths
 const adminRouter = express.Router();
-adminRouter.use(requireAuth);
-adminRouter.use(requireRole(['Admin']));
-adminRouter.get('/audit-logs', auditController.admin);
+adminRouter.get('/audit-logs', requireAuth, requireRole(['Admin']), auditController.admin);
 
-// GJKNDHJKMNB
-// Manager routes
+// Manager routes - restrict only the audit-logs endpoint
 const managerRouter = express.Router();
-managerRouter.use(requireAuth);
-managerRouter.use(requireRole(['Manager','Admin']));
-managerRouter.get('/audit-logs', auditController.manager);
+managerRouter.get('/audit-logs', requireAuth, requireRole(['Manager','Admin']), auditController.manager);
 
-// Employee routes
+// Employee routes - restrict only the audit-logs endpoint
 const employeeRouter = express.Router();
-employeeRouter.use(requireAuth);
-employeeRouter.use(requireRole(['Employee','Manager','Admin']));
-employeeRouter.get('/audit-logs', auditController.employee);
+employeeRouter.get('/audit-logs', requireAuth, requireRole(['Employee','Manager','Admin']), auditController.employee);
 
 module.exports = { admin: adminRouter, manager: managerRouter, employee: employeeRouter };

@@ -255,8 +255,27 @@ io.on('connection', async (socket) => {
 // Make io available globally
 global.io = io;
 
+// Start workflow SLA worker (non-blocking) - commented out as not implemented in new workflow module
+// try {
+//   const workflowSlaWorker = require(__root + 'workflow/workflowSlaWorker');
+//   if (workflowSlaWorker && typeof workflowSlaWorker.start === 'function') workflowSlaWorker.start();
+// } catch (e) {
+//   console.error('Failed to start workflow SLA worker:', e && e.message);
+// }
+
 app.use(bodyParser.urlencoded({ extended: false }))
 app.use(bodyParser.json())
+// Accept Vite dev-server pings (Content-Type: text/x-vite-ping)
+app.use((req, res, next) => {
+  try {
+    const ct = req.headers['content-type'] || '';
+    if (ct.indexOf('text/x-vite-ping') === 0) {
+      // quick healthy response for Vite HMR pings
+      return res.status(200).send('pong');
+    }
+  } catch (e) { /* ignore and continue */ }
+  return next();
+});
 app.use(cors());
 // Note: rule engine is applied per-route where needed to avoid protecting public endpoints like /api/auth/login
 // Serve uploads from project root `uploads` directory (not src/uploads)
@@ -378,6 +397,10 @@ app.use('/api/projects', chatRoutes);
 
 const documentRoutes = require(__root + 'routes/documentRoutes');
 app.use('/api/documents', documentRoutes);
+
+// Workflow routes
+const workflowRoutes = require(__root + 'workflow/workflowRoutes');
+app.use('/api/workflow', workflowRoutes);
 
 // Reports routes
 const reportRoutes = require(__root + 'routes/reportRoutes');
