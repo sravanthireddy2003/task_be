@@ -454,6 +454,81 @@ getMyTasks: async (req, res) => {
     return res.status(error.status || 500).json({ success: false, error: error.message });
   }
 },
+
+tasksOverview: async (req, res) => {
+  try {
+    return res.json({
+      success: true,
+      data: {
+        metrics: {
+          totalTasks: 8,
+          completedTasks: 3,
+          pendingTasks: 4,
+          reassignedTasks: 1
+        },
+        tasks: [
+          {
+            id: 't101',
+            title: 'Fix login issue',
+            description: 'Resolve login redirect bug',
+            status: 'pending',
+
+            reassignment: {
+              requested: true,
+              status: 'pending',
+              requestedBy: 'employee',
+              requestedAt: '2026-01-25T10:30:00Z',
+              reason: 'Workload high'
+            }
+          },
+          {
+            id: 't102',
+            title: 'Create dashboard UI',
+            description: 'Employee dashboard layout',
+            status: 'in_progress',
+
+            reassignment: {
+              requested: false,
+              status: null
+            }
+          },
+          {
+            id: 't103',
+            title: 'API integration',
+            description: 'Integrate task APIs',
+            status: 'completed',
+
+            reassignment: {
+              requested: false,
+              status: null
+            }
+          },
+          {
+            id: 't104',
+            title: 'Write unit tests',
+            description: 'Coverage for task module',
+            status: 'pending',
+
+            reassignment: {
+              requested: true,
+              status: 'approved',
+              approvedBy: 'manager',
+              approvedAt: '2026-01-24T14:15:00Z'
+            }
+          }
+        ],
+
+        rules: {
+          allowReassignment: true,
+          allowMultipleRequestsForSameTask: false,
+          allowedStatuses: ['pending', 'in_progress']
+        }
+      }
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({ success: false, error: error.message });
+  }
+},
  createChecklistItem: async (req, res) => {
     try {
       const { taskId } = req.params;

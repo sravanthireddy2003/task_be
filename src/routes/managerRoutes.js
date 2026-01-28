@@ -7,6 +7,7 @@ const Manager = require(__root + 'controllers/managerController');
 router.use(auth, allowRoles('Manager'));
 
 router.get('/dashboard', Manager.getManagerDashboard);
+router.get('/overview', Manager.getManagerOverview);
 router.get('/clients', Manager.getAssignedClients);
 router.get('/projects', Manager.getAssignedProjects);
 router.get('/timeline', Manager.getTaskTimeline);

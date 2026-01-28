@@ -7,6 +7,7 @@ const Employee = require(__root + 'controllers/employeeController');
 router.use(auth, allowRoles('Employee'));
 
 router.get('/my-tasks', Employee.getMyTasks);
+router.get('/tasks-overview', Employee.tasksOverview);
 router.post('/subtask', Employee.addSubtask);
 router.put('/subtask/:id', Employee.updateSubtask);
 router.post('/subtask/:id/complete', Employee.softDeleteChecklistItem);

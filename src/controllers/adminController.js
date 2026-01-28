@@ -885,7 +885,72 @@ module.exports = {
             } catch (er) { /* silent */ }
             return r;
           });
-          res.json({ success: true, data: out });
+          // Attach checklist and activityTimeline similar to manager/employee responses
+          try {
+            const taskIds = out.map(r => r.id).filter(Boolean);
+            if (!taskIds.length) return res.json({ success: true, data: out });
+
+            db.query(
+              'SELECT id, task_id, title, description, due_date, tag, created_at, updated_at, status, estimated_hours, completed_at FROM subtasks WHERE task_id IN (?)',
+              [taskIds],
+              (scErr, scRows) => {
+                if (scErr) return res.json({ success: true, data: out });
+                const checklistMap = {};
+                (scRows || []).forEach(subtask => {
+                  if (!subtask || subtask.task_id === undefined || subtask.task_id === null) return;
+                  const key = String(subtask.task_id);
+                  if (!checklistMap[key]) checklistMap[key] = [];
+                  checklistMap[key].push({
+                    id: subtask.id != null ? String(subtask.id) : null,
+                    title: subtask.title || null,
+                    description: subtask.description || null,
+                    status: subtask.status || null,
+                    dueDate: subtask.due_date ? new Date(subtask.due_date).toISOString() : null,
+                    completedAt: subtask.completed_at ? new Date(subtask.completed_at).toISOString() : null,
+                    createdAt: subtask.created_at ? new Date(subtask.created_at).toISOString() : null,
+                    updatedAt: subtask.updated_at ? new Date(subtask.updated_at).toISOString() : null,
+                    tag: subtask.tag || null,
+                    estimatedHours: subtask.estimated_hours != null ? Number(subtask.estimated_hours) : null
+                  });
+                });
+
+                db.query(
+                  `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt, u._id AS user_id, u.name AS user_name
+                   FROM task_activities ta
+                   LEFT JOIN users u ON ta.user_id = u._id
+                   WHERE ta.task_id IN (?)
+                   ORDER BY ta.createdAt DESC`,
+                  [taskIds],
+                  (taErr, taRows) => {
+                    const activityMap = {};
+                    if (!taErr && Array.isArray(taRows)) {
+                      (taRows || []).forEach(activity => {
+                        if (!activity || activity.task_id === undefined || activity.task_id === null) return;
+                        const key = String(activity.task_id);
+                        if (!activityMap[key]) activityMap[key] = [];
+                        activityMap[key].push({
+                          type: activity.type || null,
+                          activity: activity.activity || null,
+                          createdAt: activity.createdAt ? new Date(activity.createdAt).toISOString() : null,
+                          user: activity.user_id ? { id: String(activity.user_id), name: activity.user_name || null } : null
+                        });
+                      });
+                    }
+
+                    const final = out.map(r => {
+                      const key = String(r.id);
+                      r.checklist = checklistMap[key] || [];
+                      r.activityTimeline = activityMap[key] || [];
+                      return r;
+                    });
+                    return res.json({ success: true, data: final });
+                  }
+                );
+              }
+            );
+          } catch (e) {
+            return res.json({ success: true, data: out });
+          }
         });
       } catch (e) {
         return res.json({ success: true, data: rows });
