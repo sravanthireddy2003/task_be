@@ -21,6 +21,7 @@ const winston = require("winston");
 const { google } = require("googleapis");
 const dayjs = require('dayjs');
 const NotificationService = require(__root + 'services/notificationService');
+const workflowService = require(__root + 'workflow/workflowService');
 router.use(requireAuth);        // ✅ Sets req.user from JWT
 router.use(tenantMiddleware); 
 
@@ -106,6 +107,11 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
       if (await hasColumn('tasks', 'live_timer')) cols.push('t.live_timer');
       if (await hasColumn('tasks', 'total_duration')) cols.push('t.total_duration');
       if (await hasColumn('tasks', 'completed_at')) cols.push('t.completed_at');
+      if (await hasColumn('tasks', 'approved_by')) cols.push('t.approved_by');
+      if (await hasColumn('tasks', 'approved_at')) cols.push('t.approved_at');
+      if (await hasColumn('tasks', 'rejection_reason')) cols.push('t.rejection_reason');
+      if (await hasColumn('tasks', 'rejected_by')) cols.push('t.rejected_by');
+      if (await hasColumn('tasks', 'rejected_at')) cols.push('t.rejected_at');
       if (cols.length) optionalSelect = ', ' + cols.join(', ');
     } catch (e) { /* ignore */ }
 
@@ -125,12 +131,18 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
         t.updatedAt${optionalSelect},
         c.id AS client_id,
         c.name AS client_name,
+        ap.name AS approved_by_name,
+        ap.public_id AS approved_by_public_id,
+        rj.name AS rejected_by_name,
+        rj.public_id AS rejected_by_public_id,
         GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
         GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
         GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names,
         GROUP_CONCAT(DISTINCT COALESCE(ta.is_read_only, 0)) AS assigned_user_read_only
       FROM tasks t
       LEFT JOIN clientss c ON t.client_id = c.id
+      LEFT JOIN users ap ON t.approved_by = ap._id
+      LEFT JOIN users rj ON t.rejected_by = rj._id
       LEFT JOIN taskassignments ta ON ta.task_id = t.id
       LEFT JOIN users u ON u._id = ta.user_id
       ${whereClause}
@@ -308,6 +320,19 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
             } catch (e) { return '00:00:00'; }
           })(),
           completed_at: r.completed_at ? new Date(r.completed_at).toISOString() : null,
+          approved_by: r.approved_by_name ? {
+            id: r.approved_by_public_id,
+            name: r.approved_by_name
+          } : null,
+          approved_at: r.approved_at ? new Date(r.approved_at).toISOString() : null,
+          rejection: r.rejection_reason ? {
+            reason: r.rejection_reason,
+            rejected_by: r.rejected_by_name ? {
+              id: r.rejected_by_public_id,
+              name: r.rejected_by_name
+            } : null,
+            rejected_at: r.rejected_at ? new Date(r.rejected_at).toISOString() : null
+          } : null,
           summary: (() => {
             try {
               const now = new Date();
@@ -798,6 +823,19 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
         } catch (e) {
           summary.error = 'Could not calculate summary';
         }
+        // Trigger any configured workflow template for TASK_CREATED (best-effort)
+        try {
+          if (req.user && req.user.tenant_id) {
+            const templates = await workflowService.listTemplates(req.user.tenant_id);
+            const tpl = (templates || []).find(t => String(t.trigger_event).toUpperCase() === 'TASK_CREATED');
+            if (tpl) {
+              await workflowService.createInstance({ tenant_id: req.user.tenant_id, template_id: tpl.id, entity_type: 'TASK', entity_id: String(result.taskId), created_by: (req.user && req.user._id) || null });
+            }
+          }
+        } catch (e) {
+          console.error('Workflow trigger failed (non-fatal):', e && e.message);
+        }
+
         res.status(201).json({
           message: "Task created and assignments completed successfully",
           ...result,
@@ -862,6 +900,11 @@ router.get('/', async (req, res) => {
       if (await hasColumn('tasks', 'live_timer')) cols.push('t.live_timer');
       if (await hasColumn('tasks', 'total_duration')) cols.push('t.total_duration');
       if (await hasColumn('tasks', 'completed_at')) cols.push('t.completed_at');
+      if (await hasColumn('tasks', 'approved_by')) cols.push('t.approved_by');
+      if (await hasColumn('tasks', 'approved_at')) cols.push('t.approved_at');
+      if (await hasColumn('tasks', 'rejection_reason')) cols.push('t.rejection_reason');
+      if (await hasColumn('tasks', 'rejected_by')) cols.push('t.rejected_by');
+      if (await hasColumn('tasks', 'rejected_at')) cols.push('t.rejected_at');
       if (cols.length) optionalSelect = ', ' + cols.join(', ');
     } catch (e) { /* ignore */ }
 
@@ -918,11 +961,17 @@ router.get('/', async (req, res) => {
           t.updatedAt${optionalSelect},
           c.id AS client_id,
           c.name AS client_name,
+          ap.name AS approved_by_name,
+          ap.public_id AS approved_by_public_id,
+          rj.name AS rejected_by_name,
+          rj.public_id AS rejected_by_public_id,
           GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
           GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
           GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names
         FROM tasks t
         LEFT JOIN clientss c ON t.client_id = c.id
+        LEFT JOIN users ap ON t.approved_by = ap._id
+        LEFT JOIN users rj ON t.rejected_by = rj._id
         LEFT JOIN taskassignments ta ON ta.task_id = t.id
         LEFT JOIN users u ON u._id = ta.user_id
         WHERE (t.project_id = ?${projectPublicIdToUse ? ' OR t.project_public_id = ?' : ''}) ${hasIsDeleted && !includeDeleted ? 'AND t.isDeleted != 1' : ''}
@@ -947,11 +996,17 @@ router.get('/', async (req, res) => {
           t.updatedAt${optionalSelect},
           c.id AS client_id,
           c.name AS client_name,
+          ap.name AS approved_by_name,
+          ap.public_id AS approved_by_public_id,
+          rj.name AS rejected_by_name,
+          rj.public_id AS rejected_by_public_id,
           GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
           GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
           GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names
         FROM tasks t
         LEFT JOIN clientss c ON t.client_id = c.id
+        LEFT JOIN users ap ON t.approved_by = ap._id
+        LEFT JOIN users rj ON t.rejected_by = rj._id
         LEFT JOIN taskassignments ta ON ta.task_id = t.id
         LEFT JOIN users u ON u._id = ta.user_id
         WHERE t.project_id = ? ${hasIsDeleted && !includeDeleted ? 'AND t.isDeleted != 1' : ''}
@@ -991,11 +1046,17 @@ router.get('/', async (req, res) => {
           t.updatedAt${optionalSelect},
           c.id AS client_id,
           c.name AS client_name,
+          ap.name AS approved_by_name,
+          ap.public_id AS approved_by_public_id,
+          rj.name AS rejected_by_name,
+          rj.public_id AS rejected_by_public_id,
           GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
           GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
           GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names
         FROM tasks t
         LEFT JOIN clientss c ON t.client_id = c.id
+        LEFT JOIN users ap ON t.approved_by = ap._id
+        LEFT JOIN users rj ON t.rejected_by = rj._id
         LEFT JOIN taskassignments ta ON ta.task_id = t.id
         LEFT JOIN users u ON u._id = ta.user_id
         WHERE t.project_public_id = ? ${hasIsDeleted && !includeDeleted ? 'AND t.isDeleted != 1' : ''}
@@ -1053,6 +1114,19 @@ router.get('/', async (req, res) => {
           total_time_hours: Number((totalSecs / 3600).toFixed(2)),
           total_time_hhmmss: humanDuration,
           completed_at: r.completed_at ? new Date(r.completed_at).toISOString() : null,
+          approved_by: r.approved_by_name ? {
+            id: r.approved_by_public_id,
+            name: r.approved_by_name
+          } : null,
+          approved_at: r.approved_at ? new Date(r.approved_at).toISOString() : null,
+          rejection: r.rejection_reason ? {
+            reason: r.rejection_reason,
+            rejected_by: r.rejected_by_name ? {
+              id: r.rejected_by_public_id,
+              name: r.rejected_by_name
+            } : null,
+            rejected_at: r.rejected_at ? new Date(r.rejected_at).toISOString() : null
+          } : null,
           summary: (() => {
             try {
               const now = new Date();
@@ -1525,12 +1599,13 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
     const normalizedTarget = status.toUpperCase();
 
     // Kanban Rules: Validate transition (Strict Spec Flow)
-    // To Do → In Progress → On Hold → In Progress → Completed
+    // To Do → In Progress → On Hold → In Progress → Review → Completed (via approval)
     const allowedTransitions = {
       'PENDING': ['TO DO', 'IN PROGRESS'],
       'TO DO': ['IN PROGRESS'],
-      'IN PROGRESS': ['ON HOLD', 'COMPLETED'],
+      'IN PROGRESS': ['ON HOLD', 'REVIEW'],
       'ON HOLD': ['IN PROGRESS'],
+      'REVIEW': [],  // Only manager can approve to Completed
       'COMPLETED': []
     };
 
@@ -1542,12 +1617,50 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
       });
     }
 
-    // Update task status
+    let workflowMessage = null;
+    let workflowData = {};
+
+    // Special handling for Review: request workflow transition to Completed
+    if (normalizedTarget === 'REVIEW') {
+      const tenantId = req.tenantId || req.user.tenant_id || 1;
+      console.log(`[DEBUG] Requesting transition for tenantId: ${tenantId}, task: ${resolvedTaskId}`);
+      const transitionResult = await workflowService.requestTransition(tenantId, 'TASK', resolvedTaskId, 'Completed', req.user._id, req.user.role, { reason: 'Employee requesting task completion' });
+
+      if (transitionResult.status === 'APPLIED') {
+        // Should not happen for Employee based on engine rules, but if direct, set to Completed
+        await q('UPDATE tasks SET status = "Completed", updatedAt = NOW() WHERE id = ?', [resolvedTaskId]);
+        return res.json({ success: true, message: 'Task completed directly', data: { status: 'Completed' } });
+      } else if (transitionResult.status === 'PENDING_APPROVAL') {
+        workflowMessage = 'Review requested — sent for manager approval';
+        workflowData = { requestId: transitionResult.requestId };
+      }
+    }
+
+    // Direct update for the target status (Review, On Hold, etc.)
     await q('UPDATE tasks SET status = ?, updatedAt = NOW() WHERE id = ?', [status, resolvedTaskId]);
 
     // Handle time tracking and live timer
     const now = new Date();
-    if (normalizedTarget === 'IN PROGRESS' && normalizedCurrent !== 'IN PROGRESS') {
+    // STOP TIMER if moving to Review or Completed or On Hold
+    if ((normalizedTarget === 'REVIEW' || normalizedTarget === 'COMPLETED' || normalizedTarget === 'ON HOLD') && normalizedCurrent === 'IN PROGRESS') {
+       const lastLog = await q('SELECT timestamp FROM task_time_logs WHERE task_id = ? AND (action = ? OR action = ?) ORDER BY timestamp DESC LIMIT 1', [resolvedTaskId, 'start', 'resume']);
+       let duration = 0;
+       if (lastLog.length > 0) {
+         duration = Math.floor((now - new Date(lastLog[0].timestamp)) / 1000);
+       }
+       
+       const action = normalizedTarget === 'REVIEW' ? 'pause' : (normalizedTarget === 'COMPLETED' ? 'complete' : 'pause');
+       await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp, duration) VALUES (?, ?, ?, ?, ?)', 
+         [resolvedTaskId, req.user._id, action, now, duration]);
+       
+       const timerUpdate = normalizedTarget === 'COMPLETED' 
+         ? 'completed_at = ?, total_duration = COALESCE(total_duration, 0) + ?, live_timer = NULL' 
+         : 'total_duration = COALESCE(total_duration, 0) + ?, live_timer = NULL';
+       const params = normalizedTarget === 'COMPLETED' ? [now, duration, resolvedTaskId] : [duration, resolvedTaskId];
+       
+       await q(`UPDATE tasks SET ${timerUpdate} WHERE id = ?`, params);
+    } 
+    else if (normalizedTarget === 'IN PROGRESS' && normalizedCurrent !== 'IN PROGRESS') {
       // Start/Resume timer
       const action = (normalizedCurrent === 'ON HOLD') ? 'resume' : 'start';
       if (action === 'start') {
@@ -1557,28 +1670,6 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
       }
       await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?)', 
         [resolvedTaskId, req.user._id, action, now]);
-    } else if (normalizedTarget === 'ON HOLD' && normalizedCurrent === 'IN PROGRESS') {
-      // Pause timer
-      const lastLog = await q('SELECT timestamp FROM task_time_logs WHERE task_id = ? AND (action = ? OR action = ?) ORDER BY timestamp DESC LIMIT 1', [resolvedTaskId, 'start', 'resume']);
-      let duration = 0;
-      if (lastLog.length > 0) {
-        duration = Math.floor((now - new Date(lastLog[0].timestamp)) / 1000);
-      }
-      await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp, duration) VALUES (?, ?, ?, ?, ?)', 
-        [resolvedTaskId, req.user._id, 'pause', now, duration]);
-      // Do NOT reset or nullify live_timer; keep it as the last started timestamp
-      await q('UPDATE tasks SET total_duration = COALESCE(total_duration, 0) + ? WHERE id = ?', [duration, resolvedTaskId]);
-    } else if (normalizedTarget === 'COMPLETED' && normalizedCurrent === 'IN PROGRESS') {
-      // Complete task: stop live timer and accumulate duration
-      const lastLog = await q('SELECT timestamp FROM task_time_logs WHERE task_id = ? AND (action = ? OR action = ?) ORDER BY timestamp DESC LIMIT 1', [resolvedTaskId, 'start', 'resume']);
-      let duration = 0;
-      if (lastLog.length > 0) {
-        duration = Math.floor((now - new Date(lastLog[0].timestamp)) / 1000);
-      }
-      // Set completed_at, add accumulated duration, and stop live_timer
-      await q('UPDATE tasks SET completed_at = ?, total_duration = COALESCE(total_duration, 0) + ?, live_timer = NULL WHERE id = ?', [now, duration, resolvedTaskId]);
-      await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp, duration) VALUES (?, ?, ?, ?, ?)', 
-        [resolvedTaskId, req.user._id, 'complete', now, duration]);
     }
 
     // Get updated task
@@ -1635,7 +1726,9 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
 
     res.json({
       success: true,
-      message: normalizedTarget === 'COMPLETED' ? 'Task completed' : `Task status updated to ${status}`,
+      message: normalizedTarget === 'REVIEW' 
+        ? `Task "${task.title}" has been moved to Review and sent to the manager for final approval.`
+        : (normalizedTarget === 'COMPLETED' ? `Task "${task.title}" marked as Completed.` : `Task status updated to ${status}`),
       data: {
         projectId: task.project_public_id || resolvedProjectId,
         taskId: task.public_id,
@@ -1799,9 +1892,14 @@ router.get("/gettaskss", (req, res) => {
           t.priority, 
           t.createdAt, 
           t.updatedAt, 
+          t.status,
+          t.rejection_reason,
+          t.rejected_at,
           u._id AS user_id, 
           u.name AS user_name, 
-          u.role AS user_role
+          u.role AS user_role,
+          rj.name AS rejected_by_name,
+          rj.public_id AS rejected_by_public_id
       FROM 
           tasks t
       LEFT JOIN 
@@ -1810,6 +1908,8 @@ router.get("/gettaskss", (req, res) => {
           users u ON ta.user_id = u._id
       LEFT JOIN 
           clientss c ON t.client_id = c.id
+      LEFT JOIN
+          users rj ON t.rejected_by = rj._id
     `;
 
     // User access control: Employee sees assigned tasks only
@@ -1918,6 +2018,13 @@ router.get("/gettaskss", (req, res) => {
             title: row.title,
             description: row.description,
             stage: row.stage,
+            status: row.status,
+            rejection: row.rejection_reason ? {
+              reason: row.rejection_reason,
+              rejectedBy: row.rejected_by_name || 'Manager',
+              rejectedAt: row.rejected_at,
+              id: row.rejected_by_public_id
+            } : null,
             taskDate: row.taskDate,
             day: row.taskDate ? (new Date(row.taskDate).toISOString().split('T')[0]) : null,
             dayName: row.taskDate ? dayjs(row.taskDate).format('ddd') : null,
@@ -2035,9 +2142,14 @@ router.get("/gettasks", (req, res) => {
               t.priority, 
               t.createdAt, 
               t.updatedAt, 
+              t.status,
+              t.rejection_reason,
+              t.rejected_at,
               u._id AS user_id, 
               u.name AS user_name, 
-              u.role AS user_role
+              u.role AS user_role,
+              rj.name AS rejected_by_name,
+              rj.public_id AS rejected_by_public_id
           FROM 
               tasks t
           LEFT JOIN 
@@ -2045,18 +2157,23 @@ router.get("/gettasks", (req, res) => {
           LEFT JOIN 
               users u ON ta.user_id = u._id
           LEFT JOIN 
-            clientss c ON t.client_id = c.id    
+            clientss c ON t.client_id = c.id
+          LEFT JOIN
+            users rj ON t.rejected_by = rj._id
     `;
 
     // If employee, restrict to assigned tasks
     if (role === 'Employee') {
       query = `
       SELECT 
-         t.id AS task_id, c.name AS client_name, t.title, t.stage, t.taskDate, t.priority, t.createdAt, t.updatedAt, u._id AS user_id, u.name AS user_name, u.role AS user_role
+         t.id AS task_id, c.name AS client_name, t.title, t.stage, t.taskDate, t.priority, t.createdAt, t.updatedAt, t.status, 
+         t.rejection_reason, t.rejected_at,
+         u._id AS user_id, u.name AS user_name, u.role AS user_role, rj.name AS rejected_by_name, rj.public_id AS rejected_by_public_id
       FROM tasks t
       JOIN taskassignments ta ON t.id = ta.task_id
       LEFT JOIN users u ON ta.user_id = u._id
       LEFT JOIN clientss c ON t.client_id = c.id
+      LEFT JOIN users rj ON t.rejected_by = rj._id
       WHERE ta.user_id = ?
       ORDER BY t.createdAt
     `;
@@ -2102,6 +2219,13 @@ router.get("/gettasks", (req, res) => {
             client_name: row.client_name,
             title: row.title,
             stage: row.stage,
+            status: row.status,
+            rejection: row.rejection_reason ? {
+               reason: row.rejection_reason,
+               rejectedBy: row.rejected_by_name || 'Manager',
+               rejectedAt: row.rejected_at,
+               id: row.rejected_by_public_id
+            } : null,
             taskDate: row.taskDate,
             day: row.taskDate ? (new Date(row.taskDate).toISOString().split('T')[0]) : null,
             dayName: row.taskDate ? dayjs(row.taskDate).format('ddd') : null,
@@ -2181,15 +2305,26 @@ router.get("/gettaskbyId/:task_id", (req, res) => {
           t.priority, 
           t.createdAt, 
           t.updatedAt, 
-          t.time_alloted, 
+          t.time_alloted,
+          t.status,
+          t.rejection_reason,
+          t.rejected_at,
+          t.approved_at,
+          t.completed_at,
           u._id AS user_id, 
           u.name AS user_name, 
-          u.role AS user_role
+          u.role AS user_role,
+          rj.name AS rejected_by_name,
+          rj.public_id AS rejected_by_public_id,
+          ap.name AS approved_by_name,
+          ap.public_id AS approved_by_public_id
       FROM 
           tasks t
       LEFT JOIN taskassignments ta ON t.id = ta.task_id
       LEFT JOIN users u ON ta.user_id = u._id
-      LEFT JOIN clientss c ON t.client_id = c.id 
+      LEFT JOIN clientss c ON t.client_id = c.id
+      LEFT JOIN users rj ON t.rejected_by = rj._id
+      LEFT JOIN users ap ON t.approved_by = ap._id
       WHERE 
           t.id = ?
       ORDER BY 
@@ -2223,6 +2358,20 @@ router.get("/gettaskbyId/:task_id", (req, res) => {
           client_name: results[0].client_name,
           description: results[0].description,
           stage: results[0].stage,
+          status: results[0].status,
+          rejection: results[0].rejection_reason ? {
+            reason: results[0].rejection_reason,
+            rejected_by: {
+              name: results[0].rejected_by_name || 'Manager',
+              id: results[0].rejected_by_public_id
+            },
+            rejected_at: results[0].rejected_at
+          } : null,
+          approval: results[0].approved_by_name ? {
+            approved_by: results[0].approved_by_name,
+            approved_by_id: results[0].approved_by_public_id,
+            approved_at: results[0].approved_at
+          } : null,
           taskDate: results[0].taskDate,
           priority: results[0].priority,
           createdAt: results[0].createdAt,
@@ -2697,56 +2846,6 @@ router.get("/fetchtaskhours", async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: "Failed to fetch task hours" });
   }
-});
-
-router.post("/tasks/:id/complete", async (req, res) => {
-  const { id } = req.params;
-  const taskQuery = `SELECT * FROM tasks WHERE id = ?`;
-  const [tasks] = await db.execute(taskQuery, [id]);
-
-  if (tasks.length === 0)
-    return res.status(404).json({ message: "Task not found" });
-
-  const task = tasks[0];
-
-  if (task.recurrence_type !== "none") {
-    let nextDueDate;
-    switch (task.recurrence_type) {
-      case "daily":
-        nextDueDate = dayjs(task.due_date).add(task.recurrence_interval, "day");
-        break;
-      case "weekly":
-        nextDueDate = dayjs(task.due_date).add(
-          task.recurrence_interval,
-          "week"
-        );
-        break;
-      case "monthly":
-        nextDueDate = dayjs(task.due_date).add(
-          task.recurrence_interval,
-          "month"
-        );
-        break;
-    }
-
-    if (
-      !task.recurrence_end ||
-      dayjs(nextDueDate).isBefore(dayjs(task.recurrence_end))
-    ) {
-      const insertQuery = `INSERT INTO tasks (title, description, due_date, recurrence_type, recurrence_interval, recurrence_end)
-                           VALUES (?, ?, ?, ?, ?, ?)`;
-      await db.execute(insertQuery, [
-        task.title,
-        task.description,
-        nextDueDate.format("YYYY-MM-DD HH:mm:ss"),
-        task.recurrence_type,
-        task.recurrence_interval,
-        task.recurrence_end,
-      ]);
-    }
-  }
-
-  res.json({ message: "Task completed, recurrence handled if applicable" });
 });
 
 router.post("/taskdetail/Postactivity", (req, res) => {
@@ -3426,46 +3525,7 @@ router.post('/:id/resume', requireRole(['Employee']), async (req, res) => {
   }
 });
 
-// Complete
-router.post('/:id/complete', requireRole(['Employee']), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user._id;
-
-    const task = await q('SELECT id, public_id, status FROM tasks WHERE id = ? OR public_id = ?', [id, id]);
-    if (task.length === 0) return res.status(404).json({ success: false, error: 'Task not found' });
-    const taskId = task[0].id;
-
-    const normalizedStatus = task[0].status?.toUpperCase().trim();
-    if (normalizedStatus !== 'IN PROGRESS') {
-      return res.status(400).json({ success: false, error: `Cannot complete '${task[0].status}'. Only 'IN PROGRESS'.` });
-    }
-
-    const assignment = await q('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [taskId, userId]);
-    if (assignment.length === 0) return res.status(403).json({ success: false, error: 'Not assigned' });
-
-    const now = new Date();
-    const lastLog = await q('SELECT timestamp FROM task_time_logs WHERE task_id = ? AND action IN ("start", "resume") ORDER BY timestamp DESC LIMIT 1', [taskId]);
-    let duration = lastLog.length > 0 ? Math.floor((now - new Date(lastLog[0].timestamp)) / 1000) : 0;
-
-    await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp, duration) VALUES (?, ?, ?, ?, ?)', [taskId, userId, 'complete', now, duration]);
-    await q('UPDATE tasks SET status = "Completed", completed_at = ?, total_duration = COALESCE(total_duration, 0) + ?, updatedAt = NOW() WHERE id = ?', [now, duration, taskId]);
-
-    // Notify the user
-    await NotificationService.createAndSend(
-      [userId],
-      'Task Completed',
-      `You completed task: ${publicId}`,
-      'TASK_COMPLETED',
-      'task',
-      publicId
-    );
-
-    res.json({ success: true, message: '✅ Completed', data: { status: 'Completed' } });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
+// (Removed duplicate timeline route that returned only logs)
 
 // GET /tasks/:id/timeline
 router.get('/:id/timeline', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
@@ -3475,73 +3535,15 @@ router.get('/:id/timeline', requireRole(['Admin', 'Manager', 'Employee']), async
 
     const taskResult = await db.query('SELECT id FROM tasks WHERE id = ? OR public_id = CAST(? AS CHAR)', [id, id]);
     if (!taskResult?.length) return res.status(404).json({ success: false, error: 'Task not found' });
+
     const taskId = taskResult[0].id;
+    const logs = await q('SELECT * FROM task_time_logs WHERE task_id = ? ORDER BY timestamp DESC', [taskId]);
+    const activities = await q('SELECT * FROM task_activities WHERE task_id = ? ORDER BY created_at DESC', [taskId]);
 
-    if (req.user.role !== 'Admin' && req.user.role !== 'Manager') {
-      const assignment = await db.query('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [taskId, req.user._id]);
-      if (assignment.length === 0) return res.status(403).json({ success: false, error: 'Access denied' });
-    }
-
-    const logs = await db.query(`
-      SELECT l.action, l.timestamp, l.duration, u.name AS user_name, u.public_id
-      FROM task_time_logs l
-      LEFT JOIN users u ON l.user_id = u._id
-      WHERE l.task_id = ?
-      ORDER BY l.timestamp ASC
-    `, [taskId]);
-
-    res.json({ success: true, data: logs });
+    res.json({ success: true, data: { logs, activities } });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });
 
 module.exports = router;
-
-// GET /api/projects/tasks/weekday-activity
-// Returns last 7 days activity grouped by day with optional task lists
-router.get('/weekday-activity', requireRole(['Admin','Manager','Employee']), async (req, res) => {
-  try {
-    // Determine which date column to use: prefer task_day, then taskDate, then createdAt
-    const useTaskDay = await hasColumn('tasks', 'task_day');
-    const useTaskDate = await hasColumn('tasks', 'taskDate');
-    const dateExpr = useTaskDay ? 'DATE(task_day)' : (useTaskDate ? 'DATE(taskDate)' : 'DATE(createdAt)');
-
-    // Fetch counts per day for last 7 days
-    const countsSql = `SELECT ${dateExpr} as day, COUNT(*) as tasks FROM tasks WHERE ${dateExpr} BETWEEN DATE_SUB(CURDATE(), INTERVAL 6 DAY) AND CURDATE() GROUP BY ${dateExpr} ORDER BY ${dateExpr}`;
-    const counts = await q(countsSql);
-
-    // Fetch task rows in the same range to populate tasksList
-    const tasksSql = `SELECT id, public_id, title, status, priority, ${useTaskDay ? 'task_day as dueDate' : (useTaskDate ? 'taskDate as dueDate' : 'createdAt as dueDate')} FROM tasks WHERE ${dateExpr} BETWEEN DATE_SUB(CURDATE(), INTERVAL 6 DAY) AND CURDATE() ORDER BY ${dateExpr} ASC, id ASC`;
-    const taskRows = await q(tasksSql);
-
-    // Map tasks by date string
-    const tasksByDate = {};
-    (taskRows || []).forEach(t => {
-      const dt = t.dueDate ? new Date(t.dueDate).toISOString().split('T')[0] : null;
-      if (!dt) return;
-      if (!tasksByDate[dt]) tasksByDate[dt] = [];
-      tasksByDate[dt].push({ id: t.id, title: t.title, status: t.status, priority: t.priority || 'Medium', dueDate: t.dueDate ? new Date(t.dueDate).toISOString() : null });
-    });
-
-    // Build payload for last 7 calendar days (oldest -> newest)
-    const payload = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const dayStr = d.toISOString().split('T')[0];
-      const weekday = dayjs(d).format('ddd');
-      const countRow = (counts || []).find(r => r.day && (new Date(r.day).toISOString().split('T')[0] === dayStr));
-      const cnt = countRow ? Number(countRow.tasks) : 0;
-      // simple color selection
-      const color = cnt >= 8 ? '#10B981' : (cnt >= 4 ? '#3B82F6' : '#F59E0B');
-      const status = cnt >= 8 ? 'High Activity' : (cnt >=4 ? 'Medium Activity' : 'Low Activity');
-      payload.push({ day: weekday, tasks: cnt, color, status, tasksList: tasksByDate[dayStr] || [] });
-    }
-
-    return res.json({ status: 'success', data: payload, requestId: `REQ-${Math.floor(Math.random()*100000)}`, timestamp: new Date().toISOString() });
-  } catch (e) {
-    console.error('weekday-activity error:', e && e.message);
-    return res.status(500).json({ status: 'error', message: 'Unable to fetch weekday activity', error: e && e.message });
-  }
-});
