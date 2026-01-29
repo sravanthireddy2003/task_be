@@ -118,7 +118,16 @@ router.get('/pending', requireAuth, async (req, res) => {
       requested_by_name: r.requested_by_name || r.requestedByName || null,
       requestedByName: r.requested_by_name || r.requestedByName || null
     }));
-    res.json({ success: true, data: requests });
+
+    const listMessage = requests.length > 0 
+      ? `Fetched ${requests.length} workflow requests.` 
+      : "No workflow requests found.";
+
+    res.json({ 
+      success: true, 
+      message: listMessage,
+      data: requests 
+    });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }

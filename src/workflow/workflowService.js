@@ -341,9 +341,9 @@ const processApproval = async ({ tenantId, requestId, action, reason, userId, us
         }
         
         // TODO: Notify original requestor
-        
+        const actionVerb = action === 'APPROVE' ? 'approved' : 'rejected';
         return {
-            message: `${entity_type} request #${requestId} has been ${action.toLowerCase()}ed.`,
+            message: `${entity_type} request #${requestId} has been ${actionVerb}.`,
             newStatus: newStatus
         };
 
@@ -451,6 +451,15 @@ const getRequests = async ({ tenantId, role, status }) => {
 
     // If it's a project closure request, fetch sub-data
     for (const req of requests) {
+        // Status acknowledgement message
+        const actionVerb = req.status === 'APPROVED' ? 'approved' : (req.status === 'REJECTED' ? 'rejected' : 'pending approval');
+        req.message = `${req.entity_type} request #${req.id} is ${actionVerb}.`;
+        
+        // Add outcome details for already processed requests
+        if (req.status !== 'PENDING') {
+            req.newStatus = req.status === 'APPROVED' ? req.to_state : req.from_state;
+        }
+
         if (req.entity_type === 'PROJECT') {
             const projectId = req.entity_id;
 
