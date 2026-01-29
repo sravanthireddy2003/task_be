@@ -53,30 +53,11 @@ async function canEditTask(taskId, user) {
   // Check if user is assigned with full access (not read-only)
   const hasReadOnlyColumn = await hasColumn('taskassignments', 'is_read_only');
   const selectColumns = hasReadOnlyColumn ? 'user_id, is_read_only' : 'user_id';
-  const [assignment] = await q(`SELECT ${selectColumns} FROM taskassignments WHERE task_id = ? AND user_id = ?`, [taskId, user._id]);
-  if (!assignment) return false;
-
-  // If read-only column exists and user has read-only access, deny edit access
-  if (hasReadOnlyColumn && assignment.is_read_only) return false;
-
-  // Check if task is locked and if user is the assignee
-  const [task] = await q('SELECT is_locked FROM tasks WHERE id = ?', [taskId]);
-  if (!task) return false;
-  if (!task.is_locked) return true;
-
-  // If locked, only allow current assignee
-  return assignment.user_id === user._id;
+  const rows = await q(`SELECT ${selectColumns} FROM taskassignments WHERE task_id = ? AND user_id = ?`, [taskId, user._id]);
+  if (!rows || rows.length === 0) return false;
+  if (hasReadOnlyColumn && rows[0].is_read_only) return false;
+  return true;
 }
-
-// helper: get last action for task and user
-const getLastAction = async (taskId, userId) => {
-  const rows = await q('SELECT action FROM task_time_logs WHERE task_id = ? AND user_id = ? ORDER BY timestamp DESC LIMIT 1', [taskId, userId]);
-  return rows.length > 0 ? rows[0].action : null;
-};
-
-// enforce tenant + auth for all task routes
-router.use(tenantMiddleware);
-
 // POST /api/projects/tasks/selected-details
 // Body: { "taskIds": [1,2,3] }
 // Returns tasks with assigned users, subtasks (checklist), activities, and total hours
@@ -161,12 +142,15 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
         ? ', creator._id AS creator_internal_id, creator.public_id AS creator_public_id, creator.name AS creator_name'
         : '';
       const creatorJoin = subtaskCreatorColumnExists ? 'LEFT JOIN users creator ON creator._id = s.created_by' : '';
+      // determine which created column exists on subtasks to avoid SQL errors
+      const subtaskCreatedCol = await hasColumn('subtasks', 'created_at') ? 's.created_at'
+        : (await hasColumn('subtasks', 'createdAt') ? 's.createdAt' : 's.id');
       const subtaskQuery = `
         SELECT s.*${creatorSelect}
         FROM subtasks s
         ${creatorJoin}
         WHERE s.task_id IN (?)
-        ORDER BY s.created_at ASC
+        ORDER BY ${subtaskCreatedCol} ASC
       `;
       const subtasks = await new Promise((resolve, reject) => db.query(
         subtaskQuery,
@@ -174,12 +158,15 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
       ));
 
       // fetch activities (what employees added)
+      // choose appropriate timestamp column for task_activities
+      const activityCreatedCol = await hasColumn('task_activities', 'created_at') ? 'ta.created_at'
+        : (await hasColumn('task_activities', 'createdAt') ? 'ta.createdAt' : 'ta.id');
       const activities = await new Promise((resolve, reject) => db.query(
-        `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt, u._id AS user_id, u.public_id AS user_public_id, u.name AS user_name
+        `SELECT ta.task_id, ta.type, ta.activity, ${activityCreatedCol} AS activity_created, u._id AS user_id, u.public_id AS user_public_id, u.name AS user_name
          FROM task_activities ta
          LEFT JOIN users u ON ta.user_id = u._id
          WHERE ta.task_id IN (?)
-         ORDER BY ta.createdAt DESC`,
+         ORDER BY ${activityCreatedCol} DESC`,
         [internalIds], (e, r) => e ? reject(e) : resolve(r)
       ));
 
@@ -265,7 +252,7 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
         activitiesMap[key].push({
           type: activity.type || null,
           activity: activity.activity || null,
-          createdAt: activity.createdAt ? new Date(activity.createdAt).toISOString() : null,
+          createdAt: (activity.activity_created || activity.created_at || activity.createdAt) ? new Date(activity.activity_created || activity.created_at || activity.createdAt).toISOString() : null,
           user: userInfo
         });
       });
@@ -1450,76 +1437,128 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
 router.patch('/:taskId/reassign/:userId', ruleEngine('task_reassign'), requireRole(['Manager', 'Admin']), async (req, res) => {
   const { taskId, userId } = req.params;
   const { approve, newAssigneeId } = req.body;
-  try {
-    if (approve) {
-      // Set requester to read-only
-      await q('UPDATE taskassignments SET status = ?, is_read_only = 1 WHERE task_id = ? AND user_id = ?', ['READ_ONLY', taskId, userId]);
-      // Add new assignee if not present
-      if (newAssigneeId) {
-        const exists = await q('SELECT 1 FROM taskassignments WHERE task_id = ? AND user_id = ?', [taskId, newAssigneeId]);
-        if (!exists.length) {
-          await q('INSERT INTO taskassignments (task_id, user_id, status, is_read_only) VALUES (?, ?, ?, 0)', [taskId, newAssigneeId, 'ACTIVE']);
-        }
-      }
-      // Log audit (implement as needed)
-      // await logTaskAssignmentAudit({ taskId, userId, action: 'REASSIGN_APPROVED', byUserId: req.user._id, details: { newAssigneeId } });
-      // Send emails
-      const [[oldUser], [newUser], [task]] = await Promise.all([
-        q('SELECT name, email FROM users WHERE _id = ?', [userId]),
-        newAssigneeId ? q('SELECT name, email FROM users WHERE _id = ?', [newAssigneeId]) : [{}],
-        q('SELECT title FROM tasks WHERE id = ?', [taskId])
-      ]);
-      const baseUrl = process.env.FRONTEND_URL || 'http://localhost:4000';
-      const taskLink = `${baseUrl}/tasks/${taskId}`;
-      // To new assignee
-      if (newUser && newUser.email) {
-        await emailService.sendEmail({
-          to: newUser.email,
-          ...emailService.taskReassignmentApprovedTemplate({
-            taskTitle: task?.title || '',
-            oldAssignee: oldUser?.name || '',
-            newAssignee: newUser?.name || '',
-            taskLink
-          })
-        });
-      }
-      // To old assignee (read-only)
-      if (oldUser && oldUser.email) {
-        await emailService.sendEmail({
-          to: oldUser.email,
-          ...emailService.taskReassignmentOldAssigneeTemplate({
-            taskTitle: task?.title || '',
-            newAssignee: newUser?.name || '',
-            taskLink
-          })
-        });
-      }
-      return res.json({ success: true });
-    } else {
-      // Rejected: restore full access
-      await q('UPDATE taskassignments SET status = ?, is_read_only = 0 WHERE task_id = ? AND user_id = ?', ['ACTIVE', taskId, userId]);
-      // Log audit (implement as needed)
-      // await logTaskAssignmentAudit({ taskId, userId, action: 'REASSIGN_REJECTED', byUserId: req.user._id });
-      // Get user email
-      const [[oldUser], [task]] = await Promise.all([
-        q('SELECT name, email FROM users WHERE _id = ?', [userId]),
-        q('SELECT title FROM tasks WHERE id = ?', [taskId])
-      ]);
-      const baseUrl = process.env.FRONTEND_URL || 'http://localhost:4000';
-      const taskLink = `${baseUrl}/tasks/${taskId}`;
-      if (oldUser && oldUser.email) {
-        await emailService.sendEmail({
-          to: oldUser.email,
-          ...emailService.taskReassignmentRejectedTemplate({
-            taskTitle: task?.title || '',
-            taskLink
-          })
-        });
-      }
-      return res.json({ success: true });
+
+  // helper: resolve a provided identifier (internal id | public_id | email) to internal _id
+  const resolveToInternal = async (val) => {
+    if (!val && val !== 0) return null;
+    if (/^\d+$/.test(String(val))) return Number(val);
+    if (String(val).includes('@')) {
+      const rows = await q('SELECT _id FROM users WHERE email = ? LIMIT 1', [val]);
+      if (rows && rows.length) return rows[0]._id;
+      return null;
     }
+    const rows = await q('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [val]);
+    if (rows && rows.length) return rows[0]._id;
+    return null;
+  };
+
+  try {
+    const requesterInternal = await resolveToInternal(userId);
+    if (!requesterInternal) return res.status(400).json({ success: false, error: 'Invalid requester id' });
+
+    // find latest pending resign request for this task + requester
+    const pending = await q(
+      'SELECT * FROM task_resign_requests WHERE task_id = ? AND requested_by = ? AND (status = ? OR status IS NULL) ORDER BY requested_at DESC LIMIT 1',
+      [taskId, requesterInternal, 'PENDING']
+    );
+    if (!pending || pending.length === 0) return res.status(404).json({ success: false, error: 'No pending resign request found' });
+    const resignRequest = pending[0];
+
+    // resolve manager-provided new assignee to internal id if present
+    let newAssigneeInternal = null;
+    if (newAssigneeId) {
+      newAssigneeInternal = await resolveToInternal(newAssigneeId);
+      if (!newAssigneeInternal) return res.status(400).json({ success: false, error: 'New assignee not found' });
+    }
+
+    // perform transactional update to persist new_assignee_id and apply reassignment
+    db.getConnection((err, connection) => {
+      if (err) return res.status(500).json({ success: false, error: 'DB connection error' });
+
+      const queryConn = (sql, params = []) => new Promise((resolve, reject) => {
+        connection.query(sql, params, (e, r) => e ? reject(e) : resolve(r));
+      });
+
+      (async () => {
+        try {
+          await queryConn('START TRANSACTION');
+
+          // persist manager decision and new_assignee_id for auditability
+          await queryConn('UPDATE task_resign_requests SET responded_by = ?, responded_at = NOW(), status = ?, new_assignee_id = ? WHERE id = ?', [req.user._id, approve ? 'APPROVE' : 'REJECT', newAssigneeInternal, resignRequest.id]);
+
+          if (approve) {
+            if (newAssigneeInternal) {
+              // Lock taskassignments rows for this task to avoid races
+              await queryConn('SELECT id FROM taskassignments WHERE task_id = ? FOR UPDATE', [taskId]);
+
+              // mark all existing full-access assignees (non read-only) as read-only except the new assignee
+              await queryConn('UPDATE taskassignments SET is_read_only = 1 WHERE task_id = ? AND (is_read_only IS NULL OR is_read_only = 0) AND user_id != ?', [taskId, newAssigneeInternal]);
+
+              // ensure new assignee has a full-access assignment (insert if missing or promote if read-only)
+              const existing = await queryConn('SELECT id, is_read_only FROM taskassignments WHERE task_id = ? AND user_id = ? LIMIT 1', [taskId, newAssigneeInternal]);
+              if (!existing || existing.length === 0) {
+                await queryConn('INSERT INTO taskassignments (task_id, user_id, is_read_only, created_at) VALUES (?, ?, 0, NOW())', [taskId, newAssigneeInternal]);
+              } else if (existing[0].is_read_only) {
+                await queryConn('UPDATE taskassignments SET is_read_only = 0 WHERE id = ?', [existing[0].id]);
+              }
+
+              // unlock the task (do not change status here)
+              await queryConn('UPDATE tasks SET is_locked = 0 WHERE id = ?', [taskId]);
+            } else {
+              // Approval without a new assignee: do not change assignments, just resume task for current assignee
+              await queryConn('UPDATE tasks SET status = ?, is_locked = 0 WHERE id = ?', ['In Progress', taskId]);
+            }
+          }
+
+          await queryConn('COMMIT');
+          connection.release();
+
+          // send notification emails (best-effort, outside transaction)
+          try {
+            const [[oldUser], [newUser], [taskRow]] = await Promise.all([
+              q('SELECT name, email FROM users WHERE _id = ?', [requesterInternal]),
+              newAssigneeInternal ? q('SELECT name, email FROM users WHERE _id = ?', [newAssigneeInternal]) : [null],
+              q('SELECT title FROM tasks WHERE id = ?', [taskId])
+            ]);
+            const baseUrl = process.env.FRONTEND_URL || 'http://localhost:4000';
+            const taskLink = `${baseUrl}/tasks/${taskId}`;
+            if (approve && newUser && newUser.email) {
+              await emailService.sendEmail({
+                to: newUser.email,
+                ...emailService.taskReassignmentApprovedTemplate({
+                  taskTitle: taskRow?.title || '',
+                  oldAssignee: oldUser?.name || '',
+                  newAssignee: newUser?.name || '',
+                  taskLink
+                })
+              });
+            }
+            if (oldUser && oldUser.email) {
+              await emailService.sendEmail({
+                to: oldUser.email,
+                ...emailService.taskReassignmentOldAssigneeTemplate({
+                  taskTitle: taskRow?.title || '',
+                  newAssignee: newUser?.name || '',
+                  taskLink
+                })
+              });
+            }
+          } catch (mailErr) {
+            logger.warn('Reassign emails failed: ' + (mailErr && mailErr.message));
+          }
+
+          return res.json({ success: true, message: approve ? 'Resign request approved and reassigned' : 'Resign request rejected' });
+        } catch (e) {
+          try { await queryConn('ROLLBACK'); } catch (x) { /* ignore */ }
+          connection.release();
+          logger.error('Reassign transaction failed: ' + (e && e.stack || e && e.message));
+          return res.status(500).json({ success: false, error: e.message });
+        }
+      })();
+    });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    logger.error('Reassign handler error: ' + (error && error.stack || error && error.message));
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 // ==================== UPDATE TASK STATUS (EMPLOYEE KANBAN) ====================
@@ -1758,7 +1797,7 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
       }
     });
   } catch (e) {
-    logger.error('Update task status error:', e.message);
+    logger.error('Update task status error:', e.stack || e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
@@ -1853,7 +1892,7 @@ router.get("/taskdropdownfortaskHrs", async (req, res) => {
       SELECT t.id, t.title 
       FROM tasks t
       JOIN taskassignments ta ON t.id = ta.task_id
-      WHERE ta.user_id = ?
+      WHERE ta.user_id = ? AND (ta.is_read_only IS NULL OR ta.is_read_only != 1)
     `;
 
     db.query(query, [userId], (err, results) => {
@@ -1915,7 +1954,7 @@ router.get("/gettaskss", (req, res) => {
     // User access control: Employee sees assigned tasks only
     if (role === 'Employee') {
       query += ` WHERE t.id IN (
-          SELECT task_id FROM taskassignments WHERE user_id = ?
+          SELECT task_id FROM taskassignments WHERE user_id = ? AND (is_read_only IS NULL OR is_read_only != 1)
       )`;
     }
 
@@ -1924,9 +1963,9 @@ router.get("/gettaskss", (req, res) => {
       // if query already has WHERE, append AND to filter assigned user
       if (query.includes('WHERE')) {
         query = query.replace(/ORDER BY[\s\S]*$/m, '');
-        query += ` AND t.id IN (SELECT task_id FROM taskassignments WHERE user_id = ?)`;
+        query += ` AND t.id IN (SELECT task_id FROM taskassignments WHERE user_id = ? AND (is_read_only IS NULL OR is_read_only != 1))`;
       } else {
-        query += ` WHERE t.id IN (SELECT task_id FROM taskassignments WHERE user_id = ?)`;
+        query += ` WHERE t.id IN (SELECT task_id FROM taskassignments WHERE user_id = ? AND (is_read_only IS NULL OR is_read_only != 1))`;
       }
     }
     query += ` 
@@ -2174,7 +2213,7 @@ router.get("/gettasks", (req, res) => {
       LEFT JOIN users u ON ta.user_id = u._id
       LEFT JOIN clientss c ON t.client_id = c.id
       LEFT JOIN users rj ON t.rejected_by = rj._id
-      WHERE ta.user_id = ?
+      WHERE ta.user_id = ? AND (ta.is_read_only IS NULL OR ta.is_read_only != 1)
       ORDER BY t.createdAt
     `;
     }
@@ -2183,7 +2222,7 @@ router.get("/gettasks", (req, res) => {
     if (resolvedUserId && role !== 'Employee') {
       // replace trailing ORDER BY to append filter
       query = query.replace(/ORDER BY[\s\S]*$/m, '');
-      query += ` WHERE t.id IN (SELECT task_id FROM taskassignments WHERE user_id = ?)`;
+      query += ` WHERE t.id IN (SELECT task_id FROM taskassignments WHERE user_id = ? AND (is_read_only IS NULL OR is_read_only != 1))`;
       query += ` ORDER BY t.createdAt`;
     }
 
@@ -2934,6 +2973,20 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
     );
     if (existingReq?.length > 0) return res.status(409).json({ success: false, error: 'Pending request exists' });
 
+    // Prevent request by read-only assignees
+    const [assnRows] = await new Promise((resolve, reject) =>
+      db.query('SELECT is_read_only FROM taskassignments WHERE task_id = ? AND user_id = ? LIMIT 1', [taskId, employee._id], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+    if (assnRows && assnRows.length > 0 && Number(assnRows[0].is_read_only) === 1) {
+      return res.status(403).json({ success: false, error: 'Read-only assignees cannot request reassignment' });
+    }
+
+    // Prevent new request if an approved reassignment already exists
+    const [approvedRows] = await new Promise((resolve, reject) =>
+      db.query('SELECT id FROM task_resign_requests WHERE task_id = ? AND status = ?', [taskId, 'APPROVE'], (err, rows) => err ? reject(err) : resolve([rows]))
+    );
+    if (approvedRows && approvedRows.length > 0) return res.status(409).json({ success: false, error: 'Task already has an approved reassignment' });
+
     // Get task and manager info
     const [taskRows] = await new Promise((resolve, reject) =>
       db.query(`
@@ -3130,50 +3183,56 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
       });
 
       if (newStatus === 'APPROVE') {
-        // Lock task and reassign atomically
-        await new Promise((resolve, reject) => {
-          db.query(
-            `UPDATE tasks SET status = 'Request Approved', is_locked = 1 WHERE id = ?`,
-            [taskId],
-            (err) => err ? reject(err) : resolve(),
-            connection
-          );
-        });
-
-        // Single-user ownership: always full reassignment
-        // Remove all current assignees
-        await new Promise((resolve, reject) => {
-          db.query('DELETE FROM taskassignments WHERE task_id = ?', [taskId], (err) => err ? reject(err) : resolve(), connection);
-        });
-
-        // Assign to new employee (if specified)
         if (resignRequest.new_assignee_id) {
+          // Lock task and reassign atomically
           await new Promise((resolve, reject) => {
             db.query(
-              'INSERT INTO taskassignments (task_id, user_id) VALUES (?, ?)',
+              `UPDATE tasks SET status = 'Request Approved', is_locked = 1 WHERE id = ?`,
+              [taskId],
+              (err) => err ? reject(err) : resolve(),
+              connection
+            );
+          });
+
+          // Single-user ownership: always full reassignment
+          // Remove all current active assignees
+          await new Promise((resolve, reject) => {
+            db.query('DELETE FROM taskassignments WHERE task_id = ?', [taskId], (err) => err ? reject(err) : resolve(), connection);
+          });
+
+          // Assign to new employee (full access)
+          await new Promise((resolve, reject) => {
+            db.query(
+              'INSERT INTO taskassignments (task_id, user_id, is_read_only) VALUES (?, ?, 0)',
               [taskId, resignRequest.new_assignee_id],
               (err) => err ? reject(err) : resolve(),
               connection
             );
           });
-        }
 
-        // Give previous assignee read-only access for reference
-        await new Promise((resolve, reject) => {
-          db.query(
-            'INSERT INTO taskassignments (task_id, user_id, is_read_only) VALUES (?, ?, 1)',
-            [taskId, resignRequest.requested_by],
-            (err) => err ? reject(err) : resolve(),
-            connection
-          );
-        });
+          // Give previous assignee read-only access for reference
+          await new Promise((resolve, reject) => {
+            db.query(
+              'INSERT INTO taskassignments (task_id, user_id, is_read_only) VALUES (?, ?, 1)',
+              [taskId, resignRequest.requested_by],
+              (err) => err ? reject(err) : resolve(),
+              connection
+            );
+          });
 
-        await commitTransaction(connection);
+          await commitTransaction(connection);
 
-        // Send notification emails using proper templates
-        const taskLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/tasks/${task.public_id}`;
+          // After commit, ensure task is unlocked so new assignee can act
+          try {
+            await q('UPDATE tasks SET is_locked = 0 WHERE id = ?', [taskId]);
+          } catch (unlockErr) {
+            logger.warn('Failed to unlock task after reassignment: ' + (unlockErr && unlockErr.message));
+          }
 
-        // Send emails for approval
+          // Send notification emails using proper templates
+          const taskLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/tasks/${task.public_id}`;
+
+          // Send emails for approval
         try {
           // Get new assignee info if assigned
           let newAssigneeUser = null;
@@ -3232,13 +3291,56 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
           // Don't fail the request due to email errors
         }
 
-        return res.json({
-          success: true,
-          message: 'Reassignment approved successfully',
-          action_taken: newStatus,
-          task_status: 'Request Approved',
-          locked: true
-        });
+          return res.json({
+            success: true,
+            message: 'Reassignment approved successfully',
+            action_taken: newStatus,
+            task_status: 'Request Approved',
+            locked: false
+          });
+        } else {
+          // Approval without a new assignee: do not change ownership, just resume task for current assignee
+          await new Promise((resolve, reject) => {
+            db.query(`UPDATE tasks SET status = 'In Progress', is_locked = 0 WHERE id = ?`, [taskId], (err) => err ? reject(err) : resolve(), connection);
+          });
+
+          await commitTransaction(connection);
+
+          // Notify previous assignee and managers that approval occurred (no ownership change)
+          const taskLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/tasks/${task.public_id}`;
+          try {
+            if (oldAssigneeUser?.email) {
+              const tpl = emailService.taskReassignmentApprovedTemplate({
+                taskTitle: task.title || 'Task',
+                oldAssignee: oldAssigneeUser?.name || '',
+                newAssignee: oldAssigneeUser?.name || '',
+                taskLink
+              });
+              await emailService.sendEmail({ to: oldAssigneeUser.email, ...tpl }).catch(console.error);
+            }
+            for (const mgr of managers) {
+              if (mgr.email) {
+                const managerTemplate = emailService.taskReassignmentManagerTemplate({
+                  taskTitle: task.name || task.title || 'Task',
+                  oldAssignee: oldAssigneeUser?.name || 'Previous Assignee',
+                  newAssignee: oldAssigneeUser?.name || 'Previous Assignee',
+                  taskLink
+                });
+                await emailService.sendEmail({ to: mgr.email, ...managerTemplate }).catch(console.error);
+              }
+            }
+          } catch (emailError) {
+            console.error('Error sending approval emails (status-only):', emailError);
+          }
+
+          return res.json({
+            success: true,
+            message: 'Reassignment approved (status-only) — ownership unchanged',
+            action_taken: newStatus,
+            task_status: 'In Progress',
+            locked: false
+          });
+        }
 
       } else if (newStatus === 'REJECT') {
         // Unlock and resume task atomically
@@ -3533,12 +3635,13 @@ router.get('/:id/timeline', requireRole(['Admin', 'Manager', 'Employee']), async
     let id = req.params.id;
     if (req.headers['x-task-public-id']) id = req.headers['x-task-public-id'];
 
-    const taskResult = await db.query('SELECT id FROM tasks WHERE id = ? OR public_id = CAST(? AS CHAR)', [id, id]);
-    if (!taskResult?.length) return res.status(404).json({ success: false, error: 'Task not found' });
-
-    const taskId = taskResult[0].id;
+    // use promisified query helper `q` to ensure we get a proper result
+    const taskRows = await q('SELECT id FROM tasks WHERE id = ? OR public_id = CAST(? AS CHAR)', [id, id]);
+    if (!taskRows || taskRows.length === 0) return res.status(404).json({ success: false, error: 'Task not found' });
+    const taskId = taskRows[0].id;
     const logs = await q('SELECT * FROM task_time_logs WHERE task_id = ? ORDER BY timestamp DESC', [taskId]);
-    const activities = await q('SELECT * FROM task_activities WHERE task_id = ? ORDER BY created_at DESC', [taskId]);
+    const activityCol = await hasColumn('task_activities', 'created_at') ? 'created_at' : (await hasColumn('task_activities', 'createdAt') ? 'createdAt' : 'id');
+    const activities = await q(`SELECT * FROM task_activities WHERE task_id = ? ORDER BY ${activityCol} DESC`, [taskId]);
 
     res.json({ success: true, data: { logs, activities } });
   } catch (e) {

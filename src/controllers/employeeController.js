@@ -112,11 +112,14 @@ async function fetchChecklistMap(taskIds = []) {
   if (completed_at) checklistColumns.push('completed_at');
   if (created_at) checklistColumns.push('created_at');
   if (updated_at) checklistColumns.push('updated_at');
+  // choose appropriate created column for ordering to avoid missing column errors
+  const subtaskOrderCol = (await hasColumn('subtasks', 'created_at')) ? 's.created_at'
+    : (await hasColumn('subtasks', 'createdAt') ? 's.createdAt' : 's.id');
   const rows = await queryAsync(
     `SELECT ${checklistColumns.join(', ')}
      FROM subtasks s
      WHERE s.task_id IN (?) ${clause}
-     ORDER BY s.created_at ASC`,
+     ORDER BY ${subtaskOrderCol} ASC`,
     [uniqueIds]
   );
   const map = {};
@@ -277,15 +280,16 @@ getMyTasks: async (req, res) => {
       'c.name AS client_name'
     ].concat(projectData.selects);
 
+    // include tasks where the current user is assigned (excluding read-only) OR where they requested a resign (requester)
+    // use LEFT JOIN so we can also include tasks where user is only the requester
+    const taUserJoin = 'LEFT JOIN taskassignments ta_user ON ta_user.task_id = t.id AND ta_user.user_id = ?';
+
     const rows = await queryAsync(
       `SELECT
-         ${selectParts.join(', ')},
-         GROUP_CONCAT(DISTINCT ua._id) AS assigned_user_ids,
-         GROUP_CONCAT(DISTINCT ua.public_id) AS assigned_user_public_ids,
-         GROUP_CONCAT(DISTINCT ua.name) AS assigned_user_names,
-         GROUP_CONCAT(DISTINCT COALESCE(ta_all.is_read_only, 0)) AS assigned_user_read_only
+         ${selectParts.join(', ')}
+       -- assigned users will be fetched separately to preserve order and read-only flags
        FROM tasks t
-       INNER JOIN taskassignments ta_user ON ta_user.task_id = t.id AND ta_user.user_id = ?
+       ${taUserJoin}
        LEFT JOIN taskassignments ta_all ON ta_all.task_id = t.id
        LEFT JOIN users ua ON ua._id = ta_all.user_id
        ${projectData.join}
@@ -293,19 +297,47 @@ getMyTasks: async (req, res) => {
        WHERE 1=1
         ${taskDeletionClause}
         ${tenantClause}
+        AND ((ta_user.user_id IS NOT NULL AND (ta_user.is_read_only IS NULL OR ta_user.is_read_only != 1)) OR EXISTS (SELECT 1 FROM task_resign_requests rr WHERE rr.task_id = t.id AND rr.requested_by = ?))
        GROUP BY t.id
        ORDER BY t.updatedAt DESC`,
-      [req.user._id, ...tenantParams]
+      [req.user._id, req.user._id, ...tenantParams]
     );
 
     const taskIds = (rows || []).map(r => r.id).filter(Boolean);
     const checklistMap = await fetchChecklistMap(taskIds);
+
+    // fetch assignments for tasks to preserve ordering and accurate readOnly flags
+    let assignmentMap = {};
+    if (taskIds.length > 0) {
+      const assignmentRows = await queryAsync(`
+        SELECT ta_all.task_id,
+               ua.public_id AS user_public_id,
+               ua._id AS user_internal_id,
+               ua.name AS user_name,
+               COALESCE(ta_all.is_read_only, 0) AS is_read_only
+        FROM taskassignments ta_all
+        LEFT JOIN users ua ON ua._id = ta_all.user_id
+        WHERE ta_all.task_id IN (${taskIds.map(id => parseInt(id)).join(',')})
+        ORDER BY ta_all.task_id, COALESCE(ta_all.is_read_only, 0) ASC, ta_all.id ASC
+      `);
+      (assignmentRows || []).forEach(ar => {
+        if (!ar || !ar.task_id) return;
+        if (!assignmentMap[ar.task_id]) assignmentMap[ar.task_id] = [];
+        assignmentMap[ar.task_id].push({
+          id: ar.user_public_id ? String(ar.user_public_id) : String(ar.user_internal_id),
+          internalId: ar.user_internal_id != null ? String(ar.user_internal_id) : null,
+          name: ar.user_name || null,
+          readOnly: Number(ar.is_read_only) === 1
+        });
+      });
+    }
 
     const lockStatuses = {};
     if (taskIds.length > 0) {
       const lockResult = await queryAsync(`
         SELECT 
           r.task_id,
+          r.new_assignee_id,
           r.status AS request_status,
           r.id AS request_id,
           r.requested_at,
@@ -317,11 +349,15 @@ getMyTasks: async (req, res) => {
           ru._id AS responder_internal_id,      
           u.name AS requester_name,
           u.public_id AS requester_id,
-          t.status AS task_current_status
+          t.status AS task_current_status,
+          nu.name AS new_assignee_name,
+          nu.public_id AS new_assignee_public_id,
+          nu._id AS new_assignee_internal_id
         FROM task_resign_requests r
         INNER JOIN tasks t ON t.id = r.task_id
         LEFT JOIN users u ON r.requested_by = u._id
         LEFT JOIN users ru ON r.responded_by = ru._id
+        LEFT JOIN users nu ON r.new_assignee_id = nu._id
         WHERE r.task_id IN (${taskIds.map(id => parseInt(id)).join(',')})
         ORDER BY 
           CASE WHEN r.responded_at IS NULL THEN 1 ELSE 0 END ASC,
@@ -345,25 +381,34 @@ getMyTasks: async (req, res) => {
           responder_name: row.responder_name || null,
           responder_public_id: row.responder_public_id || null, 
           responder_internal_id: String(row.responder_internal_id || ''),
+          new_assignee_internal_id: row.new_assignee_internal_id ? String(row.new_assignee_internal_id) : null,
+          new_assignee_public_id: row.new_assignee_public_id || null,
+          new_assignee_name: row.new_assignee_name || null,
           task_status: row.task_current_status
         };
       });
     }
 
-    const tasks = (rows || []).map(r => {
+    let tasks = (rows || []).map(r => {
       const taskId = r.id;
-      const assignedIds = r.assigned_user_ids ? String(r.assigned_user_ids).split(',') : [];
-      const assignedPublic = r.assigned_user_public_ids ? String(r.assigned_user_public_ids).split(',') : [];
-      const assignedNames = r.assigned_user_names ? String(r.assigned_user_names).split(',') : [];
-      const assignedReadOnly = r.assigned_user_read_only ? String(r.assigned_user_read_only).split(',') : [];
-      const assignedUsers = assignedIds.map((internalId, index) => ({
-        id: assignedPublic[index] || String(internalId),
-        internalId: String(internalId),
-        name: assignedNames[index] || null,
-        readOnly: assignedReadOnly[index] === '1' || assignedReadOnly[index] === 'true'
+      // build assignedUsers from assignmentMap (preserves order and readOnly flag)
+      const lockInfo = lockStatuses[taskId] || {};
+      const assignedUsers = (assignmentMap[taskId] || []).map(a => ({
+        id: a.id || (a.internalId ? String(a.internalId) : null),
+        internalId: a.internalId || null,
+        name: a.name || null,
+        readOnly: !!a.readOnly,
+        isNewAssignee: lockInfo.new_assignee_internal_id ? (String(a.internalId) === String(lockInfo.new_assignee_internal_id)) : false
       }));
 
-      const lockInfo = lockStatuses[taskId] || {};
+      // if the current user is included in the result set because they were the requester
+      // but they don't appear in assignedUsers, expose them as a read-only entry so they can view the task
+      const currentInternalId = String(req.user._id);
+      const alreadyPresent = assignedUsers.some(u => u.internalId === currentInternalId || u.id === currentInternalId);
+      if (!alreadyPresent && (lockStatuses[taskId] && String(lockStatuses[taskId].requested_by) === currentInternalId)) {
+        assignedUsers.push({ id: currentInternalId, internalId: currentInternalId, name: req.user.name || null, readOnly: true });
+      }
+
       const isLocked = Boolean(lockInfo.is_locked);
 
       let summary = {};
@@ -415,6 +460,24 @@ getMyTasks: async (req, res) => {
       };
     });
 
+      // filter out tasks where the current user is only a read-only assignee (unless they're the requester)
+      const currentInternalId = String(req.user._id);
+      const tasksFiltered = tasks.filter(task => {
+        const assignedEntry = (task.assignedUsers || []).find(u => u.internalId === currentInternalId || u.id === currentInternalId);
+        if (!assignedEntry) {
+          // if user not assigned, include only if they're the requester
+          return task.lock_info && String(task.lock_info.requested_by) === currentInternalId;
+        }
+        if (assignedEntry.readOnly) {
+          // only include read-only assignment if user is the requester
+          return task.lock_info && String(task.lock_info.requested_by) === currentInternalId;
+        }
+        return true;
+      });
+
+    // replace tasks with filtered view for downstream aggregation
+    tasks = tasksFiltered;
+
     const statusMap = {};
     tasks.forEach(task => {
       const status = (task.status || task.stage || 'PENDING').toUpperCase();
@@ -463,6 +526,7 @@ getMyTasks: async (req, res) => {
       rules,
       data: tasks,
       kanban,
+      kanbanData: kanban,
       summary: lockSummary,
       meta: { count: tasks.length }
     });
