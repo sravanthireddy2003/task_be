@@ -82,8 +82,8 @@ class ChatService {
       // Check if user is assigned to the project (for Managers and Employees)
       const userInProject = await this.query(`
         SELECT COUNT(*) as count FROM taskassignments ta
-        JOIN tasks t ON ta.task_id = t.id
-        WHERE ta.user_id = ? AND t.project_id = ?
+        JOIN tasks t ON ta.task_Id = t.id
+        WHERE ta.user_Id = ? AND t.project_id = ?
       `, [userId, internalProjectId]);
  
       if (userInProject[0].count > 0) {
@@ -265,8 +265,8 @@ class ChatService {
           u.public_id,
           u.is_online
         FROM users u
-        JOIN taskassignments ta ON u._id = ta.user_id
-        JOIN tasks t ON ta.task_id = t.id
+        JOIN taskassignments ta ON u._id = ta.user_Id
+        JOIN tasks t ON ta.task_Id = t.id
         WHERE t.project_id = ?
       `, [internalProjectId]);
  
@@ -411,8 +411,8 @@ class ChatService {
               const userTasks = await this.query(`
                 SELECT t.title, t.status, t.priority
                 FROM tasks t
-                JOIN taskassignments ta ON t.id = ta.task_id
-                WHERE ta.user_id = ?
+                JOIN taskassignments ta ON t.id = ta.task_Id
+                WHERE ta.user_Id = ?
                 AND t.project_id = ?
                 ORDER BY t.id DESC
                 LIMIT 10

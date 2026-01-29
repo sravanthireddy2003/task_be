@@ -142,8 +142,8 @@ async function ensureAssignedTask(taskId, userId, tenantId) {
   const rows = await queryAsync(
     `SELECT t.id
      FROM taskassignments ta
-     INNER JOIN tasks t ON t.id = ta.task_id
-     WHERE ta.task_id = ? AND ta.user_id = ? ${clause}
+     INNER JOIN tasks t ON t.id = ta.task_Id
+     WHERE ta.task_Id = ? AND ta.user_Id = ? ${clause}
      LIMIT 1`,
     [internalTaskId, userId, ...params]
   );
@@ -159,8 +159,8 @@ async function ensureSubtaskPermission(subtaskId, userId, tenantId) {
     `SELECT s.id
      FROM subtasks s
      INNER JOIN tasks t ON t.id = s.task_id
-     INNER JOIN taskassignments ta ON ta.task_id = t.id
-     WHERE s.id = ? AND ta.user_id = ? ${clause}
+     INNER JOIN taskassignments ta ON ta.task_Id = t.id
+     WHERE s.id = ? AND ta.user_Id = ? ${clause}
      LIMIT 1`,
     [subtaskId, userId, ...params]
   );
@@ -285,9 +285,9 @@ getMyTasks: async (req, res) => {
          GROUP_CONCAT(DISTINCT ua.name) AS assigned_user_names,
          GROUP_CONCAT(DISTINCT COALESCE(ta_all.is_read_only, 0)) AS assigned_user_read_only
        FROM tasks t
-       INNER JOIN taskassignments ta_user ON ta_user.task_id = t.id AND ta_user.user_id = ?
-       LEFT JOIN taskassignments ta_all ON ta_all.task_id = t.id
-       LEFT JOIN users ua ON ua._id = ta_all.user_id
+       INNER JOIN taskassignments ta_user ON ta_user.task_Id = t.id AND ta_user.user_Id = ?
+       LEFT JOIN taskassignments ta_all ON ta_all.task_Id = t.id
+       LEFT JOIN users ua ON ua._id = ta_all.user_Id
        ${projectData.join}
        LEFT JOIN clientss c ON c.id = t.client_id
        WHERE 1=1

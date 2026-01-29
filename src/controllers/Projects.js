@@ -246,8 +246,8 @@ router.get('/', async (req, res) => {
         rows = await q(`
           SELECT DISTINCT p.public_id as projectId, p.name as projectName FROM projects p
           JOIN tasks t ON p.id = t.project_id
-          JOIN taskassignments ta ON t.id = ta.task_id
-          WHERE ta.user_id = ? AND p.is_active = 1
+          JOIN taskassignments ta ON t.id = ta.task_Id
+          WHERE ta.user_Id = ? AND p.is_active = 1
           ORDER BY p.name
         `, [req.user._id]);
       } else {

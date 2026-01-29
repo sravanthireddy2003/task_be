@@ -37,6 +37,33 @@ const hasColumn = (table, column) => new Promise((resolve) => {
   );
 });
 
+// Ensure project is not closed — used to guard task mutations
+async function ensureProjectOpen(projectId) {
+  if (!projectId) return;
+  try {
+    const rows = await q('SELECT status FROM projects WHERE id = ? LIMIT 1', [projectId]);
+    if (!rows || rows.length === 0) return; // no project found - upstream validations will handle
+    const st = rows[0].status;
+    if (st && String(st).toUpperCase() === 'CLOSED') {
+      const err = new Error('Project is closed. Tasks are locked and cannot be modified.');
+      err.status = 403;
+      throw err;
+    }
+  } catch (e) {
+    throw e;
+  }
+}
+
+// Check if a user already has an active (non-COMPLETED) task assignment
+async function assigneeHasActiveTask(userId) {
+  if (!userId) return false;
+  const rows = await q(
+    `SELECT COUNT(*) as cnt FROM taskassignments ta JOIN tasks t ON ta.task_Id = t.id WHERE ta.user_Id = ? AND (t.status IS NULL OR UPPER(t.status) != 'COMPLETED') AND (ta.is_read_only IS NULL OR ta.is_read_only != 1)`,
+    [userId]
+  );
+  return (rows && rows[0] && Number(rows[0].cnt || 0) > 0);
+}
+
 // helper: promisified db.query
 const q = (sql, params = []) => new Promise((resolve, reject) => {
   db.query(sql, params, (err, results) => {
@@ -52,8 +79,8 @@ async function canEditTask(taskId, user) {
 
   // Check if user is assigned with full access (not read-only)
   const hasReadOnlyColumn = await hasColumn('taskassignments', 'is_read_only');
-  const selectColumns = hasReadOnlyColumn ? 'user_id, is_read_only' : 'user_id';
-  const [assignment] = await q(`SELECT ${selectColumns} FROM taskassignments WHERE task_id = ? AND user_id = ?`, [taskId, user._id]);
+  const selectColumns = hasReadOnlyColumn ? 'user_Id, is_read_only' : 'user_Id';
+  const [assignment] = await q(`SELECT ${selectColumns} FROM taskassignments WHERE task_Id = ? AND user_Id = ?`, [taskId, user._id]);
   if (!assignment) return false;
 
   // If read-only column exists and user has read-only access, deny edit access
@@ -143,8 +170,8 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
       LEFT JOIN clientss c ON t.client_id = c.id
       LEFT JOIN users ap ON t.approved_by = ap._id
       LEFT JOIN users rj ON t.rejected_by = rj._id
-      LEFT JOIN taskassignments ta ON ta.task_id = t.id
-      LEFT JOIN users u ON u._id = ta.user_id
+      LEFT JOIN taskassignments ta ON ta.task_Id = t.id
+      LEFT JOIN users u ON u._id = ta.user_Id
       ${whereClause}
       GROUP BY t.id
       ORDER BY t.createdAt DESC
@@ -667,7 +694,7 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
         }
 
         // Sequential resolver with proper variable scope
-        const runResolveQuery = (idx) => {
+        const runResolveQuery = async (idx) => {
           if (idx >= resolveQueries.length) {
             // dedupe resolvedUserIds
             resolvedUserIds = Array.from(new Set(resolvedUserIds));
@@ -681,8 +708,19 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
               });
             }
 
+            // Ensure each assignee does not already have an active task
+            for (const uId of resolvedUserIds) {
+              const hasActive = await assigneeHasActiveTask(uId);
+              if (hasActive) {
+                return connection.rollback(() => {
+                  connection.release();
+                  reject(new Error(`User ${uId} already has an active task and cannot be assigned another until it is completed`));
+                });
+              }
+            }
+
             const taskAssignments = resolvedUserIds.map((userId) => [taskId, userId]);
-            const insertTaskAssignmentsQuery = `INSERT INTO taskassignments (task_id, user_id) VALUES ${taskAssignments.map(() => "(?, ?)").join(", ")}`;
+            const insertTaskAssignmentsQuery = `INSERT INTO taskassignments (task_Id, user_Id) VALUES ${taskAssignments.map(() => "(?, ?)").join(", ")}`;
             const flattenedValues = taskAssignments.flat();
 
             console.log('Inserting task assignments:', { taskAssignments });
@@ -768,11 +806,23 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
                 resolvedPublicIds.push(r.public_id);
               }
             }
-            runResolveQuery(idx + 1);
+            runResolveQuery(idx + 1).catch((err) => {
+              console.error('runResolveQuery failed:', err);
+              return connection.rollback(() => {
+                connection.release();
+                reject(err);
+              });
+            });
           });
         };
 
-        runResolveQuery(0);
+        runResolveQuery(0).catch((err) => {
+          console.error('runResolveQuery failed:', err);
+          return connection.rollback(() => {
+            connection.release();
+            reject(err);
+          });
+        });
       });
     };
 
@@ -928,6 +978,13 @@ router.get('/', async (req, res) => {
       resolvedProjectId = Number(projectParam);
     }
 
+      // Guard: project must not be CLOSED
+      try {
+        await ensureProjectOpen(resolvedProjectId);
+      } catch (err) {
+        return res.status(err.status || 403).json({ success: false, message: err.message });
+      }
+
     // Build SQL depending on which project link column exists on tasks
     let sql;
     let params = [];
@@ -972,8 +1029,8 @@ router.get('/', async (req, res) => {
         LEFT JOIN clientss c ON t.client_id = c.id
         LEFT JOIN users ap ON t.approved_by = ap._id
         LEFT JOIN users rj ON t.rejected_by = rj._id
-        LEFT JOIN taskassignments ta ON ta.task_id = t.id
-        LEFT JOIN users u ON u._id = ta.user_id
+        LEFT JOIN taskassignments ta ON ta.task_Id = t.id
+        LEFT JOIN users u ON u._id = ta.user_Id
         WHERE (t.project_id = ?${projectPublicIdToUse ? ' OR t.project_public_id = ?' : ''}) ${hasIsDeleted && !includeDeleted ? 'AND t.isDeleted != 1' : ''}
         GROUP BY t.id
         ORDER BY t.createdAt DESC
@@ -1007,8 +1064,8 @@ router.get('/', async (req, res) => {
         LEFT JOIN clientss c ON t.client_id = c.id
         LEFT JOIN users ap ON t.approved_by = ap._id
         LEFT JOIN users rj ON t.rejected_by = rj._id
-        LEFT JOIN taskassignments ta ON ta.task_id = t.id
-        LEFT JOIN users u ON u._id = ta.user_id
+        LEFT JOIN taskassignments ta ON ta.task_Id = t.id
+        LEFT JOIN users u ON u._id = ta.user_Id
         WHERE t.project_id = ? ${hasIsDeleted && !includeDeleted ? 'AND t.isDeleted != 1' : ''}
         GROUP BY t.id
         ORDER BY t.createdAt DESC
@@ -1057,8 +1114,8 @@ router.get('/', async (req, res) => {
         LEFT JOIN clientss c ON t.client_id = c.id
         LEFT JOIN users ap ON t.approved_by = ap._id
         LEFT JOIN users rj ON t.rejected_by = rj._id
-        LEFT JOIN taskassignments ta ON ta.task_id = t.id
-        LEFT JOIN users u ON u._id = ta.user_id
+        LEFT JOIN taskassignments ta ON ta.task_Id = t.id
+        LEFT JOIN users u ON u._id = ta.user_Id
         WHERE t.project_public_id = ? ${hasIsDeleted && !includeDeleted ? 'AND t.isDeleted != 1' : ''}
         GROUP BY t.id
         ORDER BY t.createdAt DESC
@@ -1164,6 +1221,15 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
       return res.status(404).json({ success: false, error: 'Task not found' });
     }
     const internalTaskId = taskRow[0].id;
+
+    // Guard: ensure the task's project is not closed
+    try {
+      const projRows = await q('SELECT project_id FROM tasks WHERE id = ? LIMIT 1', [internalTaskId]);
+      const projId = projRows && projRows[0] ? projRows[0].project_id : null;
+      await ensureProjectOpen(projId);
+    } catch (err) {
+      return res.status(err.status || 403).json({ success: false, error: err.message });
+    }
 
     db.getConnection((err, connection) => {
       if (err) {
@@ -1283,6 +1349,12 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
                 }
 
                 const newAssigneeId = newUserIds[0];
+                // Check active tasks for new assignee
+                const hasActiveForNew = await assigneeHasActiveTask(newAssigneeId);
+                if (hasActiveForNew) {
+                  connection.release();
+                  return res.status(400).json({ success: false, error: 'The selected assignee already has an active task and cannot be reassigned another until it is completed.' });
+                }
 
                 // Remove all current assignees
                 await new Promise((resolve, reject) =>
@@ -1448,17 +1520,33 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
 });
 // PATCH /tasks/:taskId/reassign/:userId - Approve or reject a reassignment request for a specific user
 router.patch('/:taskId/reassign/:userId', ruleEngine('task_reassign'), requireRole(['Manager', 'Admin']), async (req, res) => {
-  const { taskId, userId } = req.params;
-  const { approve, newAssigneeId } = req.body;
+  let { taskId, userId } = req.params;
+  let { approve, newAssigneeId } = req.body;
   try {
+    // Resolve public IDs if needed
+    if (!/^\d+$/.test(taskId)) {
+      const tRows = await q('SELECT id FROM tasks WHERE public_id = ?', [taskId]);
+      if (tRows.length) taskId = tRows[0].id;
+    }
+    if (!/^\d+$/.test(userId)) {
+      const uRows = await q('SELECT _id FROM users WHERE public_id = ?', [userId]);
+      if (uRows.length) userId = uRows[0]._id;
+    }
+    if (newAssigneeId && !/^\d+$/.test(newAssigneeId)) {
+      const uRows = await q('SELECT _id FROM users WHERE public_id = ?', [newAssigneeId]);
+      if (uRows.length) newAssigneeId = uRows[0]._id;
+    }
+
     if (approve) {
       // Set requester to read-only
-      await q('UPDATE taskassignments SET status = ?, is_read_only = 1 WHERE task_id = ? AND user_id = ?', ['READ_ONLY', taskId, userId]);
+      await q('UPDATE taskassignments SET is_read_only = 1 WHERE task_Id = ? AND user_Id = ?', [taskId, userId]);
       // Add new assignee if not present
       if (newAssigneeId) {
-        const exists = await q('SELECT 1 FROM taskassignments WHERE task_id = ? AND user_id = ?', [taskId, newAssigneeId]);
+        const exists = await q('SELECT 1 FROM taskassignments WHERE task_Id = ? AND user_Id = ?', [taskId, newAssigneeId]);
         if (!exists.length) {
-          await q('INSERT INTO taskassignments (task_id, user_id, status, is_read_only) VALUES (?, ?, ?, 0)', [taskId, newAssigneeId, 'ACTIVE']);
+          const hasActive = await assigneeHasActiveTask(newAssigneeId);
+          if (hasActive) return res.status(400).json({ success: false, error: 'The selected assignee already has an active task and cannot be assigned another until it is completed.' });
+          await q('INSERT INTO taskassignments (task_Id, user_Id, is_read_only) VALUES (?, ?, 0)', [taskId, newAssigneeId]);
         }
       }
       // Log audit (implement as needed)
@@ -1591,6 +1679,13 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
       return res.status(404).json({ success: false, message: 'Task not found, not assigned to you with full access, or does not belong to the specified project' });
     }
 
+    // Guard: ensure project is not closed
+    try {
+      await ensureProjectOpen(resolvedProjectId);
+    } catch (err) {
+      return res.status(err.status || 403).json({ success: false, message: err.message });
+    }
+
     const task = tasks[0];
     const currentStatusStr = task.status || task.stage || 'PENDING';
     
@@ -1624,15 +1719,27 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
     if (normalizedTarget === 'REVIEW') {
       const tenantId = req.tenantId || req.user.tenant_id || 1;
       console.log(`[DEBUG] Requesting transition for tenantId: ${tenantId}, task: ${resolvedTaskId}`);
-      const transitionResult = await workflowService.requestTransition(tenantId, 'TASK', resolvedTaskId, 'Completed', req.user._id, req.user.role, { reason: 'Employee requesting task completion' });
+      const transitionResult = await workflowService.requestTransition({
+        tenantId,
+        entityType: 'TASK',
+        entityId: resolvedTaskId,
+        toState: 'COMPLETED',
+        userId: req.user._id,
+        role: req.user.role,
+        projectId: resolvedProjectId,
+        meta: { reason: 'Employee requesting task completion' }
+      });
 
-      if (transitionResult.status === 'APPLIED') {
-        // Should not happen for Employee based on engine rules, but if direct, set to Completed
-        await q('UPDATE tasks SET status = "Completed", updatedAt = NOW() WHERE id = ?', [resolvedTaskId]);
-        return res.json({ success: true, message: 'Task completed directly', data: { status: 'Completed' } });
-      } else if (transitionResult.status === 'PENDING_APPROVAL') {
+      // requestTransition returns an object with requestId and taskStatus when pending
+      if (transitionResult && transitionResult.requestId) {
         workflowMessage = 'Review requested — sent for manager approval';
         workflowData = { requestId: transitionResult.requestId };
+      } else {
+        // Fallback: if service updated directly, reflect that
+        if (transitionResult && transitionResult.taskStatus === 'COMPLETED') {
+          await q('UPDATE tasks SET status = ?, updatedAt = NOW() WHERE id = ?', ['Completed', resolvedTaskId]);
+          return res.json({ success: true, message: 'Task completed directly', data: { status: 'Completed' } });
+        }
       }
     }
 
@@ -2710,7 +2817,7 @@ router.put("/updatetask/:id", requireRole(['Admin', 'Manager']), async (req, res
     db.query(
       updateTaskQuery,
       [stage, title, priority, description, client_id, taskDate, time_alloted, new Date(), taskId],
-      (err, result) => {
+      async (err, result) => {
         if (err) {
           logger.error(`Error updating task: ${err.message}`);
           return res.status(500).json({ success: false, error: 'Database update error' });
@@ -2726,20 +2833,25 @@ router.put("/updatetask/:id", requireRole(['Admin', 'Manager']), async (req, res
           if (assigned_to.length > 1) {
             return res.status(400).json({ success: false, error: 'Tasks must have exactly one assignee (single-user ownership)' });
           }
-          
-          const deleteQuery = `DELETE FROM taskassignments WHERE task_id = ?`;
-          db.query(deleteQuery, [taskId], (delErr) => {
-            if (delErr) {
-              logger.error(`Error clearing task assignments: ${delErr.message}`);
-            } else if (assigned_to.length === 1) {
-              const insertQuery = `INSERT INTO taskassignments (task_id, user_id) VALUES (?, ?)`;
-              db.query(insertQuery, [taskId, assigned_to[0]], (insErr) => {
-                if (insErr) {
-                  logger.error(`Error assigning user: ${insErr.message}`);
-                }
-              });
+          const deleteQuery = `DELETE FROM taskassignments WHERE task_Id = ?`;
+          // remove existing assignees
+          await new Promise((resolve, reject) => db.query(deleteQuery, [taskId], (delErr) => delErr ? reject(delErr) : resolve()));
+
+          if (assigned_to.length === 1) {
+            const candidate = assigned_to[0];
+            // Normalize to internal id if needed
+            const candidateId = String(candidate);
+            const hasActive = await assigneeHasActiveTask(candidateId);
+            if (hasActive) {
+              return res.status(400).json({ success: false, error: 'The selected assignee already has an active task and cannot be assigned another until it is completed.' });
             }
-          });
+            const insertQuery = `INSERT INTO taskassignments (task_Id, user_Id) VALUES (?, ?)`;
+            try {
+              await new Promise((resolve, reject) => db.query(insertQuery, [taskId, candidateId], (insErr) => insErr ? reject(insErr) : resolve()));
+            } catch (insErr) {
+              logger.error(`Error assigning user: ${insErr.message}`);
+            }
+          }
         }
 
         logger.info(`Task status updated successfully: taskId=${taskId}, newStage=${stage}`);
@@ -2930,7 +3042,7 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
   try {
     // Block if pending request exists
     const [existingReq] = await new Promise((resolve, reject) =>
-      mydb.query(`SELECT id FROM task_resign_requests WHERE task_id = ? AND status = 'PENDING'`, [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
+      db.query(`SELECT id FROM task_resign_requests WHERE task_id = ? AND status = 'PENDING'`, [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
     );
     if (existingReq?.length > 0) return res.status(409).json({ success: false, error: 'Pending request exists' });
 
@@ -2946,6 +3058,13 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
     );
     if (!taskRows?.length) return res.status(404).json({ success: false, error: 'Task not found' });
     const fullTask = taskRows[0];
+
+    // Guard: ensure project is not closed
+    try {
+      await ensureProjectOpen(fullTask.project_id);
+    } catch (err) {
+      return res.status(err.status || 403).json({ success: false, error: err.message });
+    }
 
     // Priority: Project Manager
     let manager = null;
@@ -2963,8 +3082,8 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
         db.query(`
           SELECT DISTINCT u._id, u.public_id, u.name, u.email
           FROM taskassignments ta 
-          JOIN users u ON ta.user_id = u._id
-          WHERE ta.task_id = ? AND u.role = 'Manager' AND u.isActive = 1
+          JOIN users u ON ta.user_Id = u._id
+          WHERE ta.task_Id = ? AND u.role = 'Manager' AND u.isActive = 1
           ORDER BY u.name ASC LIMIT 1
         `, [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
       );
@@ -3059,6 +3178,15 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
       taskId = rows[0].id;
     }
 
+    // Guard: ensure the task's project is not closed
+    try {
+      const tRows = await q('SELECT project_id FROM tasks WHERE id = ? LIMIT 1', [taskId]);
+      const projId = tRows && tRows[0] ? tRows[0].project_id : null;
+      await ensureProjectOpen(projId);
+    } catch (err) {
+      return res.status(err.status || 403).json({ success: false, error: err.message });
+    }
+
     // Validate pending request exists
     const [reqRows] = await new Promise((resolve, reject) =>
       db.query(
@@ -3073,24 +3201,37 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
     }
     const resignRequest = reqRows[0];
 
+    // Resolve public_id to internal ID for new assignee (prefer body over request since request table might not have it)
+    let finalNewAssigneeId = (req.body && req.body.new_assignee_id) || resignRequest.new_assignee_id;
+    if (finalNewAssigneeId && !/^\d+$/.test(finalNewAssigneeId)) {
+      const uRows = await q('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [finalNewAssigneeId]);
+      if (uRows?.length) finalNewAssigneeId = uRows[0]._id;
+    }
+
     // Validate new assignee exists (for approve)
     let newAssigneeUser = null;
-    if (action.toUpperCase() === 'APPROVE' && resignRequest.new_assignee_id) {
+    if (action.toUpperCase() === 'APPROVE') {
+      if (!finalNewAssigneeId) {
+        return res.status(400).json({ success: false, error: 'new_assignee_id is required' });
+      }
       const [newUserRows] = await new Promise((resolve, reject) =>
-        db.query('SELECT _id, name, email FROM users WHERE _id = ?', [resignRequest.new_assignee_id], (err, rows) => err ? reject(err) : resolve([rows]))
+        db.query('SELECT _id, name, email, public_id FROM users WHERE _id = ?', [finalNewAssigneeId], (err, rows) => err ? reject(err) : resolve([rows]))
       );
       if (!newUserRows?.length) {
         return res.status(400).json({ success: false, error: 'New assignee not found' });
       }
       newAssigneeUser = newUserRows[0];
+      // Ensure new assignee does not already have an active task
+      const hasActiveForNew = await assigneeHasActiveTask(finalNewAssigneeId);
+      if (hasActiveForNew) return res.status(400).json({ success: false, error: 'The selected new assignee already has an active task and cannot be assigned another until it is completed.' });
     }
     // Get old assignee user
     const [oldUserRows] = await new Promise((resolve, reject) =>
       db.query('SELECT _id, name, email FROM users WHERE _id = ?', [resignRequest.requested_by], (err, rows) => err ? reject(err) : resolve([rows]))
     );
     const oldAssigneeUser = oldUserRows?.[0];
-    // Get all managers/admins
-    const managers = await q('SELECT name, email FROM users WHERE role IN ("Manager", "Admin")');
+    // Get managers/admins for this tenant only
+    const managers = await q('SELECT name, email FROM users WHERE role IN ("Manager", "Admin") AND (tenant_id = ? OR tenant_id IS NULL)', [req.tenantId || 1]);
 
     // Manager details
     const newStatus = action.toUpperCase();
@@ -3119,71 +3260,58 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
     try {
       // Update request status
       await new Promise((resolve, reject) => {
-        db.query(
+        connection.query(
           `UPDATE task_resign_requests 
            SET status = ?, responded_at = NOW(), responded_by = ?, responder_name = ? 
            WHERE id = ?`,
           [newStatus, managerId, managerName, requestId],
-          (err) => err ? reject(err) : resolve(),
-          connection
+          (err) => err ? reject(err) : resolve()
         );
       });
 
       if (newStatus === 'APPROVE') {
         // Lock task and reassign atomically
         await new Promise((resolve, reject) => {
-          db.query(
+          connection.query(
             `UPDATE tasks SET status = 'Request Approved', is_locked = 1 WHERE id = ?`,
             [taskId],
-            (err) => err ? reject(err) : resolve(),
-            connection
+            (err) => err ? reject(err) : resolve()
           );
         });
 
         // Single-user ownership: always full reassignment
         // Remove all current assignees
         await new Promise((resolve, reject) => {
-          db.query('DELETE FROM taskassignments WHERE task_id = ?', [taskId], (err) => err ? reject(err) : resolve(), connection);
+          connection.query('DELETE FROM taskassignments WHERE task_Id = ?', [taskId], (err) => err ? reject(err) : resolve());
         });
 
-        // Assign to new employee (if specified)
-        if (resignRequest.new_assignee_id) {
+        // Assign to new employee
+        if (finalNewAssigneeId) {
           await new Promise((resolve, reject) => {
-            db.query(
-              'INSERT INTO taskassignments (task_id, user_id) VALUES (?, ?)',
-              [taskId, resignRequest.new_assignee_id],
-              (err) => err ? reject(err) : resolve(),
-              connection
+            connection.query(
+              'INSERT INTO taskassignments (task_Id, user_Id) VALUES (?, ?)',
+              [taskId, finalNewAssigneeId],
+              (err) => err ? reject(err) : resolve()
             );
           });
         }
 
         // Give previous assignee read-only access for reference
         await new Promise((resolve, reject) => {
-          db.query(
-            'INSERT INTO taskassignments (task_id, user_id, is_read_only) VALUES (?, ?, 1)',
+          connection.query(
+            'INSERT INTO taskassignments (task_Id, user_Id, is_read_only) VALUES (?, ?, 1)',
             [taskId, resignRequest.requested_by],
-            (err) => err ? reject(err) : resolve(),
-            connection
+            (err) => err ? reject(err) : resolve()
           );
         });
 
         await commitTransaction(connection);
 
         // Send notification emails using proper templates
-        const taskLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/tasks/${task.public_id}`;
+        const taskLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/tasks/${task.public_id || task.id}`;
 
         // Send emails for approval
         try {
-          // Get new assignee info if assigned
-          let newAssigneeUser = null;
-          if (resignRequest.new_assignee_id) {
-            const [newAssigneeRows] = await new Promise((resolve, reject) =>
-              db.query('SELECT name, email FROM users WHERE _id = ?', [resignRequest.new_assignee_id], (err, rows) => err ? reject(err) : resolve([rows]))
-            );
-            newAssigneeUser = newAssigneeRows[0];
-          }
-
           // Single-user ownership: always notify the previous assignee (read-only access)
           if (oldAssigneeUser?.email) {
             const oldAssigneeTemplate = emailService.taskReassignmentOldAssigneeTemplate({
@@ -3229,7 +3357,6 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
           }
         } catch (emailError) {
           console.error('Error sending approval emails:', emailError);
-          // Don't fail the request due to email errors
         }
 
         return res.json({
@@ -3237,24 +3364,34 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
           message: 'Reassignment approved successfully',
           action_taken: newStatus,
           task_status: 'Request Approved',
-          locked: true
+          locked: true,
+          task: {
+            id: task.public_id || task.id,
+            title: task.title,
+            priority: task.priority,
+            stage: 'Request Approved'
+          },
+          assigned_to: newAssigneeUser ? {
+            id: newAssigneeUser.public_id || newAssigneeUser._id,
+            name: newAssigneeUser.name,
+            email: newAssigneeUser.email
+          } : null
         });
 
       } else if (newStatus === 'REJECT') {
         // Unlock and resume task atomically
         await new Promise((resolve, reject) => {
-          db.query(
+          connection.query(
             `UPDATE tasks SET status = 'In Progress', is_locked = 0 WHERE id = ?`,
             [taskId],
-            (err) => err ? reject(err) : resolve(),
-            connection
+            (err) => err ? reject(err) : resolve()
           );
         });
 
         await commitTransaction(connection);
 
         // Notify old assignee and managers/admins on rejection
-        const taskLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/tasks/${task.public_id}`;
+        const taskLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/tasks/${task.public_id || task.id}`;
 
         // Old assignee (rejection notification)
         if (oldAssigneeUser?.email) {

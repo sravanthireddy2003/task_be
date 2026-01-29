@@ -387,7 +387,7 @@ module.exports = {
             if (prow && prow.length) {
               const pid = prow[0].id;
               const isMemberRows = await q(
-                'SELECT 1 FROM taskassignments ta JOIN tasks t ON ta.task_id = t.id WHERE ta.user_id = ? AND t.project_id = ? LIMIT 1',
+                'SELECT 1 FROM taskassignments ta JOIN tasks t ON ta.task_Id = t.id WHERE ta.user_Id = ? AND t.project_id = ? LIMIT 1',
                 [req.user._id || req.user.id, pid]
               );
               const isMember = isMemberRows && isMemberRows.length > 0;
@@ -686,7 +686,7 @@ module.exports = {
       const empRows = await q(`
         SELECT DISTINCT u._id, u.public_id, u.name, u.role
         FROM tasks t
-        JOIN taskassignments ta ON ta.task_id = t.id
+        JOIN taskassignments ta ON ta.task_Id = t.id
         JOIN users u ON u._id = ta.user_id
         WHERE (t.project_id = ? OR t.project_public_id = ?)
           AND u.role = 'Employee'

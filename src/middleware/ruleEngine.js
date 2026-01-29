@@ -55,7 +55,7 @@ const ruleEngineMiddleware = (ruleCode = null) => {
                   const pcheck = await q('SELECT COUNT(*) AS cnt FROM projects WHERE id = ? AND (project_manager_id = ? OR created_by = ?)', [pid, user._id, user._id]).catch(() => []);
                   if (pcheck && pcheck[0] && pcheck[0].cnt > 0) return next();
                   // Check task assignment in project
-                  const tcheck = await q(`SELECT COUNT(*) AS cnt FROM taskassignments ta JOIN tasks t ON ta.task_id = t.id WHERE t.project_id = ? AND ta.user_id = ?`, [pid, user._id]).catch(() => []);
+                  const tcheck = await q(`SELECT COUNT(*) AS cnt FROM taskassignments ta JOIN tasks t ON ta.task_Id = t.id WHERE t.project_id = ? AND ta.user_Id = ?`, [pid, user._id]).catch(() => []);
                   if (tcheck && tcheck[0] && tcheck[0].cnt > 0) return next();
                 }
               }

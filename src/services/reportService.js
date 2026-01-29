@@ -59,7 +59,7 @@ async function projectLookupDiagnostic(projectIdentifier) {
 async function userHasAccessToProject(user, projectId) {
   if (!user) return false;
   if (user.role === 'Admin' || user.role === 'Manager') return true;
-  const rows = await q('SELECT COUNT(*) as c FROM taskassignments ta JOIN tasks t ON ta.task_id = t.id WHERE ta.user_id = ? AND t.project_id = ?', [user._id, projectId]);
+  const rows = await q('SELECT COUNT(*) as c FROM taskassignments ta JOIN tasks t ON ta.task_Id = t.id WHERE ta.user_Id = ? AND t.project_id = ?', [user._id, projectId]);
   return rows && rows[0] && rows[0].c > 0;
 }
 
@@ -84,8 +84,8 @@ async function generateProjectReport(user, projectIdentifier, startDate, endDate
             GROUP_CONCAT(DISTINCT u.name SEPARATOR ', ') as assignedTo,
             COALESCE((SELECT SUM(hours) FROM timelogs tl WHERE tl.task_id = t.id), t.total_duration, 0) as hoursLogged
           FROM tasks t
-          LEFT JOIN taskassignments ta ON t.id = ta.task_id
-          LEFT JOIN users u ON ta.user_id = u._id
+          LEFT JOIN taskassignments ta ON t.id = ta.task_Id
+          LEFT JOIN users u ON ta.user_Id = u._id
           WHERE t.project_id = ? AND ((t.taskDate BETWEEN ? AND ?) OR (t.createdAt BETWEEN ? AND ?))
           GROUP BY t.id
           ORDER BY t.createdAt DESC`,
@@ -97,8 +97,8 @@ async function generateProjectReport(user, projectIdentifier, startDate, endDate
             GROUP_CONCAT(DISTINCT u.name SEPARATOR ', ') as assignedTo,
             COALESCE(t.total_duration, 0) as hoursLogged
           FROM tasks t
-          LEFT JOIN taskassignments ta ON t.id = ta.task_id
-          LEFT JOIN users u ON ta.user_id = u._id
+          LEFT JOIN taskassignments ta ON t.id = ta.task_Id
+          LEFT JOIN users u ON ta.user_Id = u._id
           WHERE t.project_id = ? AND ((t.taskDate BETWEEN ? AND ?) OR (t.createdAt BETWEEN ? AND ?))
           GROUP BY t.id
           ORDER BY t.createdAt DESC`,
@@ -110,8 +110,8 @@ async function generateProjectReport(user, projectIdentifier, startDate, endDate
         GROUP_CONCAT(DISTINCT u.name SEPARATOR ', ') as assignedTo,
         COALESCE((SELECT SUM(hours) FROM timelogs tl WHERE tl.task_id = t.id), t.total_duration, 0) as hoursLogged
           FROM tasks t
-          LEFT JOIN taskassignments ta ON t.id = ta.task_id
-          LEFT JOIN users u ON ta.user_id = u._id
+          LEFT JOIN taskassignments ta ON t.id = ta.task_Id
+          LEFT JOIN users u ON ta.user_Id = u._id
           WHERE t.project_id = ? AND ((t.taskDate BETWEEN ? AND ?) OR (t.createdAt BETWEEN ? AND ?))
           GROUP BY t.id
           ORDER BY t.createdAt DESC`,
@@ -123,8 +123,8 @@ async function generateProjectReport(user, projectIdentifier, startDate, endDate
         GROUP_CONCAT(DISTINCT u.name SEPARATOR ', ') as assignedTo,
         COALESCE(t.total_duration, 0) as hoursLogged
           FROM tasks t
-          LEFT JOIN taskassignments ta ON t.id = ta.task_id
-          LEFT JOIN users u ON ta.user_id = u._id
+          LEFT JOIN taskassignments ta ON t.id = ta.task_Id
+          LEFT JOIN users u ON ta.user_Id = u._id
           WHERE t.project_id = ? AND ((t.taskDate BETWEEN ? AND ?) OR (t.createdAt BETWEEN ? AND ?))
           GROUP BY t.id
           ORDER BY t.createdAt DESC`,
@@ -190,8 +190,8 @@ async function generateProjectReport(user, projectIdentifier, startDate, endDate
         SUM(CASE WHEN LOWER(t.status) = 'completed' THEN 1 ELSE 0 END) as tasksCompleted,
         COALESCE(SUM(tl.hours), SUM(t.total_duration), 0) as hoursLogged
       FROM taskassignments ta
-      JOIN users u ON ta.user_id = u._id
-      JOIN tasks t ON ta.task_id = t.id
+      JOIN users u ON ta.user_Id = u._id
+      JOIN tasks t ON ta.task_Id = t.id
       LEFT JOIN timelogs tl ON tl.task_id = t.id
       WHERE t.project_id = ? AND ((t.taskDate BETWEEN ? AND ?) OR (t.createdAt BETWEEN ? AND ?))
       GROUP BY u._id, u.name`;

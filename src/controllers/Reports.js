@@ -140,8 +140,8 @@ router.get('/overview', requireRole(['Admin', 'Manager']), async (req, res) => {
                SUM(CASE WHEN LOWER(t.status) IN ('in progress','doing','inprogress') THEN 1 ELSE 0 END) as inProgress,
                COALESCE(SUM(tl.hours), SUM(t.total_duration), 0) as hoursLogged
              FROM taskassignments ta
-             JOIN users u ON ta.user_id = u._id
-             JOIN tasks t ON ta.task_id = t.id
+             JOIN users u ON ta.user_Id = u._id
+             JOIN tasks t ON ta.task_Id = t.id
              LEFT JOIN timelogs tl ON tl.task_id = t.id
              WHERE (DATE(t.taskDate) BETWEEN DATE(?) AND DATE(?)) OR (DATE(t.createdAt) BETWEEN DATE(?) AND DATE(?))
              GROUP BY u._id, u.name, u.role
@@ -152,8 +152,8 @@ router.get('/overview', requireRole(['Admin', 'Manager']), async (req, res) => {
                SUM(CASE WHEN LOWER(t.status) IN ('in progress','doing','inprogress') THEN 1 ELSE 0 END) as inProgress,
                COALESCE(SUM(t.total_duration), 0) as hoursLogged
              FROM taskassignments ta
-             JOIN users u ON ta.user_id = u._id
-             JOIN tasks t ON ta.task_id = t.id
+             JOIN users u ON ta.user_Id = u._id
+             JOIN tasks t ON ta.task_Id = t.id
              WHERE (DATE(t.taskDate) BETWEEN DATE(?) AND DATE(?)) OR (DATE(t.createdAt) BETWEEN DATE(?) AND DATE(?))
              GROUP BY u._id, u.name, u.role
              ORDER BY u.name ASC`, params: [startStr, endStr, startStr, endStr] }

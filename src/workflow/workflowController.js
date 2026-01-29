@@ -1,43 +1,98 @@
-// src/workflow/workflowController.js
-// APIs for workflow requests, approvals, pending lists, history
 
 const express = require('express');
 const router = express.Router();
 const workflowService = require('./workflowService');
 const auth = require('../middleware/auth');
-const { requireAuth } = require('../middleware/roles');
+const { requireAuth, requireRole } = require('../middleware/roles');
 
 router.use(auth);
 
+// Normalize tenantId for all workflow routes
+router.use((req, res, next) => {
+  let tid = req.tenantId || (req.user && req.user.tenant_id) || 1;
+  if (typeof tid === 'string' && tid.startsWith('tenant_')) {
+    const suffix = tid.replace('tenant_', '');
+    if (suffix && !isNaN(suffix)) {
+      tid = parseInt(suffix, 10);
+    }
+  }
+  req.normalizedTenantId = tid;
+  next();
+});
+
 // POST /api/workflow/request
+// Employee requests task completion, which moves it to REVIEW
 router.post('/request', requireAuth, async (req, res) => {
   try {
-    const { entityType, entityId, toState, meta } = req.body;
-    const tenantId = req.tenantId || req.user.tenant_id || req.body.tenantId || 1;
+    const { entityType, entityId, toState, projectId, meta } = req.body;
+    const tenantId = req.normalizedTenantId;
     const userId = req.user._id;
     const role = req.user.role;
 
-    const result = await workflowService.requestTransition(tenantId, entityType, entityId, toState, userId, role, meta);
+    const result = await workflowService.requestTransition({
+      tenantId, 
+      entityType, 
+      entityId, 
+      toState, 
+      userId, 
+      role, 
+      projectId,
+      meta
+    });
     res.json({ success: true, data: result });
   } catch (e) {
+    console.error("[ERROR] /workflow/request:", e);
     res.status(400).json({ success: false, error: e.message });
   }
 });
 
-// POST /api/workflow/approve
-router.post('/approve', requireAuth, async (req, res) => {
+// POST /api/workflow/project/close-request
+// Manager requests project closure when all tasks are completed
+router.post('/project/close-request', requireAuth, requireRole(['MANAGER']), async (req, res) => {
   try {
-    const { requestId, approved, reason } = req.body;
+    const { projectId, reason } = req.body;
+    const tenantId = req.normalizedTenantId;
     const userId = req.user._id;
-    const role = req.user.role;
 
-    const result = await workflowService.approveRequest(requestId, approved, userId, role, reason);
+    if (!projectId) return res.status(400).json({ success: false, error: 'projectId is required' });
+
+    const result = await workflowService.requestProjectClosure({ tenantId, projectId, reason, userId });
+    return res.json({ success: true, message: 'Project closure request sent to admin', data: result });
+  } catch (e) {
+    console.error('[ERROR] /workflow/project/close-request:', e);
+    return res.status(400).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/workflow/approve
+// Manager/Admin approves or rejects a request
+router.post('/approve', requireAuth, requireRole(['MANAGER', 'ADMIN']), async (req, res) => {
+  try {
+    const { requestId, action, reason } = req.body;
+    const tenantId = req.normalizedTenantId;
+    const userId = req.user._id;
+    const userRole = req.user.role;
+
+    if (!['APPROVE', 'REJECT'].includes(action)) {
+      return res.status(400).json({ success: false, error: "Invalid action. Must be 'APPROVE' or 'REJECT'." });
+    }
+
+    const result = await workflowService.processApproval({
+      tenantId,
+      requestId,
+      action,
+      reason,
+      userId,
+      userRole
+    });
+    
     res.json({ 
       success: true, 
       message: result.message,
       data: result 
     });
   } catch (e) {
+    console.error("[ERROR] /workflow/approve:", e);
     res.status(400).json({ success: false, error: e.message });
   }
 });
@@ -45,13 +100,24 @@ router.post('/approve', requireAuth, async (req, res) => {
 // GET /api/workflow/pending?role=MANAGER&status=PENDING
 router.get('/pending', requireAuth, async (req, res) => {
   try {
-    const role = req.query.role || req.user.role;
-    // Default to 'all' if manager, so they see history too
-    const status = req.query.status || (role === 'MANAGER' || role === 'Admin' ? 'all' : 'PENDING');
-    const tenantId = req.tenantId || req.user.tenant_id || 1;
+    let role = req.query.role || req.user.role;
+    // Normalize role to PascalCase (Manager, Admin, Employee) for internal logic
+    if (role.toUpperCase() === 'ADMIN') role = 'Admin';
+    else if (role.toUpperCase() === 'MANAGER') role = 'Manager';
+
+    // Default to 'all' if manager or admin, so they see history too
+    const status = req.query.status || (['Manager', 'Admin'].includes(role) ? 'all' : 'PENDING');
+    
+    const tenantId = req.normalizedTenantId;
+    
     console.log(`[DEBUG] Fetching workflow requests: tenantId=${tenantId}, role=${role}, status=${status}`);
 
-    const requests = await workflowService.getRequests(tenantId, role, status);
+    let requests = await workflowService.getRequests({ tenantId, role, status });
+    requests = (requests || []).map(r => ({
+      ...r,
+      requested_by_name: r.requested_by_name || r.requestedByName || null,
+      requestedByName: r.requested_by_name || r.requestedByName || null
+    }));
     res.json({ success: true, data: requests });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -62,7 +128,7 @@ router.get('/pending', requireAuth, async (req, res) => {
 router.get('/history/:entityType/:entityId', requireAuth, async (req, res) => {
   try {
     const { entityType, entityId } = req.params;
-    const tenantId = req.tenantId || req.user.tenant_id || 1;
+    const tenantId = req.normalizedTenantId;
 
     const history = await workflowService.getHistory(tenantId, entityType, entityId);
     res.json({ success: true, data: history });

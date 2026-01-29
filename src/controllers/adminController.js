@@ -172,7 +172,7 @@ module.exports = {
       const employeeRows = await q(`
         SELECT u.name, COUNT(CASE WHEN LOWER(t.status) = 'completed' THEN 1 END) as completed, COUNT(CASE WHEN LOWER(t.status) = 'in progress' THEN 1 END) as inProgress
         FROM users u
-        LEFT JOIN taskassignments ta ON u._id = ta.user_id
+        LEFT JOIN taskassignments ta ON u._id = ta.user_Id
         LEFT JOIN tasks t ON ta.task_id = t.id
         WHERE u.role = 'employee'
         GROUP BY u._id, u.name
