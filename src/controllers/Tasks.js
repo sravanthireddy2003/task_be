@@ -2930,7 +2930,7 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
   try {
     // Block if pending request exists
     const [existingReq] = await new Promise((resolve, reject) =>
-      db.query(`SELECT id FROM task_resign_requests WHERE task_id = ? AND status = 'PENDING'`, [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
+      mydb.query(`SELECT id FROM task_resign_requests WHERE task_id = ? AND status = 'PENDING'`, [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
     );
     if (existingReq?.length > 0) return res.status(409).json({ success: false, error: 'Pending request exists' });
 
