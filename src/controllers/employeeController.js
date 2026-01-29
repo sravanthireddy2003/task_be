@@ -301,7 +301,6 @@ getMyTasks: async (req, res) => {
     const taskIds = (rows || []).map(r => r.id).filter(Boolean);
     const checklistMap = await fetchChecklistMap(taskIds);
 
-    // 🔒 COMPLETE LOCK INFO WITH MANAGER PUBLIC ID
     const lockStatuses = {};
     if (taskIds.length > 0) {
       const lockResult = await queryAsync(`
@@ -333,7 +332,6 @@ getMyTasks: async (req, res) => {
       const lockRows = Array.isArray(lockResult) ? lockResult : [];
       lockRows.forEach(row => {
         if (!row || !row.task_id || lockStatuses[row.task_id]) return;
-        
         lockStatuses[row.task_id] = {
           is_locked: row.request_status === 'PENDING',
           request_status: row.request_status || '',
@@ -417,7 +415,6 @@ getMyTasks: async (req, res) => {
       };
     });
 
-    // Kanban logic (unchanged)
     const statusMap = {};
     tasks.forEach(task => {
       const status = (task.status || task.stage || 'PENDING').toUpperCase();
@@ -443,11 +440,31 @@ getMyTasks: async (req, res) => {
       has_pending_requests: Object.keys(lockStatuses).length > 0
     };
 
+    // compute metrics
+    const metrics = {
+      totalTasks: tasks.length,
+      completedTasks: tasks.filter(t => (t.status || '').toString().toUpperCase() === 'COMPLETED').length,
+      pendingTasks: tasks.filter(t => {
+        const s = (t.status || t.stage || '').toString().toUpperCase();
+        return s === 'PENDING' || s === 'TO DO' || s === 'TO_DO' || s === 'TO-DO';
+      }).length,
+      reassignedTasks: Object.keys(lockStatuses).length
+    };
+
+    const rules = {
+      allowReassignment: true,
+      allowMultipleRequestsForSameTask: false,
+      allowedStatuses: ['pending', 'in_progress']
+    };
+
     return res.json({
       success: true,
+      metrics,
+      rules,
       data: tasks,
       kanban,
-      summary: lockSummary
+      summary: lockSummary,
+      meta: { count: tasks.length }
     });
   } catch (error) {
     console.error('getMyTasks error:', error);
