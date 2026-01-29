@@ -427,7 +427,11 @@ const getRequests = async ({ tenantId, role, status }) => {
                u.name as requested_by_name, 
                p.name as project_name, 
                p.public_id as project_public_id,
+               p.status as project_status,
+               p.is_locked as project_is_locked,
                t.title as task_name,
+               t.status as task_status,
+               t.is_locked as task_is_locked,
                c.name as client_name,
                c.company as client_company,
                c.email as client_email
@@ -449,28 +453,34 @@ const getRequests = async ({ tenantId, role, status }) => {
 
     const requests = await q(sql, params);
 
-    // If it's a project closure request, fetch sub-data
+    // Fetch sub-data for productivity and status logic
     for (const req of requests) {
-        // Status acknowledgement message
+        // 1. Status acknowledgement message
         const actionVerb = req.status === 'APPROVED' ? 'approved' : (req.status === 'REJECTED' ? 'rejected' : 'pending approval');
         req.message = `${req.entity_type} request #${req.id} is ${actionVerb}.`;
         
-        // Add outcome details for already processed requests
         if (req.status !== 'PENDING') {
             req.newStatus = req.status === 'APPROVED' ? req.to_state : req.from_state;
         }
 
-        if (req.entity_type === 'PROJECT') {
-            const projectId = req.entity_id;
+        // 2. Determine project context
+        const projectId = req.entity_type === 'PROJECT' ? req.entity_id : (req.project_id || (req.entity_type === 'TASK' ? (await q('SELECT project_id FROM tasks WHERE id = ?', [req.entity_id]))[0]?.project_id : null));
+        
+        // 3. Add Lock & Restriction Info
+        const isProjectClosed = req.project_status === 'CLOSED' || req.project_is_locked === 1;
+        req.can_create_tasks = !isProjectClosed;
+        req.can_send_request = !isProjectClosed && (req.entity_type !== 'TASK' || req.task_is_locked !== 1);
+        req.project_closed = isProjectClosed;
 
-            // 1. Fetch Client Details again (already in join, but ensuring all clean props)
+        if (projectId) {
+            // Fetch Client Details (if not already sufficient from join)
             req.client_details = {
                 name: req.client_name,
                 company: req.client_company,
                 email: req.client_email
             };
 
-            // 2. Fetch Tasks with Productivity and Assignees
+            // 4. Fetch Tasks with Productivity and Assignees
             const tasksSql = `
                 SELECT t.id, t.title, t.status, t.total_duration, t.priority, t.public_id
                 FROM tasks t
@@ -479,7 +489,6 @@ const getRequests = async ({ tenantId, role, status }) => {
             const tasks = await q(tasksSql, [projectId]);
 
             let totalProjectSeconds = 0;
-
             for (const task of tasks) {
                 totalProjectSeconds += (task.total_duration || 0);
 
@@ -513,7 +522,7 @@ const getRequests = async ({ tenantId, role, status }) => {
             req.total_project_hours = (totalProjectSeconds / 3600).toFixed(2);
             req.productivity_score = tasks.length > 0 ? (tasks.filter(t => t.status === 'Completed').length / tasks.length * 100).toFixed(0) + '%' : '0%';
 
-            // 3. Project Level Attachments
+            // 5. Project Level Attachments
             const projectDocSql = `
                 SELECT fileName, filePath, mimeType, fileSize
                 FROM documents
