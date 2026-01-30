@@ -1,3 +1,5 @@
+let logger;
+try { logger = require(__root + 'logger'); } catch (e) { try { logger = require('./logger'); } catch (e2) { try { logger = require('../logger'); } catch (e3) { logger = console; } } }
 const axios = require('axios');
 
 async function testProjectDropdown() {
@@ -8,29 +10,29 @@ async function testProjectDropdown() {
       password: 'admin123'  // Assuming default password
     });
     const token = login.data.token;
-    console.log('Login successful');
+    logger.info('Login successful');
 
     // Get project dropdown
     const dropdown = await axios.get('http://localhost:4000/api/projects/projectdropdown', {
       headers: { Authorization: `Bearer ${token}` }
     });
-    console.log('Projects:', dropdown.data);
+    logger.info('Projects:', dropdown.data);
 
     // Test list documents with project public_id
     if (dropdown.data.length > 0) {
       const projectPublicId = dropdown.data[0].id;
-      console.log(`Testing documents for project ${projectPublicId}`);
+      logger.info(`Testing documents for project ${projectPublicId}`);
       const docs = await axios.get('http://localhost:4000/api/documents', {
         headers: {
           Authorization: `Bearer ${token}`,
           'project-id': projectPublicId
         }
       });
-      console.log('Documents:', docs.data);
+      logger.info('Documents:', docs.data);
     }
 
   } catch(e) {
-    console.error(e.response ? e.response.data : e.message);
+    logger.error(e.response ? e.response.data : e.message);
   }
 }
 

@@ -1,5 +1,4 @@
 // src/rules/ruleCodes.js
-// Centralized mapping for rule codes following CRUD-based naming.
 
 const RULES = {
   // Tasks

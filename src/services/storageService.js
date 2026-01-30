@@ -61,7 +61,6 @@ class StorageService {
         throw new Error('No file data available to persist');
       }
 
-      // return uploads-relative path without percent-encoding; encoding is done when constructing public URLs
       return { storagePath: '/uploads/' + filename, provider: 'local', key: filename };
     } catch (e) {
       const err = new Error('Failed to save uploaded file');
@@ -70,11 +69,9 @@ class StorageService {
     }
   }
 
-  // For downloads/previews: either return a signed url (redirect) or a stream
   async getDownloadHandle(storageInfo, options = {}) {
     if (!storageInfo) throw new Error('storageInfo required');
 
-    // If storageInfo provides explicit key (legacy), use it for signed url
     if (STORAGE_PROVIDER === 's3' && storageInfo.key) {
       const expiresIn = options.expiresIn || 3600;
       const command = new GetObjectCommand({ Bucket: this.bucket, Key: storageInfo.key });
@@ -117,7 +114,6 @@ class StorageService {
     }
     const fileStream = fs.createReadStream(p);
 
-    // Try to provide a public path if the file lives under the project's uploads directory
     try {
       const resolvedP = path.resolve(p);
       let publicPath = null;

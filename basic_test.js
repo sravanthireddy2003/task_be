@@ -1,5 +1,8 @@
 const axios = require('axios');
 
+let logger;
+try { logger = require('./logger'); } catch (e) { logger = console; }
+
 // Test credentials
 const TEST_CREDENTIALS = {
   email: 'admin@example.com',
@@ -7,17 +10,16 @@ const TEST_CREDENTIALS = {
 };
 
 async function basicDocumentTest() {
-  console.log('🚀 Basic Document Management Test...\n');
+  logger.info('🚀 Basic Document Management Test...\n');
 
   try {
     // 1. Login
-    console.log('1. 🔐 Logging in...');
+    logger.info('1. 🔐 Logging in...');
     const loginResponse = await axios.post('http://localhost:3000/api/auth/login', TEST_CREDENTIALS);
     const authToken = loginResponse.data.token;
-    console.log('✅ Login successful\n');
+    logger.info('✅ Login successful\n');
 
-    // 2. List documents (should return empty array initially)
-    console.log('2. 📄 Listing documents...');
+    logger.info('2. 📄 Listing documents...');
     const documentsResponse = await axios.get('http://localhost:3000/api/documents', {
       headers: {
         'Authorization': `Bearer ${authToken}`
@@ -25,11 +27,11 @@ async function basicDocumentTest() {
     });
 
     const documents = documentsResponse.data.data;
-    console.log(`✅ Found ${documents.length} documents`);
-    console.log('Response:', JSON.stringify(documentsResponse.data, null, 2));
+    logger.info(`✅ Found ${documents.length} documents`);
+    logger.info('Response:', JSON.stringify(documentsResponse.data, null, 2));
 
   } catch (error) {
-    console.error('❌ Test failed:', error.response?.data || error.message);
+    logger.error('❌ Test failed:', error.response?.data || error.message);
   }
 }
 

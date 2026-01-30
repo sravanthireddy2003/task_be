@@ -1,5 +1,4 @@
 // src/rules/jsonRuleEngine.js
-// Integrate json-rules-engine while keeping existing DB rule shape
 
 const { Engine } = require('json-rules-engine');
 const db = require('../config/db');
@@ -37,7 +36,6 @@ class JsonRuleEngine {
     logger.info(`JsonRuleEngine: loaded ${this.rules.length} rules`);
   }
 
-  // Flatten context into dot-paths for engine facts
   flattenContext(obj, prefix = '', res = {}) {
     for (const [k, v] of Object.entries(obj || {})) {
       const p = prefix ? `${prefix}.${k}` : k;
@@ -126,7 +124,6 @@ class JsonRuleEngine {
   async runEngineForRule(rule, facts) {
     const engine = new Engine();
 
-    // register custom operators for comparisons and case-insensitive in
     engine.addOperator('gt', (factVal, jsonVal) => parseFloat(factVal) > parseFloat(jsonVal));
     engine.addOperator('lt', (factVal, jsonVal) => parseFloat(factVal) < parseFloat(jsonVal));
     engine.addOperator('gte', (factVal, jsonVal) => parseFloat(factVal) >= parseFloat(jsonVal));
@@ -140,7 +137,6 @@ class JsonRuleEngine {
     });
     engine.addOperator('equal', (factVal, jsonVal) => {
       if (factVal === undefined) return false;
-      // If fact is an array of variants, consider a match if any element equals jsonVal
       if (Array.isArray(factVal)) {
         return factVal.some(v => {
           if (v === undefined || v === null) return false;
@@ -216,7 +212,6 @@ class JsonRuleEngine {
           if (rule.action === 'DENY' || rule.action === 'REQUIRE_APPROVAL' || rule.action === 'ALLOW') {
             return decision;
           }
-          // for MODIFY we continue (not implemented here)
         }
       } catch (e) {
         logger.warn('JsonRuleEngine: rule evaluation failed for ' + rule.ruleCode, e && e.message);
@@ -227,7 +222,6 @@ class JsonRuleEngine {
     return { allowed: false, ruleCode: 'NO_RULE_MATCH', reason: 'No matching rule found', nextAction: null };
   }
 
-  // Public evaluate function: loads rules from DB (if not loaded), filters by ruleCode and evaluates
   async evaluate(req, user, resource = {}, ruleCode = null) {
     if (!this.loaded) await this.loadRules();
 

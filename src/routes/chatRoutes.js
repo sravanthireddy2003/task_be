@@ -2,10 +2,11 @@ const express = require('express');
 const router = express.Router();
 const ChatService = require('../services/chatService');
 const { requireRole } = require('../middleware/roles');
+let logger;
+try { logger = require(global.__root + 'logger'); } catch (e) { logger = require('../logger'); }
 const ruleEngine = require('../middleware/ruleEngine');
 const RULES = require('../rules/ruleCodes');
  
-// Helper function for database queries
 const q = (sql, params = []) => new Promise((resolve, reject) => {
   const db = require('../db');
   db.query(sql, params, (err, results) => {
@@ -14,7 +15,6 @@ const q = (sql, params = []) => new Promise((resolve, reject) => {
   });
 });
  
-// GET /api/projects/:projectId/chat/messages - Get chat messages for a project
 router.get('/:projectId/chat/messages', ruleEngine(RULES.PROJECT_VIEW), requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const { projectId } = req.params;
@@ -42,7 +42,7 @@ router.get('/:projectId/chat/messages', ruleEngine(RULES.PROJECT_VIEW), requireR
     });
  
   } catch (error) {
-    console.error('Error getting chat messages:', error);
+    logger.error('Error getting chat messages:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to retrieve chat messages'
@@ -73,7 +73,7 @@ router.get('/:projectId/chat/participants', ruleEngine(RULES.PROJECT_VIEW), requ
     });
  
   } catch (error) {
-    console.error('Error getting chat participants:', error);
+    logger.error('Error getting chat participants:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to retrieve chat participants'
@@ -106,7 +106,6 @@ router.post('/:projectId/chat/messages', ruleEngine(RULES.PROJECT_UPDATE), requi
     let messageType = 'text';
     let responseMessage = message;
  
-    // Check if it's a bot command
     if (message.startsWith('/')) {
       // Handle bot command - send response as a separate bot message
       const userId = req.user._id || req.user.id; // Fallback to public_id if _id is not available
@@ -121,7 +120,6 @@ router.post('/:projectId/chat/messages', ruleEngine(RULES.PROJECT_UPDATE), requi
         'bot'
       );
  
-      // Also save the user's command message for history
       const userMessage = await ChatService.saveMessage(
         projectId,
         req.user._id,
@@ -168,7 +166,7 @@ router.post('/:projectId/chat/messages', ruleEngine(RULES.PROJECT_UPDATE), requi
     });
  
   } catch (error) {
-    console.error('Error sending chat message:', error);
+    logger.error('Error sending chat message:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to send message'
@@ -199,7 +197,7 @@ router.get('/:projectId/chat/stats', ruleEngine(RULES.PROJECT_VIEW), requireRole
     });
  
   } catch (error) {
-    console.error('Error getting chat stats:', error);
+    logger.error('Error getting chat stats:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to retrieve chat statistics'
@@ -251,7 +249,7 @@ router.delete('/:projectId/chat/messages/:messageId', ruleEngine(RULES.PROJECT_U
     });
  
   } catch (error) {
-    console.error('Error deleting chat message:', error);
+    logger.error('Error deleting chat message:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to delete message'

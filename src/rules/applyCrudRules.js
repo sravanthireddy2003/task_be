@@ -1,8 +1,5 @@
 // src/rules/applyCrudRules.js
-// Helper to provide standardized CRUD ruleEngine middlewares for new routers.
 // Usage:
-// const { crudMiddlewares } = require('../rules/applyCrudRules');
-// const cm = crudMiddlewares('TASK');
 // router.post('/', cm.create, requireRole(...), controller.create);
 
 const RULES = require('./ruleCodes');

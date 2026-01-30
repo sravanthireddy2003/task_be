@@ -8,6 +8,9 @@ const path = require('path');
 const NotificationService = require('../services/notificationService');
 const workflowService = require(__root + 'workflow/workflowService');
 
+let logger;
+try { logger = require(global.__root + 'logger'); } catch (e) { try { logger = require('../../logger'); } catch (e2) { logger = console; } }
+
 const q = (sql, params = []) => new Promise((resolve, reject) => db.query(sql, params, (e, r) => e ? reject(e) : resolve(r)));
 
 function makeId() { return crypto.randomBytes(12).toString('hex'); }
@@ -52,7 +55,6 @@ async function userHasAccess(documentId, user, required = ['view']) {
     if (!accRows || accRows.length === 0) return false;
     const level = String(accRows[0].accessType || '').toLowerCase();
 
-    // Normalize to numeric rank; support both new and legacy labels
     const toRank = (val) => {
       switch (val) {
         case 'owner':
@@ -80,7 +82,7 @@ async function writeAudit(user, action, entity, entityId, details = {}) {
     await q('INSERT INTO audit_logs (actor_id, action, entity, entity_id, details, createdAt) VALUES (?, ?, ?, ?, ?, ?)', [user && (user._id || user.id) || null, action, entity, entityId, JSON.stringify(details || {}), new Date()]);
   } catch (e) {
     // swallow to avoid impacting user flow
-    console.warn('audit write failed', e && e.message);
+    logger.warn('audit write failed', e && e.message);
   }
 }
 
@@ -107,7 +109,6 @@ module.exports = {
           else if (req.body.taskId || req.body.task_id) { entityType = 'TASK'; entityId = req.body.taskId || req.body.task_id; }
         }
 
-        // If manager, enforce they own the project (if entityType === PROJECT)
         if (isManager(req.user) && entityType && String(entityType).toUpperCase() === 'PROJECT' && entityId && !(await managerOwnsProject(entityId, req.user))) {
           return res.status(403).json({ success: false, error: 'Manager does not have access to this project' });
         }
@@ -151,7 +152,7 @@ module.exports = {
             }
           }
         } catch (e) {
-          console.error('Workflow trigger (sensitive upload) failed:', e && e.message);
+          logger.error('Workflow trigger (sensitive upload) failed:', e && e.message);
         }
 
         return res.status(201).json({ success: true, data: { documentId: docId, fileName: file.originalname, fileType: file.mimetype, fileSize: file.size, file_url: publicUrl } });
@@ -239,7 +240,6 @@ module.exports = {
         sql += ' ORDER BY createdAt DESC LIMIT 500';
         rows = await q(sql, params);
       } else if (isManager(req.user)) {
-        // Manager: if a project/client filter is provided and manager owns the project, show all docs under it;
         // otherwise, default to only documents explicitly assigned to the manager.
         const uid = req.user && (req.user._id || req.user.id);
         const projectParam = req.query.projectId || req.query.project_id || req.headers['project-id'];
@@ -252,7 +252,6 @@ module.exports = {
           if (projectTaskIds && projectTaskIds.length) { orParts.push("(d.entityType = 'TASK' AND d.entityId IN (?))"); params.push(projectTaskIds); }
           // include client docs inferred from owned project
           if (projectClientIds && projectClientIds.length) { orParts.push("(d.entityType = 'CLIENT' AND d.entityId IN (?))"); params.push(projectClientIds); }
-          // include explicit client filter if provided
           if (clientFilterIds && clientFilterIds.length) { orParts.push("(d.entityType = 'CLIENT' AND d.entityId IN (?))"); params.push(clientFilterIds); }
           let sql = `SELECT d.*, self.accessType AS permissionLevel FROM documents d
                      LEFT JOIN document_access self ON self.documentId = d.documentId AND self.userId = ?`;
@@ -274,7 +273,6 @@ module.exports = {
           rows = await q(sql, params);
         }
       } else { // employee
-        // Join with access table to only return permitted docs
         const uid = req.user && (req.user._id || req.user.id);
         if (!uid) return res.json({ success: true, data: { total: 0, documents: [] } });
         const entityOr = [];
@@ -285,7 +283,6 @@ module.exports = {
         if (projectClientIds && projectClientIds.length) { entityOr.push("(d.entityType = 'CLIENT' AND d.entityId IN (?))"); entityParams.push(projectClientIds); }
         // include client docs only when client param explicitly provided
         if (clientFilterIds && clientFilterIds.length) { entityOr.push("(d.entityType = 'CLIENT' AND d.entityId IN (?))"); entityParams.push(clientFilterIds); }
-        // If a specific project/client filter is applied, do NOT restrict by uploader role; otherwise restrict to admin/manager uploader
         let sql;
         const base = `SELECT d.*, da.accessType AS permissionLevel FROM documents d INNER JOIN document_access da ON da.documentId = d.documentId`;
         if (entityOr.length) {
@@ -299,14 +296,12 @@ module.exports = {
         rows = await q(sql, params);
       }
 
-      // Fallback: if no project/task documents found but project maps to a client with docs,
       // include client-scoped documents (respecting role/access).
       if ((rows == null || rows.length === 0) && projectClientIds && projectClientIds.length) {
         try {
           if (isAdmin(req.user)) {
             rows = await q("SELECT * FROM documents WHERE entityType = 'CLIENT' AND entityId IN (?) ORDER BY createdAt DESC LIMIT 500", [projectClientIds]);
           } else if (isManager(req.user)) {
-            // only if manager owns the project(s)
             let allowed = false;
             if (projectFilterIds && projectFilterIds.length) {
               for (const pf of projectFilterIds) {
@@ -328,7 +323,6 @@ module.exports = {
         }
       }
 
-      // Map response with access members; paginate first to limit per-doc queries
       const baseUrl = req.protocol + '://' + req.get('host');
       const total = rows.length;
       const start = (page - 1) * limit;
@@ -371,10 +365,8 @@ module.exports = {
   getDocumentPreview: async (req, res, next) => {
     try {
       const id = req.params.id;
-      // preview allowed if user has view permission (or admin/manager owner)
       const allowed = await userHasAccess(id, req.user, ['view']);
       if (!allowed) {
-        // Fallback for project-scoped preview: if employee is a member of the provided project,
         // allow preview when the document belongs to that project (PROJECT/TASK) or its client (CLIENT)
         try {
           const docRows = await q('SELECT documentId, fileName, filePath, entityType, entityId FROM documents WHERE documentId = ? LIMIT 1', [id]);
@@ -500,7 +492,6 @@ module.exports = {
       if (!drows || drows.length === 0) return res.status(404).json({ success: false, error: 'Document not found' });
       const doc = drows[0];
 
-      // Resolve project context: use explicit projectId from body/query/header if provided, else derive from document binding
       let projectParam = req.body.projectId || req.body.project_id || req.query.projectId || req.query.project_id || req.headers['project-id'] || null;
       let projectId = projectParam;
       if (!projectId) {
@@ -551,7 +542,6 @@ module.exports = {
       }
       const requestedLevel = aliasMap[requestedLevelKey];
 
-      // Check if requester has OWNER permission; allow Admin override
       let requesterIsOwner = false;
       const ownerCheck = await q('SELECT accessType FROM document_access WHERE documentId = ? AND userId = ? LIMIT 1', [documentId, requesterId]);
       if (ownerCheck && ownerCheck.length && String(ownerCheck[0].accessType).toUpperCase() === 'OWNER') requesterIsOwner = true;
@@ -583,7 +573,6 @@ module.exports = {
         if (!assignee || assignee.length === 0) return res.status(404).json({ success: false, error: `Assignee ${aid} not found` });
         const assigneeRole = (assignee[0].role || '').toLowerCase();
 
-        // Determine final level for this assignee
         let permissionLevel = requestedLevel;
         if (assigneeRole === 'admin' || assigneeRole === 'manager') {
           permissionLevel = 'OWNER';
@@ -646,7 +635,6 @@ module.exports = {
         `, [userId]);
       }
 
-      // Add accessCount for each document
       for (let doc of documents) {
         const accessCount = await q('SELECT COUNT(*) as count FROM document_access WHERE documentId = ?', [doc.documentId]);
         doc.accessCount = accessCount[0].count;
@@ -663,7 +651,6 @@ module.exports = {
       if (!projectId) return res.status(400).json({ success: false, error: 'projectId is required' });
 
       // Resolve project (supports internal id or public_id)
-      // Some schemas may not have manager_id; select only reliable columns
       const projRows = await q('SELECT id, public_id, project_manager_id FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [projectId, projectId]);
       if (!projRows || projRows.length === 0) return res.status(404).json({ success: false, error: 'Project not found' });
       const project = projRows[0];
@@ -671,10 +658,8 @@ module.exports = {
       const pid = project.id;
       const ppub = project.public_id;
 
-      // Collect managers assigned to the project (project_manager_id and manager_id if present)
       const managerIds = [];
       if (project.project_manager_id) managerIds.push(String(project.project_manager_id));
-      // manager_id may not exist in all schemas; rely on project_manager_id
 
       let managers = [];
       if (managerIds.length) {

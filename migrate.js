@@ -1,10 +1,12 @@
 const db = require('./src/db');
 
+let logger;
+try { logger = require('./logger'); } catch (e) { logger = console; }
+
 async function runMigrations() {
   try {
-    console.log('Running migrations...');
+    logger.info('Running migrations...');
 
-    // Helper function for promisified queries
     const q = (sql, params = []) => new Promise((resolve, reject) => {
       db.query(sql, params, (err, results) => {
         if (err) reject(err);
@@ -15,10 +17,10 @@ async function runMigrations() {
     // Add status column
     try {
       await q("ALTER TABLE tasks ADD COLUMN status ENUM('Pending', 'In Progress', 'On Hold', 'Completed') DEFAULT 'Pending'");
-      console.log('Added status column to tasks');
+      logger.info('Added status column to tasks');
     } catch (e) {
       if (e.code === 'ER_DUP_FIELDNAME') {
-        console.log('Status column already exists');
+        logger.info('Status column already exists');
       } else {
         throw e;
       }
@@ -27,10 +29,10 @@ async function runMigrations() {
     // Add started_at
     try {
       await q("ALTER TABLE tasks ADD COLUMN started_at DATETIME NULL");
-      console.log('Added started_at column to tasks');
+      logger.info('Added started_at column to tasks');
     } catch (e) {
       if (e.code === 'ER_DUP_FIELDNAME') {
-        console.log('started_at column already exists');
+        logger.info('started_at column already exists');
       } else {
         throw e;
       }
@@ -39,10 +41,10 @@ async function runMigrations() {
     // Add completed_at
     try {
       await q("ALTER TABLE tasks ADD COLUMN completed_at DATETIME NULL");
-      console.log('Added completed_at column to tasks');
+      logger.info('Added completed_at column to tasks');
     } catch (e) {
       if (e.code === 'ER_DUP_FIELDNAME') {
-        console.log('completed_at column already exists');
+        logger.info('completed_at column already exists');
       } else {
         throw e;
       }
@@ -51,10 +53,10 @@ async function runMigrations() {
     // Add total_duration
     try {
       await q("ALTER TABLE tasks ADD COLUMN total_duration INT DEFAULT 0");
-      console.log('Added total_duration column to tasks');
+      logger.info('Added total_duration column to tasks');
     } catch (e) {
       if (e.code === 'ER_DUP_FIELDNAME') {
-        console.log('total_duration column already exists');
+        logger.info('total_duration column already exists');
       } else {
         throw e;
       }
@@ -63,26 +65,24 @@ async function runMigrations() {
     // Add task_day (date-only) column and backfill from taskDate
     try {
       await q("ALTER TABLE tasks ADD COLUMN task_day DATE NULL");
-      console.log('Added task_day column to tasks');
+      logger.info('Added task_day column to tasks');
 
-      // Backfill from existing taskDate if present
       try {
         await q("UPDATE tasks SET task_day = DATE(taskDate) WHERE taskDate IS NOT NULL");
-        console.log('Backfilled task_day from taskDate');
+        logger.info('Backfilled task_day from taskDate');
       } catch (be) {
-        console.log('Note: task_day backfill skipped or failed:', be.message);
+        logger.warn('Note: task_day backfill skipped or failed:', be.message);
       }
 
-      // Add index for faster queries by day
       try {
         await q("CREATE INDEX idx_tasks_task_day ON tasks(task_day)");
-        console.log('Created index idx_tasks_task_day');
+        logger.info('Created index idx_tasks_task_day');
       } catch (ie) {
-        console.log('Note: creating idx_tasks_task_day skipped or failed:', ie.message);
+        logger.warn('Note: creating idx_tasks_task_day skipped or failed:', ie.message);
       }
     } catch (e) {
       if (e.code === 'ER_DUP_FIELDNAME' || e.code === 'ER_COLUMN_EXISTS_ERROR') {
-        console.log('task_day column already exists');
+        logger.info('task_day column already exists');
       } else {
         throw e;
       }
@@ -101,7 +101,7 @@ async function runMigrations() {
         FOREIGN KEY (user_id) REFERENCES users(_id) ON DELETE CASCADE
       )
     `);
-    console.log('Created task_time_logs table');
+    logger.info('Created task_time_logs table');
 
     // Create notifications table
     await q(`
@@ -118,7 +118,7 @@ async function runMigrations() {
         FOREIGN KEY (user_id) REFERENCES users(_id) ON DELETE CASCADE
       )
     `);
-    console.log('Created notifications table');
+    logger.info('Created notifications table');
 
     // Indexes
     await q("CREATE INDEX IF NOT EXISTS idx_task_time_logs_task_id ON task_time_logs(task_id)");
@@ -141,7 +141,7 @@ async function runMigrations() {
         INDEX idx_room_name (room_name)
       )
     `);
-    console.log('Created project_chats table');
+    logger.info('Created project_chats table');
 
     // Create chat_messages table
     await q(`
@@ -159,27 +159,24 @@ async function runMigrations() {
         INDEX idx_message_type (message_type)
       )
     `);
-    console.log('Created chat_messages table');
+    logger.info('Created chat_messages table');
 
-    // Modify chat_messages table to allow NULL sender_id for bot messages
     try {
       await q('ALTER TABLE chat_messages MODIFY COLUMN sender_id INT NULL');
-      console.log('Modified chat_messages sender_id to allow NULL');
+      logger.info('Modified chat_messages sender_id to allow NULL');
     } catch (e) {
       // Column might already be nullable or table doesn't exist yet
-      console.log('Note: chat_messages sender_id modification skipped (might already be correct)');
+      logger.warn('Note: chat_messages sender_id modification skipped (might already be correct)');
     }
 
-    // Remove foreign key constraint if it exists
     try {
       await q('ALTER TABLE chat_messages DROP FOREIGN KEY chat_messages_ibfk_1');
-      console.log('Dropped foreign key constraint on chat_messages.sender_id');
+      logger.info('Dropped foreign key constraint on chat_messages.sender_id');
     } catch (e) {
       // Foreign key might not exist
-      console.log('Note: foreign key drop skipped (might not exist)');
+      logger.warn('Note: foreign key drop skipped (might not exist)');
     }
 
-    // Create chat_participants table for tracking online users
     await q(`
       CREATE TABLE IF NOT EXISTS chat_participants (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -197,10 +194,10 @@ async function runMigrations() {
         INDEX idx_is_online (is_online)
       )
     `);
-    console.log('Created chat_participants table');
+    logger.info('Created chat_participants table');
 
     // Seed some test notifications
-    console.log('Seeding test notifications...');
+    logger.info('Seeding test notifications...');
     await q(`
       INSERT INTO notifications (user_id, title, message, type, entity_type, entity_id, is_read, created_at) VALUES
       (51, 'Task Assigned', 'You have been assigned a new task: Task1', 'TASK_ASSIGNED', 'task', '539695824deb13c7', FALSE, NOW()),
@@ -216,12 +213,12 @@ async function runMigrations() {
       (23, 'User Created', 'New user "John Doe" has been created', 'USER_CREATED', 'user', '24', FALSE, NOW() - INTERVAL 6 HOUR),
       (56, 'Project Created', 'New project "Website Redesign" has been created', 'PROJECT_CREATED', 'project', 'newproj123', FALSE, NOW() - INTERVAL 7 HOUR)
     `);
-    console.log('Test notifications seeded');
+    logger.info('Test notifications seeded');
 
-    console.log('Migrations completed successfully');
+    logger.info('Migrations completed successfully');
     process.exit(0);
   } catch (e) {
-    console.error('Migration failed:', e.message);
+    logger.error('Migration failed:', e.message);
     process.exit(1);
   }
 }

@@ -1,11 +1,12 @@
 const db = require('../db');
+let logger;
+try { logger = require(__root + 'logger'); } catch (e) { logger = require('../../logger'); }
  
 class ChatService {
   constructor() {
     this.io = global.io;
   }
  
-  // Helper function for database queries
   query(sql, params = []) {
     return new Promise((resolve, reject) => {
       db.query(sql, params, (err, results) => {
@@ -18,7 +19,6 @@ class ChatService {
   // Create or get project chat room
   async getOrCreateProjectChat(projectId) {
     try {
-      // Check if chat room already exists
       let chatRoom = await this.query(
         'SELECT * FROM project_chats WHERE project_id = ?',
         [projectId]
@@ -42,7 +42,7 @@ class ChatService {
         created_at: new Date()
       };
     } catch (error) {
-      console.error('Error creating/getting project chat:', error);
+      logger.error('Error creating/getting project chat:', error);
       throw error;
     }
   }
@@ -79,7 +79,6 @@ class ChatService {
         return true;
       }
  
-      // Check if user is assigned to the project (for Managers and Employees)
       const userInProject = await this.query(`
         SELECT COUNT(*) as count FROM taskassignments ta
         JOIN tasks t ON ta.task_Id = t.id
@@ -90,7 +89,6 @@ class ChatService {
         return true;
       }
  
-      // Check if user is project manager
       const isManager = await this.query(`
         SELECT COUNT(*) as count FROM projects
         WHERE id = ? AND project_manager_id = ?
@@ -100,7 +98,6 @@ class ChatService {
         return true;
       }
  
-      // Check if user created the project
       const isCreator = await this.query(`
         SELECT COUNT(*) as count FROM projects
         WHERE id = ? AND created_by = ?
@@ -110,7 +107,6 @@ class ChatService {
         return true;
       }
  
-      // For Managers, check if they have access to the department of this project
       if (userRole === 'Manager') {
         const deptAccess = await this.query(`
           SELECT COUNT(*) as count FROM project_departments pd
@@ -125,7 +121,7 @@ class ChatService {
  
       return false;
     } catch (error) {
-      console.error('Error validating project access:', error);
+      logger.error('Error validating project access:', error);
       return false;
     }
   }
@@ -138,7 +134,6 @@ class ChatService {
         [projectId, senderId, senderName, message, messageType]
       );
  
-      // Get the public_id for the sender (skip for system/bot messages)
       let senderPublicId = senderId;
       let senderRole = null;
      
@@ -161,12 +156,11 @@ class ChatService {
         created_at: new Date()
       };
     } catch (error) {
-      console.error('Error saving message:', error);
+      logger.error('Error saving message:', error);
       throw error;
     }
   }
  
-  // Get chat messages for a project
   async getProjectMessages(projectId, limit = 50, offset = 0) {
     try {
       const messages = await this.query(`
@@ -191,7 +185,7 @@ class ChatService {
  
       return messages.reverse(); // Return in chronological order
     } catch (error) {
-      console.error('Error getting project messages:', error);
+      logger.error('Error getting project messages:', error);
       throw error;
     }
   }
@@ -209,7 +203,7 @@ class ChatService {
         last_seen = CURRENT_TIMESTAMP
       `, [projectId, userId, userName, userRole]);
     } catch (error) {
-      console.error('Error adding participant:', error);
+      logger.error('Error adding participant:', error);
       throw error;
     }
   }
@@ -222,12 +216,11 @@ class ChatService {
         [projectId, userId]
       );
     } catch (error) {
-      console.error('Error removing participant:', error);
+      logger.error('Error removing participant:', error);
       throw error;
     }
   }
  
-  // Get online participants for a project
   async getOnlineParticipants(projectId) {
     try {
       const participants = await this.query(
@@ -236,7 +229,7 @@ class ChatService {
       );
       return participants;
     } catch (error) {
-      console.error('Error getting online participants:', error);
+      logger.error('Error getting online participants:', error);
       throw error;
     }
   }
@@ -304,7 +297,7 @@ class ChatService {
  
       return uniqueUsers;
     } catch (error) {
-      console.error('Error getting all project members:', error);
+      logger.error('Error getting all project members:', error);
       throw error;
     }
   }
@@ -326,7 +319,6 @@ class ChatService {
       const allMembers = await this.getAllProjectMembers(projectId);
       const totalMembers = allMembers.length;
  
-      // Also get online count for reference
       const onlineCount = await this.query(
         'SELECT COUNT(*) as count FROM chat_participants WHERE project_id = ? AND is_online = true',
         [projectId]
@@ -341,7 +333,7 @@ class ChatService {
         last_message_time: messageStats.last_message_time
       };
     } catch (error) {
-      console.error('Error getting chat stats:', error);
+      logger.error('Error getting chat stats:', error);
       throw error;
     }
   }
@@ -360,7 +352,6 @@ class ChatService {
  
       const internalProjectId = projectResult[0].id;
  
-      // Convert userId to internal ID if it's a public_id
       let internalUserId = userId;
       let userRole = null;
       if (typeof userId === 'string' && !/^\d+$/.test(userId)) {
@@ -386,8 +377,8 @@ class ChatService {
           break;
  
         case '/tasks':
-          try {
-            console.log('userRole:', userRole);
+            try {
+            logger.debug('userRole:', userRole);
             if (userRole && (userRole.toLowerCase() === 'admin' || userRole.toLowerCase() === 'manager')) {
               // Get all tasks in this project
               const allTasks = await this.query(`
@@ -407,7 +398,6 @@ class ChatService {
                   ).join('\n\n');
               }
             } else {
-              // Get user's assigned tasks for this project using taskassignments table
               const userTasks = await this.query(`
                 SELECT t.title, t.status, t.priority
                 FROM tasks t
@@ -428,7 +418,7 @@ class ChatService {
               }
             }
           } catch (queryError) {
-            console.error('Database query error in /tasks:', queryError);
+            logger.error('Database query error in /tasks:', queryError);
             response = 'Sorry, I encountered an error processing your command.';
           }
           break;
@@ -480,7 +470,7 @@ class ChatService {
  
       return response;
     } catch (error) {
-      console.error('Error handling chatbot command:', error);
+      logger.error('Error handling chatbot command:', error);
       return 'Sorry, I encountered an error processing your command.';
     }
   }
@@ -497,7 +487,7 @@ class ChatService {
  
       return savedMessage;
     } catch (error) {
-      console.error('Error sending system message:', error);
+      logger.error('Error sending system message:', error);
       throw error;
     }
   }
@@ -514,7 +504,7 @@ class ChatService {
  
       return savedMessage;
     } catch (error) {
-      console.error('Error sending bot message:', error);
+      logger.error('Error sending bot message:', error);
       throw error;
     }
   }

@@ -3,99 +3,120 @@ const router = express.Router();
 const db = require(__root + 'db');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const speakeasy = require('speakeasy');
-const qrcode = require('qrcode');
-const otpService = require(__root + 'utils/otpService');
-const passwordPolicy = require(__root + 'utils/passwordPolicy');
-const emailService = require(__root + 'utils/emailService');
-// tenantMiddleware available if endpoints need explicit tenant enforcement; most auth flows derive tenant from email/token
-const { requireAuth } = require(__root + 'middleware/roles');
-require('dotenv').config();
-
-// Directly use expiresIn format from .env
-const ACCESS_TOKEN_EXPIRES_IN = process.env.ACCESS_TOKEN_EXPIRY_DAYS || '7d';
-const REFRESH_TOKEN_EXPIRES_IN = process.env.REFRESH_TOKEN_EXPIRY_DAYS || '30d';
-
-// Parse PASSWORD_EXPIRE_DAYS (it's still a number of days)
-const PASSWORD_EXPIRE_DAYS = parseInt(process.env.PASSWORD_EXPIRE_DAYS || '60', 10);
-
-// Parse OTP resend configuration (these are still numbers)
-const RESEND_MIN_INTERVAL = parseInt(process.env.OTP_RESEND_MIN_SECONDS || '60', 10);
-const RESEND_MAX_PER_WINDOW = parseInt(process.env.OTP_RESEND_MAX || '3', 10);
-const RESEND_WINDOW_SECONDS = parseInt(process.env.OTP_RESEND_WINDOW_SECONDS || '600', 10);
-
-console.log('=== AUTH CONTROLLER LOADED ===');
-console.log('🔧 Token Configuration:');
-console.log(`   ACCESS_TOKEN_EXPIRES_IN: ${ACCESS_TOKEN_EXPIRES_IN}`);
-console.log(`   REFRESH_TOKEN_EXPIRES_IN: ${REFRESH_TOKEN_EXPIRES_IN}`);
-console.log(`   PASSWORD_EXPIRE_DAYS: ${PASSWORD_EXPIRE_DAYS} days`);
-console.log('🔧 OTP Resend Configuration:');
-console.log(`   RESEND_MIN_INTERVAL: ${RESEND_MIN_INTERVAL} seconds`);
-console.log(`   RESEND_MAX_PER_WINDOW: ${RESEND_MAX_PER_WINDOW} per window`);
-console.log(`   RESEND_WINDOW_SECONDS: ${RESEND_WINDOW_SECONDS} seconds`);
-
+let logger;
+try { logger = require(__root + 'logger'); } catch (e) { try { logger = require('../../logger'); } catch (e2) { logger = console; } }
+const { check } = require('express-validator');
+const validateRequest = require(__root + 'middleware/validateRequest');
+const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const upload = require(__root + 'multer');
+const otpService = require(__root + 'utils/otpService');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-
+const speakeasy = require('speakeasy');
+const qrcode = require('qrcode');
+// Optional map for special module -> route overrides per role
 const MODULE_ROUTE_MAP = {
-  Admin: {
-    'Dashboard': '/admin/dashboard',
-    'User Management': '/admin/users',
-    'Clients': '/admin/clients',
-    'Departments': '/admin/departments',
-    'Tasks': '/admin/tasks',
-    'Projects': '/admin/projects',
-    'Workflow (Project & Task Flow)': '/admin/workflow',
-    'Notifications': '/admin/notifications',
-    'Reports & Analytics': '/admin/reports',
-    'Document & File Management': '/admin/documents',
-    'Chat / Real-Time Collaboration': '/admin/chat',
-    'Approval Workflows': '/admin/approvals',
-    'Settings & Master Configuration': '/admin/settings'
-  },
   Manager: {
-    'Dashboard': '/manager/dashboard',
-    'User Management': '/manager/users',
-    'Clients': '/manager/clients',
-    'Departments': '/manager/departments',
-    'Tasks': '/manager/tasks',
-    'Projects': '/manager/projects',
-    'Workflow (Project & Task Flow)': '/manager/workflow',
-    'Notifications': '/manager/notifications',
-    'Reports & Analytics': '/manager/reports',
-    'Document & File Management': '/manager/documents',
-    'Chat / Real-Time Collaboration': '/manager/chat',
-    'Approval Workflows': '/manager/approvals',
-    'Settings & Master Configuration': '/manager/settings'
+    'User Management': '/manager/users'
   },
-  Employee: {
-    'Dashboard': '/employee/dashboard',
-    'Tasks': '/employee/tasks',
-    'Notifications': '/employee/notifications',
-    'Reports & Analytics': '/employee/reports',
-    'Document & File Management': '/employee/documents',
-    'Chat / Real-Time Collaboration': '/employee/chat'
-  },
-  'Client-Viewer': {
-    'Dashboard': '/client/dashboard',
-    'Assigned Tasks': '/client/tasks',
-    'Document & File Management': '/client/documents'
-  },
-  Client: {
-    'Dashboard': '/client/dashboard',
-    'Projects': '/client/projects',
-    'Tasks': '/client/tasks',
-    'Document & File Management': '/client/documents'
+  Admin: {
+    'User Management': '/admin/users'
   }
 };
 
 function slugifyModule(name) {
   if (!name) return '';
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+  return String(name)
+    .toLowerCase()
+    .replace(/\s+&\s+/g, '-')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-+/g, '-');
 }
+// Centralized environment config
+let env;
+try { env = require('../config/env'); } catch (e) { try { env = require('../../src/config/env'); } catch (e2) { env = process.env; } }
 
+// Auth / OTP related defaults (can be overridden via environment variables)
+const ACCESS_TOKEN_EXPIRES_IN = process.env.ACCESS_TOKEN_EXPIRES_IN || env.JWT_EXPIRES_IN || '7d';
+const REFRESH_TOKEN_EXPIRES_IN = process.env.REFRESH_TOKEN_EXPIRES_IN || process.env.REFRESH_EXPIRES_IN || '30d';
+const RESEND_MIN_INTERVAL = Number(process.env.RESEND_MIN_INTERVAL || 60); // seconds
+const RESEND_MAX_PER_WINDOW = Number(process.env.RESEND_MAX_PER_WINDOW || 5);
+const RESEND_WINDOW_SECONDS = Number(process.env.RESEND_WINDOW_SECONDS || 3600); // default 1 hour
+const PASSWORD_EXPIRE_DAYS = Number(process.env.PASSWORD_EXPIRE_DAYS || 60);
+// Resolved secret used for signing/verifying tokens (prefer centralized JWT_SECRET)
+const SECRET = env.JWT_SECRET || env.SECRET || process.env.SECRET || 'secret';
+router.post('/refresh', (req, res) => {
+  logger.info('=== REFRESH ENDPOINT CALLED ===');
+  
+  const incoming = (req.body && req.body.refreshToken)
+    || (req.headers.authorization && req.headers.authorization.split(' ')[1]);
+  
+  if (!incoming) {
+    logger.warn('No refresh token provided');
+    return res.status(400).json({ message: 'refreshToken required' });
+  }
+
+  logger.info('Token Configuration:');
+  logger.info(`ACCESS_TOKEN_EXPIRES_IN: ${ACCESS_TOKEN_EXPIRES_IN}`);
+  logger.info(`REFRESH_TOKEN_EXPIRES_IN: ${REFRESH_TOKEN_EXPIRES_IN}`);
+  logger.debug('Incoming token (first 50 chars):', incoming.substring(0, 50));
+
+  try {
+    logger.debug('Verifying refresh token');
+    const payload = jwt.verify(incoming, SECRET);
+    logger.debug('Token payload verified:', JSON.stringify(payload, null, 2));
+
+    if (!payload || payload.type !== 'refresh' || !payload.id) {
+      logger.warn('Token missing required fields', { hasPayload: !!payload, type: payload && payload.type, id: payload && payload.id });
+      return res.status(401).json({ message: 'Invalid refresh token' });
+    }
+
+    const tokenIdForJwt = payload.id;
+    logger.debug('Token ID:', tokenIdForJwt);
+    
+    logger.info('Issuing new tokens');
+    // issue a new access token
+    const token = jwt.sign({ id: tokenIdForJwt }, SECRET, { expiresIn: ACCESS_TOKEN_EXPIRES_IN });
+    
+    // rotate refresh token
+    const refreshToken = jwt.sign({ id: tokenIdForJwt, type: 'refresh' }, SECRET, { expiresIn: REFRESH_TOKEN_EXPIRES_IN });
+
+    logger.debug('New tokens generated');
+
+    const isNumeric = /^\d+$/.test(String(tokenIdForJwt));
+    const sqlFind = isNumeric ? 'SELECT * FROM users WHERE _id = ? LIMIT 1' : 'SELECT * FROM users WHERE public_id = ? LIMIT 1';
+    
+    logger.debug('Querying user with ID', tokenIdForJwt);
+    logger.silly('SQL:', sqlFind);
+    
+    db.query(sqlFind, [tokenIdForJwt], (err, rows) => {
+      if (err) {
+        logger.error('Database error:', err && err.message);
+        return res.status(500).json({ message: 'DB error', error: err && err.message });
+      }
+
+      logger.debug('User query result:', rows ? `Found ${rows.length} rows` : 'No rows');
+
+      if (!rows || rows.length === 0) {
+        logger.warn('No user found, returning tokens only');
+        return res.json({ token, refreshToken });
+      }
+
+      const user = rows[0];
+      logger.info('User found for refresh:', user.email);
+
+      const userResp = { id: user.public_id || String(user._id), email: user.email, name: user.name, role: user.role };
+
+      logger.info('Sending response with tokens and user info');
+      return res.json({ token, refreshToken, user: userResp });
+    });
+  } catch (e) {
+    logger.error('Refresh token verification failed:', e && e.message);
+    return res.status(401).json({ message: 'Invalid or expired refresh token', error: e && e.message });
+  }
+});
 function modulePathFor(role, name) {
   const map = MODULE_ROUTE_MAP[role] || {};
   // Special case: Manager 'User Management' should be '/manager/users'
@@ -182,14 +203,14 @@ if (requireRedis && process.env.REDIS_URL) {
   try {
     redis = new Redis(process.env.REDIS_URL);
     redis.on('error', (err) => {
-      console.warn('Redis error (AuthController):', err && err.message);
+      logger.warn('Redis error (AuthController):', err && err.message);
     });
-  } catch (e) {
-    console.warn('Failed to initialize Redis client (AuthController):', e && e.message);
+    } catch (e) {
+    logger.warn('Failed to initialize Redis client (AuthController):', e && e.message);
     redis = null;
   }
 } else {
-  if (process.env.REDIS_URL) console.log('REQUIRE_REDIS is false — AuthController skipping Redis client creation');
+  if (process.env.REDIS_URL) logger.info('REQUIRE_REDIS is false — AuthController skipping Redis client creation');
 }
 
 // Login attempt tracking with Redis fallback
@@ -260,7 +281,6 @@ async function canResendOtp(userId) {
   if (now - rec.last < RESEND_MIN_INTERVAL * 1000) {
     return { ok: false, retryAfter: Math.ceil((RESEND_MIN_INTERVAL * 1000 - (now - rec.last)) / 1000) };
   }
-  // reset window if expired
   if (now - rec.windowStart > RESEND_WINDOW_SECONDS * 1000) {
     rec.count = 0;
     rec.windowStart = now;
@@ -290,8 +310,11 @@ async function noteResendOtp(userId) {
   global.__otpResend.set(String(userId), rec);
 }
 
-// Login: prefer tenant from header/body/query; if missing, attempt to infer tenant by email.
-router.post('/login', async (req, res) => {
+router.post('/login', [
+  check('email').isEmail().withMessage('Valid email required'),
+  check('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+  validateRequest
+], async (req, res) => {
   const { email, password } = req.body;
   let tenantId = req.headers['x-tenant-id'] || (req.body && req.body.tenantId) || (req.query && req.query.tenantId);
 
@@ -336,17 +359,16 @@ router.post('/login', async (req, res) => {
         if (is2faEnabled) {
           const otp = req.body && req.body.otp;
           if (!otp) {
-            // Send an email OTP as a fallback/UX convenience while TOTP is enabled.
             try {
               const otpRes = await otpService.sendOtp(user.email, user._id || user.email);
-              const tempToken = jwt.sign({ id: user._id, step: 'otp' }, process.env.SECRET || 'secret', { expiresIn: '10m' });
+              const tempToken = jwt.sign({ id: user._id, step: 'otp' }, SECRET, { expiresIn: '10m' });
               const includeOtp = process.env.DEV_INCLUDE_OTP === 'true' || otpRes.sent === false;
               const resp = { requires2fa: true, message: 'OTP required', totp: true, emailOtp: true, tempToken, userId: user.public_id || String(user._id), sent: !!otpRes.sent };
               if (includeOtp) resp.otp = otpRes.code;
               return res.json(resp);
             } catch (e) {
               // If email sending fails, still inform client that TOTP is required
-              const tempToken = jwt.sign({ id: user._id, step: 'totp' }, process.env.SECRET || 'secret', { expiresIn: '5m' });
+              const tempToken = jwt.sign({ id: user._id, step: 'totp' }, SECRET, { expiresIn: '5m' });
               return res.json({ requires2fa: true, message: 'OTP required', totp: true, tempToken, userId: user.public_id || String(user._id) });
             }
           }
@@ -362,7 +384,6 @@ router.post('/login', async (req, res) => {
           return completeLoginForUser(user, req, res);
         }
 
-        // No 2FA required — complete login and return tokens
         await resetAttempts(`${tenantId}::${email}`);
         return completeLoginForUser(user, req, res);
       } catch (e) {
@@ -389,7 +410,6 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    // Check if account locked flag in DB (optional column)
     if (user.is_locked) return res.status(423).json({ message: 'Account locked. Contact admin.' });
 
     // optional: password expiry check (requires password_changed_at column)
@@ -408,13 +428,13 @@ router.post('/login', async (req, res) => {
       if (!otp) {
         try {
           const otpRes = await otpService.sendOtp(user.email, user._id || user.email);
-          const tempToken = jwt.sign({ id: user._id, step: 'otp' }, process.env.SECRET || 'secret', { expiresIn: '10m' });
+          const tempToken = jwt.sign({ id: user._id, step: 'otp' }, SECRET, { expiresIn: '10m' });
           const includeOtp = process.env.DEV_INCLUDE_OTP === 'true' || otpRes.sent === false;
           const resp = { requires2fa: true, message: 'OTP required', totp: true, emailOtp: true, tempToken, userId: user.public_id || String(user._id), sent: !!otpRes.sent };
           if (includeOtp) resp.otp = otpRes.code;
           return res.json(resp);
         } catch (e) {
-          const tempToken = jwt.sign({ id: user._id, step: 'totp' }, process.env.SECRET || 'secret', { expiresIn: '5m' });
+          const tempToken = jwt.sign({ id: user._id, step: 'totp' }, SECRET, { expiresIn: '5m' });
           return res.json({ requires2fa: true, message: 'OTP required', totp: true, tempToken, userId: user.public_id || String(user._id) });
         }
       }
@@ -429,18 +449,16 @@ router.post('/login', async (req, res) => {
       return completeLoginForUser(user, req, res);
     }
 
-    // No 2FA required — complete login and return tokens
     await resetAttempts(lockKey);
     return completeLoginForUser(user, req, res);
   });
 });
 
-// Helper to complete login: generate tokens, modules and return standard response
 async function completeLoginForUser(user, req, res) {
   try {
     const tokenIdForJwt = user.public_id || String(user._id);
-    const token = jwt.sign({ id: tokenIdForJwt }, process.env.SECRET || 'secret', { expiresIn: ACCESS_TOKEN_EXPIRES_IN });
-    const refreshToken = jwt.sign({ id: tokenIdForJwt, type: 'refresh' }, process.env.SECRET || 'secret', { expiresIn: REFRESH_TOKEN_EXPIRES_IN });
+    const token = jwt.sign({ id: tokenIdForJwt }, SECRET, { expiresIn: ACCESS_TOKEN_EXPIRES_IN });
+    const refreshToken = jwt.sign({ id: tokenIdForJwt, type: 'refresh' }, SECRET, { expiresIn: REFRESH_TOKEN_EXPIRES_IN });
 
     const storedModules = normalizeStoredModules(user);
     const modulesToReturn = storedModules && storedModules.length ? storedModules : getDefaultModules(user.role);
@@ -456,7 +474,7 @@ async function completeLoginForUser(user, req, res) {
       const resources = await RoleBasedLoginResponse.getAccessibleResources(user._id, user.role, user.tenant_id, publicId);
       roleBasedData = { metrics, resources };
     } catch (e) {
-      console.warn('Could not load role-based login response:', e.message);
+      logger.warn('Could not load role-based login response:', e.message);
       roleBasedData = {};
     }
 
@@ -476,9 +494,9 @@ async function completeLoginForUser(user, req, res) {
           else resolve();
         });
       });
-      console.log(`User ${user.name} (${user._id}) set as online`);
+      logger.info(`User ${user.name} (${user._id}) set as online`);
     } catch (e) {
-      console.warn('Could not set user online status:', e.message);
+      logger.warn('Could not set user online status:', e.message);
     }
 
     // Get user photo URL
@@ -495,7 +513,6 @@ async function completeLoginForUser(user, req, res) {
         email: user.email, 
         name: user.name, 
         role: user.role,
-        // Include modules for all roles (Client-Viewer gets restricted modules with view-only access)
         modules: modulesWithPaths,
         phone: user.phone || null,
         title: user.title || null,
@@ -509,13 +526,12 @@ async function completeLoginForUser(user, req, res) {
   }
 }
 
-// Verify OTP and return full auth token
 router.post('/verify-otp', (req, res) => {
   const { tempToken, otp } = req.body;
   if (!tempToken || !otp) return res.status(400).json({ message: 'tempToken and otp required' });
 
   try {
-    const payload = jwt.verify(tempToken, process.env.SECRET || 'secret');
+    const payload = jwt.verify(tempToken, SECRET);
     if (!payload || payload.step !== 'otp') return res.status(401).json({ message: 'Invalid temp token' });
 
     const userId = payload.id;
@@ -539,47 +555,41 @@ router.post('/verify-otp', (req, res) => {
 // or as a Bearer token in `Authorization` header. Returns new access token
 // and a rotated refresh token (stateless rotation - no server-side storage).
 router.post('/refresh', (req, res) => {
-  console.log('=== REFRESH ENDPOINT CALLED ===');
+  logger.info('=== REFRESH ENDPOINT CALLED ===');
   
   const incoming = (req.body && req.body.refreshToken)
     || (req.headers.authorization && req.headers.authorization.split(' ')[1]);
   
   if (!incoming) {
-    console.log('❌ No refresh token provided');
+    logger.warn('No refresh token provided');
     return res.status(400).json({ message: 'refreshToken required' });
   }
 
-  console.log('🔧 Token Configuration:');
-  console.log(`   ACCESS_TOKEN_EXPIRES_IN: ${ACCESS_TOKEN_EXPIRES_IN}`);
-  console.log(`   REFRESH_TOKEN_EXPIRES_IN: ${REFRESH_TOKEN_EXPIRES_IN}`);
-  console.log('📝 Incoming token (first 50 chars):', incoming.substring(0, 50));
+  logger.info('Token Configuration:');
+  logger.info(`ACCESS_TOKEN_EXPIRES_IN: ${ACCESS_TOKEN_EXPIRES_IN}`);
+  logger.info(`REFRESH_TOKEN_EXPIRES_IN: ${REFRESH_TOKEN_EXPIRES_IN}`);
+  logger.debug('Incoming token (first 50 chars):', incoming.substring(0, 50));
 
   try {
-    const secret = process.env.SECRET || 'secret';
-    console.log('🔐 Verifying token with secret...');
-    
-    const payload = jwt.verify(incoming, secret);
-    console.log('✅ Token payload verified:', JSON.stringify(payload, null, 2));
+    logger.debug('Verifying token with secret...');
+    const payload = jwt.verify(incoming, SECRET);
+    logger.debug('Token payload verified:', JSON.stringify(payload, null, 2));
     
     if (!payload || payload.type !== 'refresh' || !payload.id) {
-      console.log('❌ Token missing required fields:', { 
-        hasPayload: !!payload, 
-        type: payload?.type, 
-        id: payload?.id 
-      });
+      logger.warn('Token missing required fields:', { hasPayload: !!payload, type: payload && payload.type, id: payload && payload.id });
       return res.status(401).json({ message: 'Invalid refresh token' });
     }
 
     const tokenIdForJwt = payload.id;
-    console.log('🔄 Token ID:', tokenIdForJwt);
+    logger.debug('Token ID:', tokenIdForJwt);
     
-    console.log('⏰ Access token expires in:', ACCESS_TOKEN_EXPIRES_IN);
-    console.log('⏰ Refresh token expires in:', REFRESH_TOKEN_EXPIRES_IN);
+    logger.info('Access token expires in: ' + ACCESS_TOKEN_EXPIRES_IN);
+    logger.info('Refresh token expires in: ' + REFRESH_TOKEN_EXPIRES_IN);
     
     // issue a new access token
     const token = jwt.sign({ 
       id: tokenIdForJwt 
-    }, secret, { 
+    }, SECRET, { 
       expiresIn: ACCESS_TOKEN_EXPIRES_IN 
     });
     
@@ -587,67 +597,58 @@ router.post('/refresh', (req, res) => {
     const refreshToken = jwt.sign({ 
       id: tokenIdForJwt, 
       type: 'refresh' 
-    }, secret, { 
+    }, SECRET, { 
       expiresIn: REFRESH_TOKEN_EXPIRES_IN 
     });
 
-    console.log('✅ New tokens generated');
-    console.log('📝 New access token (first 50 chars):', token.substring(0, 50));
-    console.log('📝 New refresh token (first 50 chars):', refreshToken.substring(0, 50));
+    logger.debug('New tokens generated');
+    logger.debug('New access token (first 50 chars):', token.substring(0, 50));
+    logger.debug('New refresh token (first 50 chars):', refreshToken.substring(0, 50));
 
-    // attempt to return user info if we can resolve the id to a user row
     const isNumeric = /^\d+$/.test(String(tokenIdForJwt));
     const sqlFind = isNumeric ? 'SELECT * FROM users WHERE _id = ? LIMIT 1' : 'SELECT * FROM users WHERE public_id = ? LIMIT 1';
     
-    console.log('🔍 Querying user with ID:', tokenIdForJwt);
-    console.log('🔍 SQL:', sqlFind);
+    logger.debug('Querying user with ID:', tokenIdForJwt);
+    logger.silly('SQL:', sqlFind);
     
     db.query(sqlFind, [tokenIdForJwt], (err, rows) => {
       if (err) {
-        console.error('❌ Database error:', err.message);
-        return res.status(500).json({ message: 'DB error', error: err.message });
+        logger.error('Database error:', err && err.message);
+        return res.status(500).json({ message: 'DB error', error: err && err.message });
       }
       
-      console.log('🔍 User query result:', rows ? `Found ${rows.length} rows` : 'No rows');
+      logger.debug('User query result:', rows ? `Found ${rows.length} rows` : 'No rows');
       
       if (!rows || rows.length === 0) {
-        console.log('⚠️ No user found, returning tokens only');
+        logger.warn('No user found, returning tokens only');
         return res.json({ token, refreshToken });
       }
       
       const user = rows[0];
-      console.log('✅ User found:', user.email);
+      logger.info('User found:', user.email);
       
-      const userResp = { 
-        id: user.public_id || String(user._id), 
-        email: user.email, 
-        name: user.name, 
-        role: user.role 
-      };
+      const userResp = { id: user.public_id || String(user._id), email: user.email, name: user.name, role: user.role };
       
-      console.log('✅ Sending response with tokens and user info');
+      logger.info('Sending response with tokens and user info');
       return res.json({ token, refreshToken, user: userResp });
     });
   } catch (e) {
-    console.error('❌ JWT Verification Error:', e.name, '-', e.message);
-    console.error('❌ Stack trace:', e.stack);
+    logger.error('JWT Verification Error:', e && e.message);
+    logger.error('Stack trace:', e && e.stack);
     
     if (e && e.name === 'TokenExpiredError') {
-      console.log('⏰ Token expired at:', e.expiredAt);
+      logger.warn('Token expired at:', e.expiredAt);
       return res.status(401).json({ message: 'Refresh token expired' });
     }
     
     if (e && e.name === 'JsonWebTokenError') {
-      console.log('❌ JWT Error details:', e.message);
-      console.log('❌ Possible causes:');
-      console.log('   - Wrong secret key');
-      console.log('   - Malformed token');
-      console.log('   - Token signed with different algorithm');
-      return res.status(401).json({ message: 'Invalid refresh token', error: e.message });
+      logger.warn('JWT Error details:', e && e.message);
+      logger.debug('Possible causes: - Wrong secret key; - Malformed token; - Token signed with different algorithm');
+      return res.status(401).json({ message: 'Invalid refresh token', error: e && e.message });
     }
     
-    console.log('❌ Other error:', e);
-    return res.status(401).json({ message: 'Invalid refresh token', error: e.message });
+    logger.error('Other error:', e);
+    return res.status(401).json({ message: 'Invalid refresh token', error: e && e.message });
   }
 });
 
@@ -692,7 +693,7 @@ router.post('/resend-otp', async (req, res) => {
 
   let payload;
   try {
-    payload = jwt.verify(tempToken, process.env.SECRET || 'secret');
+    payload = jwt.verify(tempToken, SECRET);
   } catch (e) {
     return res.status(401).json({ message: 'Invalid or expired temp token' });
   }
@@ -720,13 +721,12 @@ router.post('/resend-otp', async (req, res) => {
       if (includeOtp) resp.otp = otpRes.code;
       return res.json(resp);
     } catch (e) {
-      console.warn('Resend OTP failed', e && e.message);
+      logger.warn('Resend OTP failed', e && e.message);
       return res.status(500).json({ message: 'Failed to resend OTP' });
     }
   });
 });
 
-// Reset password using OTP; infer tenant by email if header missing
 router.post('/reset-password', (req, res) => {
   const { email, otp, newPassword } = req.body;
   let tenantId = req.headers['x-tenant-id'] || (req.body && req.body.tenantId) || (req.query && req.query.tenantId);
@@ -734,7 +734,7 @@ router.post('/reset-password', (req, res) => {
 
   const handleResetForUser = async (user) => {
     if (process.env.OTP_DEBUG === 'true') {
-      try { console.log(`[RESET-PW] verifyOtp called for user _id=${user._id} email=${user.email} otp=${otp}`); } catch (e) {}
+      try { logger.debug(`[RESET-PW] verifyOtp called for user _id=${user._id} email=${user.email} otp=${otp}`); } catch (e) {}
     }
     const ok = await otpService.verifyOtp(user._id || user.email, otp);
     if (!ok) return res.status(401).json({ message: 'Invalid or expired OTP' });
@@ -768,7 +768,6 @@ router.post('/reset-password', (req, res) => {
     return;
   }
 
-  // Resolve user by email. If multiple users found for same email across tenants,
   // ask client to provide `x-tenant-id` to disambiguate. This keeps reset flow
   // tenant-agnostic except when the email exists in multiple tenants.
   db.query('SELECT * FROM users WHERE email = ?', [email], async (err, results) => {
@@ -788,7 +787,7 @@ router.post('/complete-setup', async (req, res) => {
 
   let payload;
   try {
-    payload = jwt.verify(setupToken, process.env.SECRET || 'change_this_secret');
+    payload = jwt.verify(setupToken, SECRET);
   } catch (e) {
     return res.status(401).json({ message: 'Invalid or expired setup token' });
   }
@@ -846,7 +845,7 @@ router.get('/profile', requireAuth, async (req, res) => {
     
     db.query(infoSql, wanted, (iErr, cols) => {
       if (iErr) {
-        console.error('Column detection error:', iErr);
+        logger.error('Column detection error:', iErr);
         const safe = { 
           id: user.public_id || user._id, 
           email: user.email, 
@@ -868,7 +867,7 @@ router.get('/profile', requireAuth, async (req, res) => {
       
       db.query(sql, [user._id], (uErr, rows) => {
         if (uErr) {
-          console.error('User query error:', uErr);
+          logger.error('User query error:', uErr);
           return res.status(500).json({ message: 'Database error' });
         }
         
@@ -909,12 +908,12 @@ router.get('/profile', requireAuth, async (req, res) => {
           }
         };
         
-        console.log('✅ Profile served:', { id: safe.id, hasPhoto: !!safe.photo });
+        logger.info('Profile served:', { id: safe.id, hasPhoto: !!safe.photo });
         res.json({ user: safe });
       });
     });
   } catch (e) {
-    console.error('Profile GET error:', e);
+    logger.error('Profile GET error:', e && e.message ? e.message : e);
     res.status(500).json({ 
       user: { 
         id: user.public_id || user._id, 
@@ -980,7 +979,7 @@ router.put("/profile", requireAuth, upload.single("photo"), async (req, res) => 
     const infoSql = `SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME IN (${colNames.map(() => '?').join(',')})`;
     db.query(infoSql, colNames, (iErr, cols) => {
       if (iErr) {
-        console.error('Column detection error (profile update):', iErr);
+        logger.error('Column detection error (profile update):', iErr);
         return res.status(500).json({ message: 'DB error', error: iErr });
       }
 
@@ -1031,12 +1030,11 @@ router.put("/profile", requireAuth, upload.single("photo"), async (req, res) => 
       });
     });
   } catch (e) {
-    console.error("PROFILE ERROR:", e);
-    return res.status(500).json({ message: "Upload failed", error: e.message });
+    logger.error('PROFILE ERROR:', e && e.message ? e.message : e);
+    return res.status(500).json({ message: 'Upload failed', error: e.message });
   }
 });
 
-// Change password for authenticated user
 router.post('/change-password', requireAuth, async (req, res) => {
   const user = req.user;
   const { oldPassword, newPassword, confirmPassword } = req.body;
@@ -1075,7 +1073,14 @@ router.post('/change-password', requireAuth, async (req, res) => {
 });
 
 // 2FA endpoints
-// Enable 2FA for authenticated user: returns secret (base32) and QR code data URL
+// Configuration: allow disabling 2FA functionality via environment
+const REVOKE_2FA = (env && (String(env.REVOKE_2FA || process.env.REVOKE_2FA || '').toLowerCase() === 'true')) || false;
+
+// If revoked, short-circuit all /2fa routes with 404 to hide the feature
+router.use('/2fa', (req, res, next) => {
+  if (REVOKE_2FA) return res.status(404).json({ message: '2FA functionality has been disabled by server configuration' });
+  return next();
+});
 router.post('/2fa/enable', requireAuth, async (req, res) => {
   const userId = req.user && req.user._id;
   if (!userId) return res.status(401).json({ message: 'Not authenticated' });
@@ -1094,7 +1099,6 @@ router.post('/2fa/enable', requireAuth, async (req, res) => {
         return res.json({ success: true, enabled: true, message: '2FA already enabled. Call /api/auth/2fa/disable to turn it off.' });
       }
 
-      // If a secret is already stored (user started setup but didn't verify), return it again
       if (row.twofa_secret) {
         const otpauth = `otpauth://totp/TaskManager:${encodeURIComponent(email)}?secret=${row.twofa_secret}&issuer=TaskManager`;
         let qr = null;
@@ -1122,7 +1126,6 @@ router.post('/2fa/enable', requireAuth, async (req, res) => {
   }
 });
 
-// Disable 2FA for authenticated user
 router.post('/2fa/disable', requireAuth, (req, res) => {
   const userId = req.user && req.user._id;
   if (!userId) return res.status(401).json({ message: 'Not authenticated' });
@@ -1137,7 +1140,6 @@ router.post('/2fa/disable', requireAuth, (req, res) => {
   })();
 });
 
-// Verify a given TOTP token for the authenticated user (useful for setup confirmation)
 router.post('/2fa/verify', requireAuth, (req, res) => {
   const userId = req.user && req.user._id;
   const { token } = req.body;
@@ -1180,7 +1182,6 @@ router.post('/2fa/verify', requireAuth, (req, res) => {
   })();
 });
 
-// Get current 2FA status for authenticated user
 router.get('/2fa/status', requireAuth, async (req, res) => {
   const userId = req.user && req.user._id;
   if (!userId) return res.status(401).json({ message: 'Not authenticated' });
@@ -1214,10 +1215,10 @@ router.post('/logout', requireAuth, async (req, res) => {
       });
     });
 
-    console.log(`User ${userId} logged out and set as offline`);
+    logger.info(`User ${userId} logged out and set as offline`);
     return res.json({ success: true, message: 'Logged out successfully' });
   } catch (e) {
-    console.error('Logout error:', e.message);
+    logger.error('Logout error:', e.message);
     return res.status(500).json({ message: 'Logout error', error: e.message });
   }
 });

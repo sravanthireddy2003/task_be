@@ -1,12 +1,13 @@
 // Quick Backend Test Script
 // Run with: node backend_test.js
 
+let logger;
+try { logger = require('./logger'); } catch (e) { logger = console; }
+
 const http = require('http');
 
-// Simple test to check if server can start
-console.log('🧪 Testing Backend Chat System...\n');
+logger.info('🧪 Testing Backend Chat System...\n');
 
-// Check if required files exist
 const fs = require('fs');
 const path = require('path');
 
@@ -17,35 +18,34 @@ const filesToCheck = [
   'migrate.js'
 ];
 
-console.log('📁 Checking required files:');
+logger.info('📁 Checking required files:');
 filesToCheck.forEach(file => {
   try {
     fs.accessSync(path.join(__dirname, file));
-    console.log(`✅ ${file} - Found`);
+    logger.info(`✅ ${file} - Found`);
   } catch (error) {
-    console.log(`❌ ${file} - Missing`);
+    logger.warn(`❌ ${file} - Missing`);
   }
 });
 
-// Check package.json for required dependencies
-console.log('\n📦 Checking dependencies:');
+logger.info('\n📦 Checking dependencies:');
 try {
   const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
   const requiredDeps = ['socket.io', 'jsonwebtoken', 'express', 'mysql'];
 
   requiredDeps.forEach(dep => {
     if (packageJson.dependencies && packageJson.dependencies[dep]) {
-      console.log(`✅ ${dep} - Installed (${packageJson.dependencies[dep]})`);
+      logger.info(`✅ ${dep} - Installed (${packageJson.dependencies[dep]})`);
     } else {
-      console.log(`❌ ${dep} - Not found in dependencies`);
+      logger.warn(`❌ ${dep} - Not found in dependencies`);
     }
   });
 } catch (error) {
-  console.log('❌ Error reading package.json');
+  logger.error('❌ Error reading package.json');
 }
 
 // Check database migration
-console.log('\n🗄️  Checking database migration:');
+logger.info('\n🗄️  Checking database migration:');
 try {
   const migrateContent = fs.readFileSync('migrate.js', 'utf8');
   const hasChatTables = migrateContent.includes('project_chats') &&
@@ -53,16 +53,16 @@ try {
                        migrateContent.includes('chat_participants');
 
   if (hasChatTables) {
-    console.log('✅ Chat tables found in migration');
+    logger.info('✅ Chat tables found in migration');
   } else {
-    console.log('❌ Chat tables missing from migration');
+    logger.warn('❌ Chat tables missing from migration');
   }
 } catch (error) {
-  console.log('❌ Error reading migration file');
+  logger.error('❌ Error reading migration file');
 }
 
 // Check ChatService methods
-console.log('\n🔧 Checking ChatService methods:');
+logger.info('\n🔧 Checking ChatService methods:');
 try {
   const chatServiceContent = fs.readFileSync('src/services/chatService.js', 'utf8');
   const requiredMethods = [
@@ -79,17 +79,17 @@ try {
 
   requiredMethods.forEach(method => {
     if (chatServiceContent.includes(`async ${method}`)) {
-      console.log(`✅ ${method} - Implemented`);
+      logger.info(`✅ ${method} - Implemented`);
     } else {
-      console.log(`❌ ${method} - Missing`);
+      logger.warn(`❌ ${method} - Missing`);
     }
   });
 } catch (error) {
-  console.log('❌ Error reading ChatService file');
+  logger.error('❌ Error reading ChatService file');
 }
 
 // Check API routes
-console.log('\n🌐 Checking API routes:');
+logger.info('\n🌐 Checking API routes:');
 try {
   const routesContent = fs.readFileSync('src/routes/chatRoutes.js', 'utf8');
   const requiredRoutes = [
@@ -102,17 +102,17 @@ try {
 
   requiredRoutes.forEach(route => {
     if (routesContent.match(new RegExp(route.replace(/\*/g, '.*')))) {
-      console.log(`✅ ${route.replace('router.', '').replace('.*', '/:id')} - Implemented`);
+      logger.info(`✅ ${route.replace('router.', '').replace('.*', '/:id')} - Implemented`);
     } else {
-      console.log(`❌ ${route.replace('router.', '').replace('.*', '/:id')} - Missing`);
+      logger.warn(`❌ ${route.replace('router.', '').replace('.*', '/:id')} - Missing`);
     }
   });
 } catch (error) {
-  console.log('❌ Error reading routes file');
+  logger.error('❌ Error reading routes file');
 }
 
 // Check Socket.IO integration
-console.log('\n🔌 Checking Socket.IO integration:');
+logger.info('\n🔌 Checking Socket.IO integration:');
 try {
   const appContent = fs.readFileSync('src/app.js', 'utf8');
   const socketChecks = [
@@ -125,17 +125,17 @@ try {
 
   socketChecks.forEach(check => {
     if (appContent.includes(check)) {
-      console.log(`✅ ${check} - Found`);
+      logger.info(`✅ ${check} - Found`);
     } else {
-      console.log(`❌ ${check} - Missing`);
+      logger.warn(`❌ ${check} - Missing`);
     }
   });
 } catch (error) {
-  console.log('❌ Error reading app.js file');
+  logger.error('❌ Error reading app.js file');
 }
 
-console.log('\n' + '='.repeat(50));
-console.log('🎉 Backend check complete!');
-console.log('📖 See Chat_Backend_API_Summary.md for full API documentation');
-console.log('🚀 Ready for frontend integration!');
-console.log('='.repeat(50));
+logger.info('\n' + '='.repeat(50));
+logger.info('🎉 Backend check complete!');
+logger.info('📖 See Chat_Backend_API_Summary.md for full API documentation');
+logger.info('🚀 Ready for frontend integration!');
+logger.info('='.repeat(50));

@@ -17,6 +17,8 @@ const RULES = require(__root + 'rules/ruleCodes');
 */
 const NotificationService = require('../services/notificationService');
 require('dotenv').config();
+let env;
+try { env = require(__root + 'config/env'); } catch (e) { env = require('../config/env'); }
 
 const queryAsync = (sql, params = []) =>
   new Promise((resolve, reject) =>
@@ -151,7 +153,6 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), asyn
       return res.status(400).json({ success: false, message: 'Name, email and role required' });
     }
 
-    // Check if user exists
     const exists = await new Promise((resolve, reject) => {
       db.query('SELECT _id FROM users WHERE email = ? LIMIT 1', [email], (err, results) => {
         if (err) reject(err);
@@ -233,13 +234,13 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), asyn
       try {
         await NotificationService.createAndSendToRoles(['Admin'], 'User Created', `New user "${name}" has been created`, 'USER_CREATED', 'user', insertId, req.user ? req.user.tenant_id : null);
       } catch (notifErr) {
-        console.error('User creation notification error:', notifErr);
+        logger.error('User creation notification error:', notifErr);
       }
     })();
 
     // Send welcome/setup email
-    const setupToken = jwt.sign({ id: publicId, step: 'setup' }, process.env.JWT_SECRET || process.env.SECRET || 'change_this_secret', { expiresIn: '7d' });
-    const setupUrlBase = process.env.FRONTEND_URL || process.env.BASE_URL || 'http://localhost:3000';
+    const setupToken = jwt.sign({ id: publicId, step: 'setup' }, env.JWT_SECRET || env.SECRET || 'change_this_secret', { expiresIn: '7d' });
+    const setupUrlBase = env.FRONTEND_URL || env.BASE_URL;
     const setupLink = `${setupUrlBase.replace(/\/$/, '')}/setup-password?token=${encodeURIComponent(setupToken)}`;
 
     const tpl = emailService.welcomeTemplate({

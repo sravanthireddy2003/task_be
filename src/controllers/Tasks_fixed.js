@@ -45,7 +45,6 @@ router.post('/createjson', ruleEngine(RULES.TASK_CREATE), requireRole(['Admin','
   }
 });
 
-// POST /tasks/selected-details - fetch details for task ids/public_ids
 router.post('/selected-details', ruleEngine(RULES.TASK_VIEW), requireRole(['Admin','Manager','Employee']), async (req, res) => {
   try {
     const ids = Array.isArray(req.body.taskIds) ? req.body.taskIds : (Array.isArray(req.body.task_ids) ? req.body.task_ids : []);

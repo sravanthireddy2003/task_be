@@ -25,7 +25,6 @@ async function loadWorkflowDefinition(tenantId, entityType) {
 async function getCustomRules(tenantId, entityType, fromState, toState) {
   const def = await loadWorkflowDefinition(tenantId, entityType);
   if (!def) return null;
-  // For now, return the rules JSON; can be extended for specific from/to logic
   return def.rules;
 }
 

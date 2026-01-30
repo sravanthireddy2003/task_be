@@ -1,7 +1,10 @@
 const db = require('./src/db');
 
+let logger;
+try { logger = require('./logger'); } catch (e) { logger = console; }
+
 async function addApproverRoleColumn() {
-  console.log('Running migration to add approver_role column...');
+  logger.info('Running migration to add approver_role column...');
 
   const q = (sql, params = []) => new Promise((resolve, reject) => {
     db.query(sql, params, (err, results) => {
@@ -12,14 +15,14 @@ async function addApproverRoleColumn() {
 
   try {
     await q("ALTER TABLE workflow_requests ADD COLUMN approver_role VARCHAR(50) AFTER requested_by_id");
-    console.log("Successfully added 'approver_role' column to 'workflow_requests' table.");
+    logger.info("Successfully added 'approver_role' column to 'workflow_requests' table.");
     process.exit(0);
   } catch (e) {
     if (e.code === 'ER_DUP_FIELDNAME') {
-      console.log("'approver_role' column already exists.");
+      logger.info("'approver_role' column already exists.");
       process.exit(0);
     } else {
-      console.error('Migration failed:', e);
+      logger.error('Migration failed:', e);
       process.exit(1);
     }
   }

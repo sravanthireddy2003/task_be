@@ -2,7 +2,6 @@
 // Evaluate rules against context
 
 const evaluateCondition = (condition, context) => {
-  // Simple condition evaluator (can be extended for complex logic)
   for (const [key, value] of Object.entries(condition)) {
     const ctxVal = context[key];
     // Helper: compare two values case-insensitively when they are strings
@@ -17,7 +16,6 @@ const evaluateCondition = (condition, context) => {
       if (value.$gt && !(ctxVal > value.$gt)) return false;
       if (value.$lt && !(ctxVal < value.$lt)) return false;
       if (value.$in) {
-        // allow case-insensitive match for strings inside $in arrays
         const lowered = value.$in.map(v => (typeof v === 'string' ? v.toLowerCase() : v));
         const target = (typeof ctxVal === 'string') ? ctxVal.toLowerCase() : ctxVal;
         if (!lowered.includes(target)) return false;
@@ -41,7 +39,6 @@ const evaluateCondition = (condition, context) => {
         if (context[key] !== context[templateKey]) return false;
       }
     } else {
-      // simple value -> compare (case-insensitive for strings)
       if (!equalsCI(context[key], value)) return false;
     }
   }
@@ -61,7 +58,6 @@ const evaluateRules = (rules, context) => {
         nextAction: rule.action === 'REQUIRE_APPROVAL' ? 'MANAGER_APPROVAL' : null
       };
 
-      // Return decision for ALLOW, DENY, or REQUIRE_APPROVAL
       if (rule.action === 'ALLOW' || rule.action === 'DENY' || rule.action === 'REQUIRE_APPROVAL') {
         return decision;
       }
@@ -74,7 +70,6 @@ const evaluateRules = (rules, context) => {
     }
   }
 
-  // Default deny if no rules match
   return {
     allowed: false,
     reason: 'No matching rule found',

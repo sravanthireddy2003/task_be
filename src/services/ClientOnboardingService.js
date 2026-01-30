@@ -37,7 +37,6 @@ async function generateOnboardingTasks(clientId, managerId, actorId) {
         const dueDate = new Date();
         dueDate.setDate(dueDate.getDate() + taskTemplate.daysFromNow);
 
-        // Insert into tasks table (if tasks table exists)
         const taskSql = `
           INSERT INTO tasks (
             title, description, client_id, assigned_to, status, 
@@ -58,7 +57,6 @@ async function generateOnboardingTasks(clientId, managerId, actorId) {
 
         const taskId = taskResult && taskResult.insertId ? taskResult.insertId : null;
 
-        // Insert onboarding task record for tracking
         if (await tableExists('onboarding_tasks')) {
           const onboardingSql = `
             INSERT INTO onboarding_tasks (
@@ -85,7 +83,6 @@ async function generateOnboardingTasks(clientId, managerId, actorId) {
         }
       } catch (e) {
         logger.warn(`Failed to create onboarding task "${taskTemplate.title}": ${e.message}`);
-        // Continue with next task even if one fails
       }
     }
 

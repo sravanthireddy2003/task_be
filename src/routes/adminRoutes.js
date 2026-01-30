@@ -5,6 +5,9 @@ const { allowRoles } = require(__root + 'middleware/role');
 const Admin = require(__root + 'controllers/adminController');
 const ruleEngine = require(__root + 'rules/jsonRuleEngine');
 
+let logger;
+try { logger = require(__root + 'logger'); } catch (e) { try { logger = require('../logger'); } catch (e2) { logger = console; } }
+
 router.use(auth, allowRoles('Admin'));
 
 router.get('/dashboard', Admin.getDashboard);
@@ -35,7 +38,7 @@ router.post('/rules/reload', async (req, res) => {
 		}
 		return res.status(500).json({ success: false, error: 'Rule engine not available' });
 	} catch (e) {
-		console.error('Failed reloading rules:', e && e.message);
+		logger.error('Failed reloading rules:', e && e.message);
 		return res.status(500).json({ success: false, error: e && e.message });
 	}
 });

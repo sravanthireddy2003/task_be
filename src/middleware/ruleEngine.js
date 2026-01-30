@@ -16,12 +16,10 @@ const ruleEngineMiddleware = (ruleCode = null) => {
         return res.status(401).json({ success: false, error: 'Authentication required' });
       }
 
-      // Optional: Fetch resource if needed (e.g., for ownership check)
       let resource = {};
       if (req.params.id) {
         // Placeholder: Fetch resource based on route
         // This would need to be customized per route
-        // For example, if it's a task, fetch task details
         resource = { id: req.params.id }; // Extend as needed
       }
 
@@ -31,7 +29,6 @@ const ruleEngineMiddleware = (ruleCode = null) => {
       if (!decision.allowed) {
         // Fallback: when no matching rule exists, allow common project-scoped actions
         if (decision.ruleCode === 'NO_RULE_MATCH') {
-          // Allow Admin/Manager to proceed for task creation when no explicit rule exists
           const role = user && (user.role || '').toLowerCase();
           const code = (ruleCode || '').toLowerCase();
           if (code === 'task_creation' && (role === 'admin' || role === 'manager')) {
@@ -76,7 +73,9 @@ const ruleEngineMiddleware = (ruleCode = null) => {
       // Proceed to controller
       next();
     } catch (error) {
-      console.error('Rule Engine Middleware Error:', error);
+      let logger;
+      try { logger = require(global.__root + 'logger'); } catch (e) { try { logger = require('../logger'); } catch (e2) { logger = console; } }
+      logger.error('Rule Engine Middleware Error:', error);
       return res.status(500).json({ success: false, error: 'Rule evaluation failed' });
     }
   };

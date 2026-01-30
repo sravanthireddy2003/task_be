@@ -1,5 +1,6 @@
 var jwt = require("jsonwebtoken"); // used to create, sign, and verify tokens
 require("dotenv").config();
+const env = require('../config/env');
 
 
 function verifyToken(req, res, next) {
@@ -7,7 +8,7 @@ function verifyToken(req, res, next) {
   if (!token)
     return res.status(403).send({ auth: false, message: "No token provided." });
 
-  jwt.verify(token, process.env.Secret, function (err, decoded) {
+  jwt.verify(token, env.JWT_SECRET || env.SECRET || 'secret', function (err, decoded) {
     if (err)
       return res
         .status(500)

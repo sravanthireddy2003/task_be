@@ -106,14 +106,12 @@ function validateUpdateClientDTO(data) {
     'bankDetails', 'email', 'phone', 'district', 'pincode', 'state'
   ];
 
-  // Check for invalid fields (prevent mass assignment)
   for (const key of Object.keys(data)) {
     if (!allowedFields.includes(key) && key !== 'id') {
       errors[key] = 'This field cannot be updated';
     }
   }
 
-  // Validate specific fields if provided
   if (data.email && !validateEmail(data.email)) {
     errors.email = 'Invalid email format';
   }

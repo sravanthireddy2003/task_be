@@ -1,6 +1,9 @@
 // Chat Backend API Test Script
 // Run with: node chat_api_test.js
 
+let logger;
+try { logger = require('./logger'); } catch (e) { logger = console; }
+
 const io = require('socket.io-client');
 const fetch = require('node-fetch'); // npm install node-fetch
 
@@ -16,11 +19,11 @@ class ChatAPITester {
 
   // Test REST API endpoints
   async testRESTAPIs() {
-    console.log('🧪 Testing REST APIs...\n');
+    logger.info('🧪 Testing REST APIs...\n');
 
     try {
       // Test 1: Get chat messages
-      console.log('1. Testing GET /api/projects/:projectId/chat/messages');
+      logger.info('1. Testing GET /api/projects/:projectId/chat/messages');
       const messagesResponse = await fetch(`${BASE_URL}/api/projects/${PROJECT_ID}/chat/messages`, {
         headers: {
           'Authorization': `Bearer ${JWT_TOKEN}`
@@ -29,13 +32,13 @@ class ChatAPITester {
 
       if (messagesResponse.ok) {
         const messagesData = await messagesResponse.json();
-        console.log('✅ Messages retrieved:', messagesData.data?.length || 0, 'messages');
+        logger.info('✅ Messages retrieved:', messagesData.data?.length || 0, 'messages');
       } else {
-        console.log('❌ Failed to get messages:', messagesResponse.status, messagesResponse.statusText);
+        logger.warn('❌ Failed to get messages:', messagesResponse.status, messagesResponse.statusText);
       }
 
       // Test 2: Send a message
-      console.log('\n2. Testing POST /api/projects/:projectId/chat/messages');
+      logger.info('\n2. Testing POST /api/projects/:projectId/chat/messages');
       const sendResponse = await fetch(`${BASE_URL}/api/projects/${PROJECT_ID}/chat/messages`, {
         method: 'POST',
         headers: {
@@ -49,13 +52,13 @@ class ChatAPITester {
 
       if (sendResponse.ok) {
         const sendData = await sendResponse.json();
-        console.log('✅ Message sent:', sendData.data?.id);
+        logger.info('✅ Message sent:', sendData.data?.id);
       } else {
-        console.log('❌ Failed to send message:', sendResponse.status, sendResponse.statusText);
+        logger.warn('❌ Failed to send message:', sendResponse.status, sendResponse.statusText);
       }
 
       // Test 3: Get participants
-      console.log('\n3. Testing GET /api/projects/:projectId/chat/participants');
+      logger.info('\n3. Testing GET /api/projects/:projectId/chat/participants');
       const participantsResponse = await fetch(`${BASE_URL}/api/projects/${PROJECT_ID}/chat/participants`, {
         headers: {
           'Authorization': `Bearer ${JWT_TOKEN}`
@@ -64,13 +67,13 @@ class ChatAPITester {
 
       if (participantsResponse.ok) {
         const participantsData = await participantsResponse.json();
-        console.log('✅ Participants retrieved:', participantsData.data?.length || 0, 'online');
+        logger.info('✅ Participants retrieved:', participantsData.data?.length || 0, 'online');
       } else {
-        console.log('❌ Failed to get participants:', participantsResponse.status, participantsResponse.statusText);
+        logger.warn('❌ Failed to get participants:', participantsResponse.status, participantsResponse.statusText);
       }
 
       // Test 4: Get chat statistics
-      console.log('\n4. Testing GET /api/projects/:projectId/chat/stats');
+      logger.info('\n4. Testing GET /api/projects/:projectId/chat/stats');
       const statsResponse = await fetch(`${BASE_URL}/api/projects/${PROJECT_ID}/chat/stats`, {
         headers: {
           'Authorization': `Bearer ${JWT_TOKEN}`
@@ -79,19 +82,19 @@ class ChatAPITester {
 
       if (statsResponse.ok) {
         const statsData = await statsResponse.json();
-        console.log('✅ Chat stats:', statsData.data);
+        logger.info('✅ Chat stats:', statsData.data);
       } else {
-        console.log('❌ Failed to get stats:', statsResponse.status, statsResponse.statusText);
+        logger.warn('❌ Failed to get stats:', statsResponse.status, statsResponse.statusText);
       }
 
     } catch (error) {
-      console.error('❌ REST API test error:', error.message);
+      logger.error('❌ REST API test error:', error.message);
     }
   }
 
   // Test Socket.IO real-time features
   async testSocketIO() {
-    console.log('\n🔌 Testing Socket.IO...\n');
+    logger.info('\n🔌 Testing Socket.IO...\n');
 
     return new Promise((resolve) => {
       // Connect to Socket.IO
@@ -100,19 +103,19 @@ class ChatAPITester {
       });
 
       this.socket.on('connect', () => {
-        console.log('✅ Connected to Socket.IO server');
+        logger.info('✅ Connected to Socket.IO server');
 
         // Test 1: Join project chat
-        console.log('1. Joining project chat...');
+        logger.info('1. Joining project chat...');
         this.socket.emit('join_project_chat', PROJECT_ID);
       });
 
       this.socket.on('online_participants', (participants) => {
-        console.log('✅ Online participants received:', participants.length, 'users');
+        logger.info('✅ Online participants received:', participants.length, 'users');
 
         // Test 2: Send a message
         setTimeout(() => {
-          console.log('2. Sending test message...');
+          logger.info('2. Sending test message...');
           this.socket.emit('send_message', {
             projectId: PROJECT_ID,
             message: `Real-time test message at ${new Date().toLocaleTimeString()}`
@@ -121,7 +124,7 @@ class ChatAPITester {
 
         // Test 3: Test chatbot command
         setTimeout(() => {
-          console.log('3. Testing chatbot command...');
+          logger.info('3. Testing chatbot command...');
           this.socket.emit('chatbot_command', {
             projectId: PROJECT_ID,
             command: '/help'
@@ -130,7 +133,7 @@ class ChatAPITester {
 
         // Test 4: Test typing indicators
         setTimeout(() => {
-          console.log('4. Testing typing indicators...');
+          logger.info('4. Testing typing indicators...');
           this.socket.emit('typing_start', PROJECT_ID);
 
           setTimeout(() => {
@@ -140,24 +143,24 @@ class ChatAPITester {
       });
 
       this.socket.on('chat_message', (message) => {
-        console.log('📨 Message received:', message.sender_name, ':', message.message.substring(0, 50) + '...');
+        logger.info('📨 Message received:', message.sender_name, ':', message.message.substring(0, 50) + '...');
       });
 
       this.socket.on('user_typing', (data) => {
-        console.log('⌨️  Typing status:', data.userName, data.isTyping ? 'started' : 'stopped');
+        logger.info('⌨️  Typing status:', data.userName, data.isTyping ? 'started' : 'stopped');
       });
 
       this.socket.on('error', (error) => {
-        console.log('❌ Socket error:', error.message);
+        logger.error('❌ Socket error:', error.message);
       });
 
       // Disconnect after 10 seconds
       setTimeout(() => {
-        console.log('5. Leaving project chat...');
+        logger.info('5. Leaving project chat...');
         this.socket.emit('leave_project_chat', PROJECT_ID);
 
         setTimeout(() => {
-          console.log('6. Disconnecting...');
+          logger.info('6. Disconnecting...');
           this.socket.disconnect();
           resolve();
         }, 1000);
@@ -167,34 +170,33 @@ class ChatAPITester {
 
   // Run all tests
   async runAllTests() {
-    console.log('🚀 Starting Chat Backend API Tests\n');
-    console.log('=' .repeat(50));
+    logger.info('🚀 Starting Chat Backend API Tests\n');
+    logger.info('=' .repeat(50));
 
     try {
       await this.testRESTAPIs();
       await this.testSocketIO();
 
-      console.log('\n' + '=' .repeat(50));
-      console.log('✅ All tests completed!');
-      console.log('\n📝 Notes:');
-      console.log('- Make sure the server is running on', BASE_URL);
-      console.log('- Replace JWT_TOKEN with a valid token');
-      console.log('- Replace PROJECT_ID with an actual project ID');
-      console.log('- Check server logs for detailed error information');
+      logger.info('\n' + '=' .repeat(50));
+      logger.info('✅ All tests completed!');
+      logger.info('\n📝 Notes:');
+      logger.info('- Make sure the server is running on', BASE_URL);
+      logger.info('- Replace JWT_TOKEN with a valid token');
+      logger.info('- Replace PROJECT_ID with an actual project ID');
+      logger.info('- Check server logs for detailed error information');
 
     } catch (error) {
-      console.error('❌ Test suite error:', error.message);
+      logger.error('❌ Test suite error:', error.message);
     }
   }
 }
 
-// Run tests if this file is executed directly
 if (require.main === module) {
   const tester = new ChatAPITester();
   tester.runAllTests().then(() => {
     process.exit(0);
   }).catch((error) => {
-    console.error('Test failed:', error);
+    logger.error('Test failed:', error);
     process.exit(1);
   });
 }

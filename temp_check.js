@@ -1,3 +1,5 @@
+let logger;
+try { logger = require(__root + 'logger'); } catch (e) { try { logger = require('./logger'); } catch (e2) { try { logger = require('../logger'); } catch (e3) { logger = console; } } }
 const db = require('./src/db');
 
 async function check() {
@@ -8,7 +10,7 @@ async function check() {
         if (err) reject(err); else resolve(rows);
       });
     });
-    console.log('Tasks under project:', tasks);
+    logger.info('Tasks under project:', tasks);
 
     // Check client docs
     const clientDocs = await new Promise((resolve, reject) => {
@@ -16,9 +18,8 @@ async function check() {
         if (err) reject(err); else resolve(rows);
       });
     });
-    console.log('Client docs for client 62:', clientDocs.length, clientDocs);
+    logger.info('Client docs for client 62:', clientDocs.length, clientDocs);
 
-    // Check task docs if tasks exist
     if (tasks.length > 0) {
       const taskIds = tasks.map(t => t.id);
       const taskPublicIds = tasks.map(t => t.public_id).filter(Boolean);
@@ -29,12 +30,12 @@ async function check() {
           if (err) reject(err); else resolve(rows);
         });
       });
-      console.log('Task docs:', taskDocs.length, taskDocs);
+      logger.info('Task docs:', taskDocs.length, taskDocs);
     }
 
     process.exit(0);
   } catch (e) {
-    console.error('Error:', e);
+    logger.error('Error:', e);
     process.exit(1);
   }
 }

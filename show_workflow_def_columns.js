@@ -1,3 +1,5 @@
+let logger;
+try { logger = require(__root + 'logger'); } catch (e) { try { logger = require('./logger'); } catch (e2) { try { logger = require('../logger'); } catch (e3) { logger = console; } } }
 const db = require('./src/db');
 
 const q = (sql, params = []) => new Promise((resolve, reject) => {
@@ -15,10 +17,10 @@ const q = (sql, params = []) => new Promise((resolve, reject) => {
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_definitions'
       ORDER BY ORDINAL_POSITION
     `);
-    console.log(rows.map(r => r.COLUMN_NAME).join(', '));
+    logger.info(rows.map(r => r.COLUMN_NAME).join(', '));
     process.exit(0);
   } catch (e) {
-    console.error('ERROR', e);
+    logger.error('ERROR', e);
     process.exit(1);
   }
 })();

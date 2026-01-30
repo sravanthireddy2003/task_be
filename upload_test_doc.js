@@ -3,20 +3,23 @@ const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
 
+let logger;
+try { logger = require('./logger'); } catch (e) { logger = console; }
+
 const BASE_URL = 'http://localhost:4000';
 
 async function uploadDocumentToProject() {
-  console.log('🚀 Uploading test document to project...\n');
+  logger.info('🚀 Uploading test document to project...\n');
 
   try {
     // 1. Login
-    console.log('1. 🔐 Logging in...');
+    logger.info('1. 🔐 Logging in...');
     const loginResponse = await axios.post(`${BASE_URL}/api/auth/login`, {
       email: 'admin@example.com',
       password: 'admin123'
     });
     const authToken = loginResponse.data.token;
-    console.log('✅ Login successful\n');
+    logger.info('✅ Login successful\n');
 
     // 2. Create test file
     const testFilePath = path.join(__dirname, 'test_project_doc.pdf');
@@ -26,7 +29,7 @@ async function uploadDocumentToProject() {
     }
 
     // 3. Upload document to project
-    console.log('3. 📁 Uploading document to project ID 18...');
+    logger.info('3. 📁 Uploading document to project ID 18...');
     const form = new FormData();
     form.append('document', fs.createReadStream(testFilePath));
     form.append('entityType', 'PROJECT');
@@ -39,11 +42,10 @@ async function uploadDocumentToProject() {
       }
     });
 
-    console.log('✅ Document uploaded successfully:', uploadResponse.data);
-    console.log('');
+    logger.info('✅ Document uploaded successfully:', uploadResponse.data);
+    logger.info('');
 
-    // 4. List documents for project
-    console.log('4. 📄 Listing documents for project ID 18...');
+    logger.info('4. 📄 Listing documents for project ID 18...');
     const listResponse = await axios.get(`${BASE_URL}/api/documents`, {
       headers: {
         'Authorization': `Bearer ${authToken}`,
@@ -52,26 +54,25 @@ async function uploadDocumentToProject() {
     });
 
     const docs = (listResponse.data && listResponse.data.data && listResponse.data.data.documents) || listResponse.data.data || [];
-    console.log('✅ Documents found:', Array.isArray(docs) ? docs.length : 'unknown');
+    logger.info('✅ Documents found:', Array.isArray(docs) ? docs.length : 'unknown');
     (docs || []).forEach((doc, index) => {
-      console.log(`${index + 1}. ${doc.fileName} - ${doc.entityType}:${doc.entityId} - URL: ${doc.file_url}`);
+      logger.info(`${index + 1}. ${doc.fileName} - ${doc.entityType}:${doc.entityId} - URL: ${doc.file_url}`);
     });
 
-    // 5. Preview and Download first document (if available)
     const firstDoc = (docs && docs[0]) || null;
     const docId = firstDoc ? (firstDoc.documentId || firstDoc.id || firstDoc.documentId) : null;
     if (docId) {
-      console.log('\n5. 🔎 Fetching preview for documentId', docId);
+      logger.info('\n5. 🔎 Fetching preview for documentId', docId);
       try {
         const previewResp = await axios.get(`${BASE_URL}/api/documents/preview/${docId}`, {
           headers: { 'Authorization': `Bearer ${authToken}` }
         });
-        console.log('✅ Preview response:', previewResp.data);
+        logger.info('✅ Preview response:', previewResp.data);
       } catch (e) {
-        console.error('❌ Preview error:', e.response ? e.response.data : e.message);
+        logger.error('❌ Preview error:', e.response ? e.response.data : e.message);
       }
 
-      console.log('\n6. ⬇️ Downloading document', docId);
+      logger.info('\n6. ⬇️ Downloading document', docId);
       try {
         const dlResp = await axios.get(`${BASE_URL}/api/documents/download/${docId}`, {
           headers: { 'Authorization': `Bearer ${authToken}` },
@@ -79,10 +80,9 @@ async function uploadDocumentToProject() {
           validateStatus: null,
           responseType: 'stream'
         });
-        console.log('✅ Download status:', dlResp.status, 'headers:', dlResp.headers['content-disposition'] || '');
-        // If server redirected to public URL, axios follows and stream will be from that URL; we won't save the file here.
+        logger.info('✅ Download status:', dlResp.status, 'headers:', dlResp.headers['content-disposition'] || '');
         if (dlResp.request && dlResp.request.res && dlResp.request.res.responseUrl) {
-          console.log('Final URL:', dlResp.request.res.responseUrl);
+          logger.info('Final URL:', dlResp.request.res.responseUrl);
         }
         // Consume and discard stream to complete request
         if (dlResp.data && dlResp.data.pipe) {
@@ -90,7 +90,7 @@ async function uploadDocumentToProject() {
           dlResp.data.resume();
         }
       } catch (e) {
-        console.error('❌ Download error:', e.response ? e.response.data : e.message);
+        logger.error('❌ Download error:', e.response ? e.response.data : e.message);
       }
     }
 
@@ -100,7 +100,7 @@ async function uploadDocumentToProject() {
     }
 
   } catch (error) {
-    console.error('❌ Error:', error.response ? error.response.data : error.message);
+    logger.error('❌ Error:', error.response ? error.response.data : error.message);
   }
 }
 

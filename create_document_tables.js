@@ -1,10 +1,12 @@
 const db = require('./src/config/db');
 
+let logger;
+try { logger = require('./logger'); } catch (e) { logger = console; }
+
 async function createDocumentTables() {
   try {
-    console.log('Creating document management tables...');
+    logger.info('Creating document management tables...');
 
-    // Helper function for promisified queries
     const q = (sql, params = []) => new Promise((resolve, reject) => {
       db.query(sql, params, (err, results) => {
         if (err) reject(err);
@@ -13,7 +15,7 @@ async function createDocumentTables() {
     });
 
     // Create documents table
-    console.log('Creating documents table...');
+    logger.info('Creating documents table...');
     await q(`
       CREATE TABLE IF NOT EXISTS documents (
         documentId VARCHAR(255) PRIMARY KEY,
@@ -35,7 +37,7 @@ async function createDocumentTables() {
     `);
 
     // Create document_access table
-    console.log('Creating document_access table...');
+    logger.info('Creating document_access table...');
     await q(`
       CREATE TABLE IF NOT EXISTS document_access (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -54,8 +56,7 @@ async function createDocumentTables() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
 
-    // Create client_documents table (for backward compatibility)
-    console.log('Creating client_documents table...');
+    logger.info('Creating client_documents table...');
     await q(`
       CREATE TABLE IF NOT EXISTS client_documents (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -70,27 +71,27 @@ async function createDocumentTables() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
 
-    console.log('✅ All document tables created successfully!');
+    logger.info('✅ All document tables created successfully!');
 
     // Verify tables exist
-    console.log('Verifying tables...');
+    logger.info('Verifying tables...');
     const tables = await q("SHOW TABLES LIKE 'documents'");
     if (tables.length > 0) {
-      console.log('✅ documents table exists');
+      logger.info('✅ documents table exists');
     }
 
     const accessTables = await q("SHOW TABLES LIKE 'document_access'");
     if (accessTables.length > 0) {
-      console.log('✅ document_access table exists');
+      logger.info('✅ document_access table exists');
     }
 
     const clientDocTables = await q("SHOW TABLES LIKE 'client_documents'");
     if (clientDocTables.length > 0) {
-      console.log('✅ client_documents table exists');
+      logger.info('✅ client_documents table exists');
     }
 
   } catch (error) {
-    console.error('❌ Failed to create document tables:', error);
+    logger.error('❌ Failed to create document tables:', error);
     process.exit(1);
   } finally {
     process.exit(0);

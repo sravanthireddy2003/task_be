@@ -10,6 +10,7 @@ const mime = require('mime-types');
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const ruleEngine = require(__root + 'middleware/ruleEngine');
 const RULES = require(__root + 'rules/ruleCodes');
+const { normalizeProjectStatus } = require(__root + 'utils/projectStatus');
 /*
   Rule codes used in this router:
   - PROJECT_CREATE, PROJECT_VIEW, PROJECT_UPDATE, PROJECT_DELETE
@@ -17,6 +18,8 @@ const RULES = require(__root + 'rules/ruleCodes');
 */
 const NotificationService = require('../services/notificationService');
 require('dotenv').config();
+let env;
+try { env = require(__root + 'config/env'); } catch (e) { env = require('../config/env'); }
 router.use(requireAuth);
 
 // Configure multer
@@ -58,7 +61,6 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
       return res.status(400).json({ success: false, message: 'projectName and clientPublicId are required' });
     }
  
-    // Resolve client by public_id if column exists; otherwise accept numeric id
     const clientHasPublic = await hasColumn('clientss', 'public_id');
     let client;
     if (clientHasPublic) {
@@ -76,7 +78,6 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
     const clientId = client[0].id;
     const clientInfo = client[0]; // Store client details for email
  
-    // Validate departments if provided. Accept departmentPublicIds, department_ids, or departmentIds (mixed numeric or public_id)
     const deptInput = Array.isArray(departmentPublicIds) && departmentPublicIds.length > 0 ? departmentPublicIds : (department_ids.length > 0 ? department_ids : departmentIds);
     let deptIdMap = {};
     let departmentNames = [];
@@ -104,7 +105,6 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
         departmentNames.push(d.name);
       });
  
-      // Check if all departments were found
       const notFound = deptInput.filter(di => !deptIdMap[String(di)]);
       if (notFound.length > 0) {
         return res.status(400).json({ success: false, message: `Departments not found: ${notFound.join(', ')}` });
@@ -114,7 +114,6 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
     const publicId = crypto.randomBytes(8).toString('hex');
     const createdBy = req.user._id;
  
-    // Resolve project manager public id -> numeric _id if provided
     let pmId = null;
     let projectManagerInfo = null;
     const pmPublic = projectManagerPublicId || projectManagerId || project_manager_id || null;
@@ -151,7 +150,6 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
     const project = await q('SELECT * FROM projects WHERE id = ? LIMIT 1', [projectId]);
     const depts = await q('SELECT pd.department_id, d.name, d.public_id FROM project_departments pd JOIN departments d ON pd.department_id = d.id WHERE pd.project_id = ?', [projectId]);
  
-    // Enrich client info for response
     const responseClientInfo = clientHasPublic ? await q('SELECT public_id, name FROM clientss WHERE id = ? LIMIT 1', [clientId]) : await q('SELECT id as public_id, name FROM clientss WHERE id = ? LIMIT 1', [clientId]);
  
     const response = {
@@ -169,7 +167,6 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
       client: responseClientInfo && responseClientInfo.length > 0 ? { public_id: responseClientInfo[0].public_id, name: responseClientInfo[0].name } : null
     };
    
-    // Enrich with project manager info if present
     if (project[0].project_manager_id) {
       const pmRows = await q('SELECT public_id, name FROM users WHERE _id = ? LIMIT 1', [project[0].project_manager_id]);
       if (pmRows && pmRows.length > 0) {
@@ -179,7 +176,7 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
  
     const emailService = require(__root + 'utils/emailService');
    
-    const projectLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/projects/${publicId}`;
+    const projectLink = `${env.FRONTEND_URL || env.BASE_URL}/projects/${publicId}`;
     const creatorName = req.user.name || 'Administrator';
    
     const emailResults = await emailService.sendProjectNotifications({
@@ -196,14 +193,14 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
       creatorName
     });
  
-    console.log('Project emails sent:', emailResults);
+    logger.info('Project emails sent:', emailResults);
 
     // Send notification
     (async () => {
       try {
         await NotificationService.createAndSendToRoles(['Admin', 'Manager'], 'Project Created', `New project "${projectName}" has been created`, 'PROJECT_CREATED', 'project', projectId, req.user ? req.user.tenant_id : null);
       } catch (notifErr) {
-        console.error('Project creation notification error:', notifErr);
+        logger.error('Project creation notification error:', notifErr);
       }
     })();
 
@@ -237,7 +234,6 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
  
 router.get('/', async (req, res) => {
   try {
-    // If caller requested a lightweight dropdown response, return minimal fields
     if (req.query.dropdown === '1' || req.query.dropdown === 'true') {
       let rows;
       if (req.user.role === 'Admin' || req.user.role === 'Manager') {
@@ -307,7 +303,7 @@ router.get('/', async (req, res) => {
         start_date: p.start_date,
         end_date: p.end_date,
         budget: p.budget,
-        status: p.status,
+        status: normalizeProjectStatus(p.status, p.is_locked).status,
         created_at: p.created_at,
         departments: depts.map(d => ({ public_id: d.public_id, name: d.name }))
       };
@@ -393,7 +389,8 @@ router.get('/stats', async (req, res) => {
     const projectsByStatus = {};
     let totalProjects = 0;
     projectStats.forEach(ps => {
-      projectsByStatus[ps.status] = ps.count;
+      const key = normalizeProjectStatus(ps.status, false).status || ps.status;
+      projectsByStatus[key] = (projectsByStatus[key] || 0) + ps.count;
       totalProjects += ps.count;
     });
 
@@ -471,7 +468,7 @@ router.get('/:id', async (req, res) => {
       start_date: p.start_date,
       end_date: p.end_date,
       budget: p.budget,
-      status: p.status,
+      status: normalizeProjectStatus(p.status, p.is_locked).status,
       created_at: p.created_at,
       departments: depts.map(d => ({ public_id: d.public_id, name: d.name }))
     };
@@ -479,7 +476,6 @@ router.get('/:id', async (req, res) => {
       const pmRows = await q('SELECT public_id, name FROM users WHERE _id = ? LIMIT 1', [p.project_manager_id]);
       if (pmRows && pmRows.length > 0) out.project_manager = { public_id: pmRows[0].public_id, name: pmRows[0].name };
     }
-    // attach client info for single project view
     try {
       const clientHasPublic_single = await hasColumn('clientss', 'public_id');
       const clientInfo_single = clientHasPublic_single ? await q('SELECT public_id, name FROM clientss WHERE id = ? LIMIT 1', [p.client_id]) : await q('SELECT id as public_id, name FROM clientss WHERE id = ? LIMIT 1', [p.client_id]);
@@ -623,7 +619,7 @@ router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Mana
       try {
         await NotificationService.createAndSendToRoles(['Admin', 'Manager'], 'Project Updated', `Project "${name || updated[0].name}" has been updated`, 'PROJECT_UPDATED', 'project', projectId, req.user ? req.user.tenant_id : null);
       } catch (notifErr) {
-        console.error('Project update notification error:', notifErr);
+        logger.error('Project update notification error:', notifErr);
       }
     })();
     res.json({ success: true, data: out });
@@ -659,7 +655,6 @@ router.post('/:id/departments', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['
     const deptIdMap = {};
     deptRecords.forEach(d => deptIdMap[d.public_id] = d.id);
  
-    // Check if all departments were found
     const notFound = department_ids.filter(deptPublicId => !deptIdMap[deptPublicId]);
     if (notFound.length > 0) {
       return res.status(400).json({ success: false, message: `Departments not found: ${notFound.join(', ')}` });
@@ -738,7 +733,6 @@ router.delete('/:id', ruleEngine(RULES.PROJECT_DELETE), requireRole(['Admin', 'M
       await q('DELETE FROM project_departments WHERE project_id = ?', [projectId]).catch(() => {});
       await q('DELETE FROM projects WHERE id = ?', [projectId]);
     } catch (e) {
-      // Fallback to soft-delete if hard delete fails
       await q('UPDATE projects SET is_active = 0 WHERE id = ?', [projectId]);
     }
  
@@ -810,7 +804,6 @@ router.get('/:id/summary', async (req, res) => {
 
 // ==================== GET PROJECT TASKS (KANBAN) ====================
 // GET /api/projects/:id/tasks
-// Returns tasks for Kanban board - only assigned tasks for employees, all tasks for managers/admins
 router.get('/:id/tasks', async (req, res) => {
   try {
     const { id } = req.params;
@@ -879,7 +872,6 @@ router.get('/:id/tasks', async (req, res) => {
       return res.status(403).json({ success: false, message: 'Access denied' });
     }
 
-    // Format response for Kanban board
     const formattedTasks = tasks.map(task => ({
       id: task.id,
       public_id: task.public_id,
@@ -917,7 +909,6 @@ router.get('/:id/tasks', async (req, res) => {
   }
 });
 
-// GET /api/projects/projectdropdown - Returns list of projects for dropdown
 router.get('/projectdropdown', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const query = "SELECT public_id as id, name FROM projects WHERE is_active = 1 ORDER BY name";

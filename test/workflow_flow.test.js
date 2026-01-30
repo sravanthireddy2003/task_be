@@ -12,13 +12,13 @@ async function login() {
 
 async function run() {
   try {
-    console.log('Logging in as admin...');
+    logger.info('Logging in as admin...');
     const token = await login();
-    console.log('Token:', !!token);
+    logger.info('Token:', !!token);
 
     const headers = { Authorization: `Bearer ${token}`, 'X-Tenant-Id': TENANT };
 
-    console.log('1) Create workflow template');
+    logger.info('1) Create workflow template');
     const createTpl = await axios.post(`${BASE}/api/admin/workflows/templates`, {
       tenant_id: parseInt(TENANT, 10),
       name: 'Automated Payroll Review',
@@ -30,10 +30,10 @@ async function run() {
       active: true,
       created_by: 1
     }, { headers });
-    console.log('Create template response:', createTpl.data);
+    logger.info('Create template response:', createTpl.data);
     const templateId = createTpl.data && createTpl.data.data && createTpl.data.data.id;
 
-    console.log('2) Add manager review step');
+    logger.info('2) Add manager review step');
     await axios.post(`${BASE}/api/admin/workflows/steps`, {
       template_id: templateId,
       step_order: 1,
@@ -43,7 +43,7 @@ async function run() {
       notify: ['MANAGER']
     }, { headers });
 
-    console.log('3) Add admin approval step');
+    logger.info('3) Add admin approval step');
     await axios.post(`${BASE}/api/admin/workflows/steps`, {
       template_id: templateId,
       step_order: 2,
@@ -53,7 +53,7 @@ async function run() {
       notify: ['ADMIN']
     }, { headers });
 
-    console.log('4) Trigger workflow (simulate employee)');
+    logger.info('4) Trigger workflow (simulate employee)');
     const trigger = await axios.post(`${BASE}/api/workflow/trigger`, {
       tenant_id: parseInt(TENANT, 10),
       entity_type: 'TASK',
@@ -67,30 +67,30 @@ async function run() {
       created_by: { id: 7, name: 'Ramesh Kumar', role: 'EMPLOYEE' }
     }, { headers });
 
-    console.log('Trigger response:', trigger.data);
+    logger.info('Trigger response:', trigger.data);
     const instanceId = trigger.data && trigger.data.data && trigger.data.data.instance_id;
 
-    console.log('5) Manager -> get queue');
+    logger.info('5) Manager -> get queue');
     const queue = await axios.get(`${BASE}/api/manager/workflows/queue`, { headers });
-    console.log('Queue length:', (queue.data && queue.data.data && queue.data.data.length) || 'unknown');
+    logger.info('Queue length:', (queue.data && queue.data.data && queue.data.data.length) || 'unknown');
 
     if (instanceId) {
-      console.log('6) Manager approve instance', instanceId);
+      logger.info('6) Manager approve instance', instanceId);
       const approve = await axios.post(`${BASE}/api/manager/workflows/${instanceId}/approve`, { comment: 'OK' }, { headers });
-      console.log('Approve response:', approve.data);
+      logger.info('Approve response:', approve.data);
 
-      console.log('7) Admin close instance');
+      logger.info('7) Admin close instance');
       const close = await axios.post(`${BASE}/api/admin/workflows/${instanceId}/close`, { comment: 'Final approval' }, { headers });
-      console.log('Close response:', close.data);
+      logger.info('Close response:', close.data);
 
-      console.log('8) Fetch history');
+      logger.info('8) Fetch history');
       const history = await axios.get(`${BASE}/api/workflow/${instanceId}/history`, { headers });
-      console.log('History:', history.data);
+      logger.info('History:', history.data);
     }
 
-    console.log('Workflow flow script completed.');
+    logger.info('Workflow flow script completed.');
   } catch (err) {
-    console.error('Error during workflow flow:', err && err.response ? err.response.data : err && err.message);
+    logger.error('Error during workflow flow:', err && err.response ? err.response.data : err && err.message);
   }
 }
 

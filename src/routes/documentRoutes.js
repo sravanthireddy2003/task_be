@@ -11,16 +11,13 @@ router.use(auth);
 // Default rule applied to listing/viewing documents — route-specific ruleEngine checks
 router.use(ruleEngine('DOCUMENT_VIEW'));
 
-// Upload: rule engine will determine if user may upload
 router.post('/upload', ruleEngine('DOCUMENT_UPLOAD'), DocumentController.uploadDocument);
 
-// List documents (supports project-id header for backward compatibility)
 router.get('/', DocumentController.listDocuments);
 
 // Get user's documents inbox
 router.get('/my', DocumentController.getMyDocuments);
 
-// Get project members for access assignment
 router.get('/project/:projectId/members', DocumentController.getProjectMembers);
 
 // Preview and Download routes — rule engine checks applied per-route

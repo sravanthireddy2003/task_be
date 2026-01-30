@@ -1,5 +1,6 @@
 const db = require('../db');
 const jwt = require('jsonwebtoken');
+const env = require('../config/env');
 
 // Extract tenant id from headers or body and attach to req.
 // If not provided and no token present, allow to proceed (auth middleware will handle later).
@@ -23,7 +24,7 @@ module.exports = async function tenantMiddleware(req, res, next) {
     const token = auth.split(' ')[1];
     let payload;
     try {
-      payload = jwt.verify(token, process.env.SECRET || 'secret', { ignoreExpiration: true });
+      payload = jwt.verify(token, env.JWT_SECRET || 'secret', { ignoreExpiration: true });
     } catch (e) {
       // Invalid token - allow requireAuth middleware to handle the error
       return next();
@@ -40,13 +41,11 @@ module.exports = async function tenantMiddleware(req, res, next) {
     const q = 'SELECT tenant_id FROM users WHERE _id = ? OR public_id = ? LIMIT 1';
     db.query(q, [userId, String(userId)], (err, results) => {
       if (err) {
-        // DB error - let next middleware handle
         return next();
       }
       if (results && results.length > 0) {
         req.tenantId = results[0].tenant_id;
       }
-      // Always proceed - let requireAuth handle auth failures
       return next();
     });
   } catch (e) {

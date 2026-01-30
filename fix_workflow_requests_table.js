@@ -1,7 +1,10 @@
 const db = require('./src/db');
 
+let logger;
+try { logger = require('./logger'); } catch (e) { logger = console; }
+
 async function fixWorkflowRequestsTable() {
-  console.log('Running migration to fix workflow_requests table...');
+  logger.info('Running migration to fix workflow_requests table...');
 
   const q = (sql, params = []) => new Promise((resolve, reject) => {
     db.query(sql, params, (err, results) => {
@@ -11,7 +14,6 @@ async function fixWorkflowRequestsTable() {
   });
 
   try {
-    // Using a more robust way to check for columns before adding them
     const columns = await q(`
         SELECT COLUMN_NAME 
         FROM INFORMATION_SCHEMA.COLUMNS 
@@ -22,23 +24,23 @@ async function fixWorkflowRequestsTable() {
 
     if (!columnNames.includes('requested_by_id')) {
         await q("ALTER TABLE workflow_requests ADD COLUMN requested_by_id INT NOT NULL AFTER to_state");
-        console.log("Successfully added 'requested_by_id' column.");
+        logger.info("Successfully added 'requested_by_id' column.");
     } else {
-        console.log("'requested_by_id' column already exists.");
+        logger.info("'requested_by_id' column already exists.");
     }
 
     if (!columnNames.includes('approver_role')) {
         await q("ALTER TABLE workflow_requests ADD COLUMN approver_role VARCHAR(50) AFTER requested_by_id");
-        console.log("Successfully added 'approver_role' column.");
+        logger.info("Successfully added 'approver_role' column.");
     } else {
-        console.log("'approver_role' column already exists.");
+        logger.info("'approver_role' column already exists.");
     }
 
-    console.log('Table workflow_requests has been checked and updated.');
+      logger.info('Table workflow_requests has been checked and updated.');
     process.exit(0);
 
   } catch (e) {
-    console.error('Migration failed:', e);
+    logger.error('Migration failed:', e);
     process.exit(1);
   }
 }

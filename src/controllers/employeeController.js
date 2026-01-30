@@ -1,5 +1,8 @@
 const db = require(__root + 'db');
+let logger;
+try { logger = require(__root + 'logger'); } catch (e) { logger = require('../../logger'); }
 const RoleBasedLoginResponse = require(__root + 'controller/utils/RoleBasedLoginResponse');
+const { normalizeProjectStatus } = require(__root + 'utils/projectStatus');
 
 const MAX_CHECKLIST_ITEMS = 10;
 const columnExistenceCache = {};
@@ -56,6 +59,7 @@ async function buildSubtaskDeletedClause(alias = 's') {
 async function buildProjectJoinClause() {
   const projectIdExists = await hasColumn('tasks', 'project_id');
   const projectPublicIdExists = await hasColumn('tasks', 'project_public_id');
+  const projectIsLockedExists = await hasColumn('projects', 'is_locked');
   const startedAtExists = await hasColumn('tasks', 'started_at');
   const liveTimerExists = await hasColumn('tasks', 'live_timer');
   const totalDurationExists = await hasColumn('tasks', 'total_duration');
@@ -71,6 +75,9 @@ async function buildProjectJoinClause() {
   if (joinConditions.length) {
     joinClauses.push(`LEFT JOIN projects p ON (${joinConditions.join(' OR ')})`);
     selects.push('p.id AS project_internal_id', 'p.name AS project_name', 'p.status AS project_status', 'p.priority AS project_priority');
+    if (projectIsLockedExists) {
+      selects.push('p.is_locked AS project_is_locked');
+    }
   }
   if (projectPublicIdExists) {
     selects.push('t.project_public_id AS project_public_id');
@@ -129,7 +136,6 @@ async function fetchChecklistMap(taskIds = []) {
 }
 
 async function ensureAssignedTask(taskId, userId, tenantId) {
-  // Resolve taskId to internal id if it's public_id
   let internalTaskId = taskId;
   if (typeof taskId === 'string' && !/^\d+$/.test(taskId)) { // if not numeric, assume public_id
     const taskRows = await queryAsync('SELECT id FROM tasks WHERE public_id = ?', [taskId]);
@@ -245,11 +251,12 @@ function buildProjectPayload(row) {
   const hasInternal = row.project_internal_id != null;
   const hasPublic = row.project_public_id != null;
   if (!hasInternal && !hasPublic) return null;
+  const norm = normalizeProjectStatus(row.project_status, row.project_is_locked);
   return {
     id: hasInternal ? String(row.project_internal_id) : null,
     publicId: hasPublic ? row.project_public_id : null,
     name: row.project_name || null,
-    status: row.project_status || null,
+    status: norm.status || null,
     priority: row.project_priority || null
   };
 }
@@ -467,7 +474,7 @@ getMyTasks: async (req, res) => {
       meta: { count: tasks.length }
     });
   } catch (error) {
-    console.error('getMyTasks error:', error);
+    logger.error('getMyTasks error:', error);
     return res.status(error.status || 500).json({ success: false, error: error.message });
   }
 },

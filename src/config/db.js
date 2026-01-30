@@ -1,37 +1,50 @@
 const mysql = require('mysql');
+const env = require('./env');
+const logger = require('../logger');
 
-let dbConfig = {
-    host     : '127.0.0.1',
-    port     : '3306',
-    user     : 'root',
-    password : '',    
-    database :'market_task_db',
-    multipleStatements: true,
+const dbConfig = {
+    host: env.DB_HOST || '127.0.0.1',
+    port: env.DB_PORT || 3306,
+    user: env.DB_USER || 'root',
+    password: env.DB_PASSWORD || '',
+    database: env.DB_NAME || 'market_task_db',
+    multipleStatements: false,
+    connectionLimit: 10,
 };
 
 const pool = mysql.createPool(dbConfig);
 
 pool.on('connection', function (connection) {
-    console.log('Connected to the database via threadId %d!', connection.threadId);
+    logger.info(`DB connected (threadId=${connection.threadId})`);
 });
-    
+
+pool.on('error', function (err) {
+    logger.error('MySQL pool error: ' + (err && err.message));
+});
+
 pool.getConnection((err, connection) => {
     if (err) {
-        if (err.code === 'PROTOCOL_CONNECTION_LOST') {
-            console.error('Database connection was closed.');
-        }
-        if (err.code === 'ER_CON_COUNT_ERROR') {
-            console.error('Database has too many connections.');
-        }
-        if (err.code === 'ECONNREFUSED') {
-            console.error('Database connection was refused.');
-        }
-        return;
+        if (err.code === 'PROTOCOL_CONNECTION_LOST') logger.error('Database connection was closed.');
+        if (err.code === 'ER_CON_COUNT_ERROR') logger.error('Database has too many connections.');
+        if (err.code === 'ECONNREFUSED') logger.error('Database connection was refused.');
+        logger.warn('Initial DB connection failed; continuing — will retry on first query.');
     }
-
     if (connection) connection.release();
-    return;
 });
 
+function endPool(cb) {
+    try {
+        pool.end(err => {
+            if (err) logger.error('Error closing DB pool: ' + (err && err.message));
+            else logger.info('DB pool closed');
+            if (typeof cb === 'function') cb(err);
+        });
+    } catch (e) {
+        logger.error('Failed to end DB pool: ' + (e && e.message));
+        if (typeof cb === 'function') cb(e);
+    }
+}
+
 module.exports = pool;
+module.exports.end = endPool;
 

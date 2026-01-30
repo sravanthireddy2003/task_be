@@ -1,3 +1,5 @@
+let logger;
+try { logger = require(__root + 'logger'); } catch (e) { try { logger = require('./logger'); } catch (e2) { try { logger = require('../logger'); } catch (e3) { logger = console; } } }
 const ruleEngine = require('./src/rules/jsonRuleEngine');
 
 async function run() {
@@ -14,9 +16,9 @@ async function run() {
     const user = { _id: 23, id: '23', role: 'Admin', name: 'Ashwini' };
 
     const decision = await ruleEngine.evaluate(req, user, {}, 'project_creation');
-    console.log('Decision:', decision);
+    logger.info('Decision:', decision);
   } catch (e) {
-    console.error('Error running rule engine test:', e);
+    logger.error('Error running rule engine test:', e);
   }
 }
 

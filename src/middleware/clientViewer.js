@@ -1,6 +1,5 @@
 const db = require('../db');
 
-// Attach viewer's mapped client id (if user.role === 'Client-Viewer') to req.viewerClientId
 module.exports = async function clientViewerMiddleware(req, res, next) {
   try {
     if (!req.user || req.user.role !== 'Client-Viewer') return next();

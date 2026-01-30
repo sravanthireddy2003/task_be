@@ -1,5 +1,4 @@
 // src/workflow/workflowLogs.js
-// Audit trail helper for workflow actions
 
 const db = require('../db');
 

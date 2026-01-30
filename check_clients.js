@@ -1,12 +1,15 @@
 const db = require('./src/db');
 
-console.log('Starting check...');
+let logger;
+try { logger = require('./logger'); } catch (e) { logger = console; }
+
+logger.info('Starting check...');
 
 async function checkClients() {
   const q = (sql, params = []) => new Promise((resolve, reject) => {
     db.query(sql, params, (err, rows) => {
       if (err) {
-        console.log('Query error:', sql, err);
+        logger.error('Query error:', sql, err);
         reject(err);
       } else {
         resolve(rows);
@@ -15,39 +18,39 @@ async function checkClients() {
   });
 
   try {
-    console.log('Querying tables...');
+    logger.info('Querying tables...');
     const tables = await q("SHOW TABLES");
-    console.log('Tables:', tables.map(t => Object.values(t)[0]));
+    logger.info('Tables:', tables.map(t => Object.values(t)[0]));
 
     // Try clients
     try {
-      console.log('Checking clients...');
+      logger.info('Checking clients...');
       const clients = await q("SELECT COUNT(*) as count FROM clients");
-      console.log('Clients count:', clients[0].count);
+      logger.info('Clients count:', clients[0].count);
     } catch (e) {
-      console.log('Clients table error:', e.message);
+      logger.error('Clients table error:', e.message);
     }
 
     // Try clientss
     try {
-      console.log('Checking clientss...');
+      logger.info('Checking clientss...');
       const clientss = await q("SELECT COUNT(*) as count FROM clientss");
-      console.log('Clientss count:', clientss[0].count);
+      logger.info('Clientss count:', clientss[0].count);
     } catch (e) {
-      console.log('Clientss table error:', e.message);
+      logger.error('Clientss table error:', e.message);
     }
 
     // Check projects client_id
     try {
-      console.log('Checking projects...');
+      logger.info('Checking projects...');
       const projects = await q("SELECT COUNT(*) as count FROM projects WHERE client_id IS NOT NULL");
-      console.log('Projects with client_id:', projects[0].count);
+      logger.info('Projects with client_id:', projects[0].count);
     } catch (e) {
-      console.log('Projects error:', e.message);
+      logger.error('Projects error:', e.message);
     }
 
   } catch (e) {
-    console.log('Error:', e);
+    logger.error('Error:', e);
   } finally {
     process.exit(0);
   }

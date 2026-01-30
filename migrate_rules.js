@@ -1,3 +1,5 @@
+let logger;
+try { logger = require(__root + 'logger'); } catch (e) { try { logger = require('./logger'); } catch (e2) { try { logger = require('../logger'); } catch (e3) { logger = console; } } }
 // Migration script to create business_rules table and insert rules
 const db = require('./src/config/db');
 
@@ -491,7 +493,6 @@ const rules = [
     version: '1.0'
   },
 
-  // Default Allow for other cases
   {
     ruleCode: 'DEFAULT_ALLOW',
     description: 'Allow by default if no rules match',
@@ -512,7 +513,7 @@ async function runMigration() {
         else resolve(result);
       });
     });
-    console.log('Table business_rules created successfully');
+    logger.info('Table business_rules created successfully');
 
     // Insert rules
     for (const rule of rules) {
@@ -543,10 +544,10 @@ async function runMigration() {
         });
       });
     }
-    console.log('All rules inserted successfully');
+    logger.info('All rules inserted successfully');
 
   } catch (error) {
-    console.error('Migration failed:', error);
+    logger.error('Migration failed:', error);
   } finally {
     db.end();
   }

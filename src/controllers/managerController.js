@@ -1,5 +1,9 @@
 const db = require(__root + 'db');
 const RoleBasedLoginResponse = require(__root + 'controller/utils/RoleBasedLoginResponse');
+const { normalizeProjectStatus } = require(__root + 'utils/projectStatus');
+
+let logger;
+try { logger = require(global.__root + 'logger'); } catch (e) { try { logger = require('../../logger'); } catch (e2) { logger = console; } }
 
 const NUMERIC_COLUMN_TYPES = new Set(['int', 'bigint', 'tinyint', 'smallint', 'mediumint', 'decimal', 'float', 'double', 'numeric']);
 
@@ -214,6 +218,7 @@ async function fetchTaskTimeline(projectIds = [], projectPublicIds = []) {
 
   const clientFields = await clientFieldSelects('c');
   const hasIsDeletedFlag = await cachedHasColumn('tasks', 'isDeleted');
+  const hasProjectIsLocked = await cachedHasColumn('projects', 'is_locked');
 
   const sql = `
     SELECT
@@ -237,6 +242,7 @@ async function fetchTaskTimeline(projectIds = [], projectPublicIds = []) {
       p.name AS project_name,
       p.priority AS project_priority,
       p.status AS project_status,
+      ${hasProjectIsLocked ? 'p.is_locked AS project_is_locked,' : ''}
       p.start_date AS project_start_date,
       p.end_date AS project_end_date,
       p.client_id AS project_client_id,
@@ -342,7 +348,6 @@ module.exports = {
         ? resources.assignedClientIds.filter(Boolean)
         : [];
 
-      // If RoleBasedLoginResponse didn't return assigned client ids, attempt a robust fallback:
       // 1) clients where clientss.manager_id matches user's internal id or public id
       // 2) clients linked to projects where the user is manager/project_manager
       if (!assignedClientIds.length) {
@@ -491,7 +496,7 @@ module.exports = {
           }
           : null,
       }));
-      console.log('Assigned Projects Payload:', payload); // Debug log
+      logger.debug('Assigned Projects Payload:', payload); // Debug log
       return res.json({ success: true, data: payload });
     } catch (error) {
       return res
@@ -671,10 +676,9 @@ getTaskTimeline: async (req, res) => {
       const internalKey = task.task_internal_id ? String(task.task_internal_id) : null;
       const publicKey = task.task_id ? String(task.task_id) : null;
       
-      // DEBUG: Log to see if we have checklist and activity data
-      console.log(`Task ID: ${task.task_id}, Internal ID: ${task.task_internal_id}`);
-      console.log(`Checklist for internal key: ${checklistMap[internalKey]?.length || 0} items`);
-      console.log(`Activities for internal key: ${activityMap[internalKey]?.length || 0} items`);
+      logger.debug(`Task ID: ${task.task_id}, Internal ID: ${task.task_internal_id}`);
+      logger.debug(`Checklist for internal key: ${checklistMap[internalKey]?.length || 0} items`);
+      logger.debug(`Activities for internal key: ${activityMap[internalKey]?.length || 0} items`);
 
       return {
         id: task.task_id ? String(task.task_id) : String(task.task_internal_id),
@@ -703,7 +707,7 @@ getTaskTimeline: async (req, res) => {
           internalId: task.project_internal_id || null,
           id: task.project_public_id || (task.project_internal_id ? String(task.project_internal_id) : null),
           name: task.project_name || null,
-          status: task.project_status || null,
+          status: normalizeProjectStatus(task.project_status, task.project_is_locked).status || null,
           priority: task.project_priority || null,
           startDate: toIsoDate(task.project_start_date),
           endDate: toIsoDate(task.project_end_date),
@@ -762,7 +766,7 @@ getTaskTimeline: async (req, res) => {
         id: selectedProject.public_id || (selectedProject.id ? String(selectedProject.id) : null),
         publicId: selectedProject.public_id || null,
         name: selectedProject.name || null,
-        status: selectedProject.status || null,
+        status: normalizeProjectStatus(selectedProject.status, selectedProject.is_locked).status || null,
         priority: selectedProject.priority || null,
         startDate: toIsoDate(selectedProject.start_date),
         endDate: toIsoDate(selectedProject.end_date),
@@ -783,8 +787,8 @@ getTaskTimeline: async (req, res) => {
     if (projectMeta) payload.project = projectMeta;
     return res.json(payload);
     
-  } catch (error) {
-    console.error('Error in getTaskTimeline:', error);
+    } catch (error) {
+    logger.error('Error in getTaskTimeline:', error && error.message ? error.message : error);
     return res.status(error.status || 500).json({ 
       success: false, 
       error: error.message 
@@ -823,7 +827,6 @@ getTaskTimeline: async (req, res) => {
     }
   },
 
-  // Aggregated overview for manager (metrics + projects + clients + employees + tasks)
   getManagerOverview: async (req, res) => {
     try {
       await requireFeatureAccess(req, 'Dashboard');
@@ -868,7 +871,6 @@ getTaskTimeline: async (req, res) => {
         ? (await queryAsync(`SELECT ${userSelect} FROM users WHERE role = 'Employee' AND department_public_id = ?`, [deptPub])).map(r => ({ id: (hasUserPublic ? (r.public_id || String(r._id)) : String(r._id)), internalId: r._id ? String(r._id) : null, name: r.name || null, email: r.email || null, phone: r.phone || null, title: r.title || null }))
         : [];
 
-      // tasks (use timeline for manager view, limited to first 50)
       const timeline = await fetchTaskTimeline(projectIds, projectPublicIds);
       const tasks = (timeline || []).slice(0, 50).map(t => {
         const assignedInternal = t.assigned_user_internal_ids ? String(t.assigned_user_internal_ids).split(',') : [];

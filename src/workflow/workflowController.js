@@ -4,10 +4,11 @@ const router = express.Router();
 const workflowService = require('./workflowService');
 const auth = require('../middleware/auth');
 const { requireAuth, requireRole } = require('../middleware/roles');
+let logger;
+try { logger = require(global.__root + 'logger'); } catch (e) { logger = require('../logger'); }
 
 router.use(auth);
 
-// Normalize tenantId for all workflow routes
 router.use((req, res, next) => {
   let tid = req.tenantId || (req.user && req.user.tenant_id) || 1;
   if (typeof tid === 'string' && tid.startsWith('tenant_')) {
@@ -41,7 +42,7 @@ router.post('/request', requireAuth, async (req, res) => {
     });
     res.json({ success: true, data: result });
   } catch (e) {
-    console.error("[ERROR] /workflow/request:", e);
+    logger.error("[ERROR] /workflow/request:", e);
     res.status(400).json({ success: false, error: e.message });
   }
 });
@@ -59,7 +60,7 @@ router.post('/project/close-request', requireAuth, requireRole(['MANAGER']), asy
     const result = await workflowService.requestProjectClosure({ tenantId, projectId, reason, userId });
     return res.json({ success: true, message: 'Project closure request sent to admin', data: result });
   } catch (e) {
-    console.error('[ERROR] /workflow/project/close-request:', e);
+    logger.error('[ERROR] /workflow/project/close-request:', e);
     return res.status(400).json({ success: false, error: e.message });
   }
 });
@@ -92,25 +93,22 @@ router.post('/approve', requireAuth, requireRole(['MANAGER', 'ADMIN']), async (r
       data: result 
     });
   } catch (e) {
-    console.error("[ERROR] /workflow/approve:", e);
+    logger.error("[ERROR] /workflow/approve:", e);
     res.status(400).json({ success: false, error: e.message });
   }
 });
 
-// GET /api/workflow/pending?role=MANAGER&status=PENDING
 router.get('/pending', requireAuth, async (req, res) => {
   try {
     let role = req.query.role || req.user.role;
-    // Normalize role to PascalCase (Manager, Admin, Employee) for internal logic
     if (role.toUpperCase() === 'ADMIN') role = 'Admin';
     else if (role.toUpperCase() === 'MANAGER') role = 'Manager';
 
-    // Default to 'all' if manager or admin, so they see history too
     const status = req.query.status || (['Manager', 'Admin'].includes(role) ? 'all' : 'PENDING');
     
     const tenantId = req.normalizedTenantId;
     
-    console.log(`[DEBUG] Fetching workflow requests: tenantId=${tenantId}, role=${role}, status=${status}`);
+    logger.debug(`[DEBUG] Fetching workflow requests: tenantId=${tenantId}, role=${role}, status=${status}`);
 
     let requests = await workflowService.getRequests({ tenantId, role, status });
     requests = (requests || []).map(r => ({

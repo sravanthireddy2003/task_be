@@ -1,10 +1,12 @@
+let logger;
+try { logger = require(__root + 'logger'); } catch (e) { try { logger = require('./logger'); } catch (e2) { try { logger = require('../logger'); } catch (e3) { logger = console; } } }
 const r = require('./src/rules/jsonRuleEngine');
 (async () => {
   try {
     await r.loadRules();
-    console.log('Loaded rules:', r.rules.length);
+    logger.info('Loaded rules:', r.rules.length);
     const rule = r.rules.find(x => x.ruleCode === 'project_creation');
-    console.log('Project rule conditions:', rule && rule.conditions);
+    logger.info('Project rule conditions:', rule && rule.conditions);
 
     const req = {
       method: 'POST',
@@ -27,8 +29,8 @@ const r = require('./src/rules/jsonRuleEngine');
     const user = { _id: 24, id: '24', role: 'Manager', name: 'Manager User' };
 
     const decision = await r.evaluate(req, user, {}, 'project_creation');
-    console.log('Decision:', decision);
+    logger.info('Decision:', decision);
   } catch (e) {
-    console.error('Error:', e && e.message);
+    logger.error('Error:', e && e.message);
   }
 })();

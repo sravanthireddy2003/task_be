@@ -4,7 +4,8 @@ const bodyParser = require('body-parser');
 const http = require('http');
 const socketIo = require('socket.io');
 const jwt = require('jsonwebtoken');
-require('dotenv').config()
+require('dotenv').config();
+const env = require('./config/env');
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
@@ -15,10 +16,27 @@ const io = socketIo(server, {
 });
 const db = require('./db');
 const ChatService = require('./services/chatService');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const xss = require('xss-clean');
+const hpp = require('hpp');
+const morgan = require('morgan');
+const logger = require('./logger');
 const path = require('path');
 const fs = require('fs');
 
 global.__root = __dirname + '/';
+
+// Security middlewares
+app.disable('x-powered-by');
+app.use(helmet());
+app.use(xss());
+app.use(hpp());
+// Basic rate limiting
+app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 200 }));
+
+// Request logging: morgan -> winston
+app.use(morgan('combined', { stream: { write: msg => logger.info(msg.trim()) } }));
 
 // Socket.IO authentication and room joining
 io.use((socket, next) => {
@@ -27,7 +45,7 @@ io.use((socket, next) => {
     return next(new Error('Authentication error'));
   }
   try {
-    const decoded = jwt.verify(token, process.env.SECRET || 'secret');
+    const decoded = jwt.verify(token, env.JWT_SECRET);
     socket.user = decoded;
     next();
   } catch (err) {
@@ -55,9 +73,8 @@ io.on('connection', async (socket) => {
     const userName = userResult[0].name || 'Unknown User';
     const userRole = userResult[0].role || 'Employee';
 
-  console.log(`User ${userName} (${userId}) connected`);
+  logger.info(`User ${userName} (${userId}) connected`);
 
-  // Join user's personal room for notifications
   socket.join(`user_${userId}`);
 
   // Handle joining project chat room
@@ -96,10 +113,10 @@ io.on('connection', async (socket) => {
       const onlineParticipants = await ChatService.getOnlineParticipants(projectId);
       socket.emit('online_participants', onlineParticipants);
 
-      console.log(`User ${userName} joined project chat: ${roomName}`);
+      logger.info(`User ${userName} joined project chat: ${roomName}`);
 
     } catch (error) {
-      console.error('Error joining project chat:', error);
+      logger.error('Error joining project chat:', error);
       socket.emit('error', { message: 'Failed to join project chat' });
     }
   });
@@ -125,10 +142,10 @@ io.on('connection', async (socket) => {
       // Send system message
       await ChatService.emitUserPresence(projectId, userName, 'left');
 
-      console.log(`User ${userName} left project chat: ${roomName}`);
+      logger.info(`User ${userName} left project chat: ${roomName}`);
 
     } catch (error) {
-      console.error('Error leaving project chat:', error);
+      logger.error('Error leaving project chat:', error);
     }
   });
 
@@ -147,7 +164,6 @@ io.on('connection', async (socket) => {
       let messageType = 'text';
       let responseMessage = message;
 
-      // Check if it's a bot command
       if (message.startsWith('/')) {
         // Handle bot command - send response as a separate bot message
         const botResponse = await ChatService.handleChatbotCommand(projectId, message, userName, userId);
@@ -161,7 +177,6 @@ io.on('connection', async (socket) => {
           'bot'
         );
 
-        // Also save the user's command message for history
         const userMessage = await ChatService.saveMessage(
           projectId,
           userId,
@@ -175,7 +190,7 @@ io.on('connection', async (socket) => {
         io.to(roomName).emit('chat_message', userMessage);
         io.to(roomName).emit('chat_message', botMessage);
 
-        console.log(`Bot command processed in ${roomName}: ${userName}: ${message}`);
+        logger.info(`Bot command processed in ${roomName}: ${userName}`);
         return; // Don't send the original message
       }
 
@@ -192,10 +207,10 @@ io.on('connection', async (socket) => {
       const roomName = `project_${projectId}`;
       io.to(roomName).emit('chat_message', savedMessage);
 
-      console.log(`Message sent in ${roomName}: ${userName}: ${message}`);
+      logger.info(`Message sent in ${roomName}: ${userName}`);
 
     } catch (error) {
-      console.error('Error sending message:', error);
+      logger.error('Error sending message:', error);
       socket.emit('error', { message: 'Failed to send message' });
     }
   });
@@ -221,7 +236,7 @@ io.on('connection', async (socket) => {
 
   // Handle disconnect
   socket.on('disconnect', async () => {
-    console.log(`User ${userName} disconnected`);
+    logger.info(`User ${userName} disconnected`);
 
     // Find all project rooms this user was in and update their status
     const rooms = Array.from(socket.rooms).filter(room => room.startsWith('project_'));
@@ -240,13 +255,13 @@ io.on('connection', async (socket) => {
         });
 
       } catch (error) {
-        console.error('Error updating participant status on disconnect:', error);
+        logger.error('Error updating participant status on disconnect: ' + (error && error.stack ? error.stack : String(error)));
       }
     }
   });
 
   } catch (error) {
-    console.error('Error in socket connection:', error);
+    logger.error('Error in socket connection: ' + (error && error.stack ? error.stack : String(error)));
     socket.emit('error', { message: 'Connection failed' });
     socket.disconnect();
   }
@@ -257,10 +272,8 @@ global.io = io;
 
 // Start workflow SLA worker (non-blocking) - commented out as not implemented in new workflow module
 // try {
-//   const workflowSlaWorker = require(__root + 'workflow/workflowSlaWorker');
-//   if (workflowSlaWorker && typeof workflowSlaWorker.start === 'function') workflowSlaWorker.start();
 // } catch (e) {
-//   console.error('Failed to start workflow SLA worker:', e && e.message);
+//   logger.error('Failed to start workflow SLA worker:', e && e.message);
 // }
 
 app.use(bodyParser.urlencoded({ extended: false }))
@@ -270,7 +283,6 @@ app.use((req, res, next) => {
   try {
     const ct = req.headers['content-type'] || '';
     if (ct.indexOf('text/x-vite-ping') === 0) {
-      // quick healthy response for Vite HMR pings
       return res.status(200).send('pong');
     }
   } catch (e) { /* ignore and continue */ }
@@ -295,7 +307,6 @@ app.use('/uploads', (req, res, next) => {
   return next();
 }, express.static(path.join(__dirname, '..', 'uploads')));
 
-// Ensure uploads directory exists so static serving won't 404 for newly saved files
 try {
   const uploadsDir = path.join(__dirname, '..', 'uploads');
 
@@ -303,27 +314,34 @@ try {
   const profilesDir = path.join(uploadsDir, 'profiles');
   if (!fs.existsSync(profilesDir)) fs.mkdirSync(profilesDir, { recursive: true });
 } catch (e) {
-  console.warn('Failed to ensure uploads directory exists:', e && e.message);
+  logger.warn('Failed to ensure uploads directory exists: ' + (e && e.message ? e.message : String(e)));
 }
-// Global response logger: logs outgoing response bodies for each request
 app.use((req, res, next) => {
   const oldJson = res.json;
   const oldSend = res.send;
 
   res.json = function (body) {
     try {
-      console.log(`[RESPONSE] ${req.method} ${req.originalUrl} ->`, typeof body === 'object' ? JSON.stringify(body) : body);
+      if (env.NODE_ENV !== 'production') {
+        logger.info(`[RESPONSE] ${req.method} ${req.originalUrl} -> ${typeof body === 'object' ? JSON.stringify(body) : body}`);
+      } else {
+        logger.info(`[RESPONSE] ${req.method} ${req.originalUrl} -> ${res.statusCode}`);
+      }
     } catch (e) {
-      console.log(`[RESPONSE] ${req.method} ${req.originalUrl} -> [unserializable body]`);
+      logger.info(`[RESPONSE] ${req.method} ${req.originalUrl} -> [unserializable body]`);
     }
     return oldJson.call(this, body);
   };
 
   res.send = function (body) {
     try {
-      console.log(`[RESPONSE] ${req.method} ${req.originalUrl} ->`, typeof body === 'object' ? JSON.stringify(body) : body);
+      if (env.NODE_ENV !== 'production') {
+        logger.info(`[RESPONSE] ${req.method} ${req.originalUrl} -> ${typeof body === 'object' ? JSON.stringify(body) : body}`);
+      } else {
+        logger.info(`[RESPONSE] ${req.method} ${req.originalUrl} -> ${res.statusCode}`);
+      }
     } catch (e) {
-      console.log(`[RESPONSE] ${req.method} ${req.originalUrl} -> [unserializable body]`);
+      logger.info(`[RESPONSE] ${req.method} ${req.originalUrl} -> [unserializable body]`);
     }
     return oldSend.call(this, body);
   };
@@ -331,19 +349,9 @@ app.use((req, res, next) => {
   next();
 });
 
-// Error handler: log uncaught errors and forward a 500 response
-app.use((err, req, res, next) => {
-  try {
-    console.error('[UNCAUGHT ERROR]', err && err.stack ? err.stack : err);
-  } catch (e) {
-    console.error('[UNCAUGHT ERROR] (failed to print stack)', err);
-  }
-  if (!res.headersSent) {
-    res.status(500).json({ error: 'Internal server error' });
-  } else {
-    next(err);
-  }
-});
+// Centralized error handler (standardized)
+const errorHandler = require(__root + 'middleware/errorHandler');
+app.use(errorHandler);
 
 app.get('/api', function (req, res) {
   res.status(200).send('API working...');
@@ -359,7 +367,6 @@ app.use('/api/manager', auditRoutes.manager);
 app.use('/api/employee', auditRoutes.employee);
 
 // Client-Viewer Access Control Middleware
-// Enforces read-only access and endpoint restrictions for Client-Viewer users
 const clientViewerAccessControl = require(__root + 'middleware/clientViewerAccess');
 
 const StaffUser = require(__root + 'controllers/User');
@@ -420,3 +427,38 @@ app.use('/documents', (req, res) => {
 
 
 module.exports = server;
+
+// Graceful shutdown: close HTTP server and DB pool
+function shutdown(signal) {
+  logger.info(`Received ${signal}. Shutting down gracefully...`);
+  try {
+    server.close(() => {
+      logger.info('HTTP server closed.');
+      try {
+        const db = require('./db');
+        if (db && typeof db.end === 'function') {
+          db.end(() => {
+            logger.info('DB pool closed. Exiting.');
+            process.exit(0);
+          });
+        } else {
+          process.exit(0);
+        }
+      } catch (e) {
+        logger.error('Error during shutdown: ' + (e && e.message));
+        process.exit(1);
+      }
+    });
+    // Force exit after 10s
+    setTimeout(() => {
+      logger.warn('Forcing shutdown after timeout.');
+      process.exit(1);
+    }, 10000).unref();
+  } catch (e) {
+    logger.error('Shutdown failed: ' + (e && e.message));
+    process.exit(1);
+  }
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));

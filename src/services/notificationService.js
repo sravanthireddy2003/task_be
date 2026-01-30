@@ -1,4 +1,6 @@
 const db = require('../db');
+let logger;
+try { logger = require(__root + 'logger'); } catch (e) { logger = require('../../logger'); }
  
 class NotificationService {
   // HELPER: Validate user exists before creating notification
@@ -25,7 +27,7 @@ class NotificationService {
     // ✅ Validate users exist FIRST
     const validUserIds = await this.validateUsers(userIds);
     if (validUserIds.length === 0) {
-      console.warn('No valid users found for notification');
+      logger.warn('No valid users found for notification');
       return;
     }
  
@@ -45,7 +47,7 @@ class NotificationService {
     await new Promise((resolve, reject) => {
       db.query(sql, [values], (err, results) => {
         if (err) {
-          console.error('Notification insert error:', err);
+          logger.error('Notification insert error:', err);
           reject(err);
         } else {
           resolve(results);
@@ -91,7 +93,6 @@ class NotificationService {
     await this.createAndSend(userIds, title, message, type, entityType, entityId);
   }
  
-  // ✅ ADDED: Get notifications for user
   static async getForUser(userId, limit = 50, offset = 0) {
     const userExists = await new Promise((resolve, reject) => {
       db.query('SELECT _id FROM users WHERE _id = ?', [userId], (err, results) => {
@@ -155,7 +156,6 @@ class NotificationService {
     });
   }
  
-  // Clean up notifications for deleted user
   static async cleanupForUser(userId) {
     const sql = 'DELETE FROM notifications WHERE user_id = ?';
     return new Promise((resolve, reject) => {

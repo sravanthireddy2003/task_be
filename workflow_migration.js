@@ -1,14 +1,17 @@
 const db = require('./src/db');
 
+let logger;
+try { logger = require('./logger'); } catch (e) { logger = console; }
+
 async function runWorkflowMigrations() {
-  console.log('Running workflow migrations...');
+  logger.info('Running workflow migrations...');
 
   const q = (sql, params = []) => new Promise((resolve, reject) => {
     db.query(sql, params, (err, results) => {
       if (err) {
         // If the error is that the table already exists, we can ignore it.
         if (err.code === 'ER_TABLE_EXISTS_ERROR') {
-          console.log(err.message);
+          logger.warn(err.message);
           return resolve(results);
         }
         return reject(err);
@@ -32,7 +35,7 @@ async function runWorkflowMigrations() {
         INDEX idx_workflow_def_tenant_entity (tenant_id, entity_type)
       )
     `);
-    console.log('Table workflow_definitions created or already exists.');
+    logger.info('Table workflow_definitions created or already exists.');
 
     // 2. Create workflow_requests table
     await q(`
@@ -55,7 +58,7 @@ async function runWorkflowMigrations() {
         INDEX idx_workflow_req_status_role (status, approver_role)
       )
     `);
-    console.log('Table workflow_requests created or already exists.');
+    logger.info('Table workflow_requests created or already exists.');
 
     // 3. Create workflow_logs table
     await q(`
@@ -73,37 +76,36 @@ async function runWorkflowMigrations() {
         INDEX idx_workflow_log_tenant_entity (tenant_id, entity_type, entity_id)
       )
     `);
-    console.log('Table workflow_logs created or already exists.');
+    logger.info('Table workflow_logs created or already exists.');
     
     // 4. Add new statuses to the tasks table
     try {
         await q("ALTER TABLE tasks MODIFY COLUMN status ENUM('Pending', 'In Progress', 'On Hold', 'Completed', 'REVIEW', 'CLOSED') DEFAULT 'Pending'");
-        console.log("Updated 'tasks.status' with 'REVIEW' and 'CLOSED' states.");
+        logger.info("Updated 'tasks.status' with 'REVIEW' and 'CLOSED' states.");
     } catch(e) {
         if (e.code === 'ER_DUP_FIELDNAME' || e.message.includes("Duplicate column name")) {
-            console.log("'tasks.status' column already updated.");
+            logger.info("'tasks.status' column already updated.");
         } else {
             throw e;
         }
     }
 
-    // 5. Add status to projects table if it doesn't exist
     try {
         await q("ALTER TABLE projects ADD COLUMN status ENUM('ACTIVE', 'PENDING_FINAL_APPROVAL', 'CLOSED') NOT NULL DEFAULT 'ACTIVE'");
-        console.log("Added 'status' column to 'projects' table.");
+        logger.info("Added 'status' column to 'projects' table.");
     } catch(e) {
         if (e.code === 'ER_DUP_FIELDNAME') {
-            console.log("'projects.status' column already exists.");
+            logger.info("'projects.status' column already exists.");
         } else {
             throw e;
         }
     }
 
 
-    console.log('Workflow migrations completed successfully.');
+    logger.info('Workflow migrations completed successfully.');
     process.exit(0);
   } catch (e) {
-    console.error('Migration failed:', e);
+    logger.error('Migration failed:', e);
     process.exit(1);
   }
 }

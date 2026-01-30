@@ -8,6 +8,8 @@ const fs = require('fs');
 const multer = require('multer');
 const mime = require('mime-types');
 const NotificationService = require('../services/notificationService');
+let env;
+try { env = require(__root + 'config/env'); } catch (e) { env = require('../config/env'); }
  
 // configure multer to save files into uploads/ directory
 const uploadsRoot = path.join(__dirname, '..', 'uploads');
@@ -30,7 +32,6 @@ function saveBase64ToUploads(base64data, filename) {
     if (!base64data || !filename) return null;
     const uploadsDir = path.join(__dirname, '..', 'uploads');
     if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-    // Avoid overwriting: if file exists, append timestamp
     let targetName = filename;
     const targetPath = () => path.join(uploadsDir, targetName);
     if (fs.existsSync(targetPath())) {
@@ -39,12 +40,11 @@ function saveBase64ToUploads(base64data, filename) {
       const base = path.basename(filename, ext);
       targetName = `${base}_${ts}${ext}`;
     }
-    // base64 may include data:<mime>;base64, prefix — strip if present
     const matched = base64data.match(/^data:(.*);base64,(.*)$/);
     const b64 = matched ? matched[2] : base64data;
     const buffer = Buffer.from(b64, 'base64');
     fs.writeFileSync(targetPath(), buffer);
-    return `${process.env.BASE_URL || process.env.FRONTEND_URL || 'http://localhost:4000'}/uploads/${encodeURIComponent(targetName)}`;
+    return `${env.BASE_URL || env.FRONTEND_URL}/uploads/${encodeURIComponent(targetName)}`;
   } catch (e) {
     logger.debug('Failed to save base64 file: ' + (e && e.message));
     return null;
@@ -115,7 +115,6 @@ async function resolveUserId(value) {
   return Array.isArray(rows) && rows.length ? rows[0]._id : null;
 }
  
-// Cache and helper to check for column existence (prevents ER_BAD_FIELD_ERROR)
 const columnCache = {};
 async function hasColumn(table, column) {
   const key = `${table}::${column}`;
@@ -197,7 +196,6 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
     }
     const ref = `${compInit}${seq}`;
  
-    // Insert client with fallback for missing columns
     const fullInsertSql = `
       INSERT INTO clientss (ref, name, company, billing_address, office_address, gst_number,
       tax_id, industry, notes, status, manager_id, email, phone, created_at, isDeleted)
@@ -241,7 +239,6 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
       }
     }
 
-    // Create user accounts for each contact that has an email (store in users table and map to client_viewers)
     if (Array.isArray(contacts) && contacts.length > 0) {
       const bcrypt = require('bcryptjs');
       for (const c of contacts) {
@@ -249,7 +246,6 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
           if (!c || !c.email) continue;
           const emailAddr = String(c.email).trim();
 
-          // skip if user already exists
           const exists = await q('SELECT _id FROM users WHERE email = ? LIMIT 1', [emailAddr]).catch(() => []);
           if (Array.isArray(exists) && exists.length > 0) {
             const existingId = exists[0]._id;
@@ -269,14 +265,12 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
           if (newUserId) {
             try { await q('INSERT INTO client_viewers (client_id, user_id, created_at) VALUES (?, ?, NOW())', [clientId, newUserId]); } catch (e) {}
 
-            // If clientss.user_id column exists, set it to this new user for primary contact
             try {
               if (await hasColumn('clientss', 'user_id')) {
                 // Only set when primary contact or when client.user_id is empty
                 if (c.is_primary) {
                   await q('UPDATE clientss SET user_id = ? WHERE id = ?', [newUserId, clientId]).catch(()=>{});
                 } else {
-                  // attempt to set if currently null
                   await q('UPDATE clientss SET user_id = COALESCE(user_id, ?) WHERE id = ?', [newUserId, clientId]).catch(()=>{});
                 }
               }
@@ -286,7 +280,7 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
 
             // send credentials email
             try {
-              const setupLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/auth/setup?uid=${publicId}`;
+              const setupLink = `${env.FRONTEND_URL || env.BASE_URL}/auth/setup?uid=${publicId}`;
               const tpl = emailService.welcomeTemplate({ name: displayName, email: emailAddr, role: 'Client-Viewer', title: 'Client Portal Access', tempPassword, createdBy: 'System Admin', createdAt: new Date(), setupLink });
               await emailService.sendEmail({ to: emailAddr, subject: tpl.subject, text: tpl.text, html: tpl.html });
             } catch (e) {
@@ -339,7 +333,6 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
       }
     }
 
-    // Also handle documents array if provided (backward compatibility)
     // Only persist a document entry when the backend has saved the file (or the path already points to /uploads/).
     if (Array.isArray(documents) && documents.length > 0) {
       for (const d of documents) {
@@ -362,7 +355,6 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
             const safeName = fileName.replace(/[^a-zA-Z0-9._()-]/g, '_');
             const savedUrl = saveBase64ToUploads(fileUrlCandidate, safeName);
             if (savedUrl) {
-              // savedUrl returns a full public URL; convert to uploads-relative
               const parsed = savedUrl.replace(/^(?:https?:\/\/[^\/]+)?/, '');
               storedPath = parsed.startsWith('/') ? parsed : '/' + parsed;
             }
@@ -374,7 +366,6 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
             storedPath = null;
           }
 
-          // As a last resort, if the client only provided a filename and there is an already-uploaded file matching it, prefer that
           else {
             const uploadsDir = path.join(__dirname, '..', 'uploads');
             const candidate = path.join(uploadsDir, fileName);
@@ -412,7 +403,6 @@ if (!primaryContactEmail && email) primaryContactEmail = email;
 // ✅ DUAL EMAIL SYSTEM: Client Welcome + Viewer Credentials
 let viewerInfo = null;
  
-// 1. CREATE VIEWER or CLIENT PORTAL USER (if requested)
 if ((createViewer || enableClientPortal) && (primaryContactEmail || email)) {
   const userEmail = primaryContactEmail || email;
   logger.info('Creating user for client', clientId, 'email:', userEmail);
@@ -453,7 +443,7 @@ if ((createViewer || enableClientPortal) && (primaryContactEmail || email)) {
     }
 
     // send credentials email using welcomeTemplate
-    const setupLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/auth/setup?uid=${publicId}`;
+    const setupLink = `${env.FRONTEND_URL || env.BASE_URL}/auth/setup?uid=${publicId}`;
     const userTemplate = emailService.welcomeTemplate({
       name: displayName,
       email: userEmail,
@@ -474,13 +464,11 @@ if ((createViewer || enableClientPortal) && (primaryContactEmail || email)) {
   }
 }
  
-// 2. CLIENT WELCOME EMAIL (Always sent if email exists)
 let clientCredentials = null;
 if (primaryContactEmail || email) {
   const clientEmail = primaryContactEmail || email;
-  const clientPortalLink = `${process.env.FRONTEND_URL || 'http://localhost:4000'}/client-portal/${ref}`;
+  const clientPortalLink = `${env.FRONTEND_URL || env.BASE_URL}/client-portal/${ref}`;
 
-  // Ensure a `users` row exists for the client email. If missing, create one and persist temp password.
   try {
     const existing = await q('SELECT _id FROM users WHERE email = ? LIMIT 1', [clientEmail]).catch(() => []);
     if (!existing || existing.length === 0) {
@@ -503,7 +491,6 @@ if (primaryContactEmail || email) {
     logger.debug('Failed ensuring client user exists: ' + (e && e.message));
   }
 
-  // Generate/send welcome email (include temp password if we created one)
   const clientTempPasswordToUse = clientCredentials ? clientCredentials.tempPassword : null;
   const clientTemplate = emailService.welcomeTemplate({
     name: primaryContactName || name,
@@ -535,7 +522,7 @@ if (primaryContactEmail || email) {
       try {
         await NotificationService.createAndSendToRoles(['Admin'], 'Client Added', `New client "${name}" has been added`, 'CLIENT_ADDED', 'client', clientId, req.user ? req.user.tenant_id : null);
       } catch (notifErr) {
-        console.error('Client creation notification error:', notifErr);
+        logger.error('Client creation notification error:', notifErr);
       }
     })();
 
@@ -615,7 +602,6 @@ router.get('/', ruleEngine(RULES.CLIENT_VIEW), requireRole(['Admin','Manager','C
       if (hasPhoneCol) selectCols.push('clientss.phone');
     }
  
-    // No extra join for manager — scalar subqueries are used above to fetch manager info
  
     const listSql = `SELECT ${selectCols.join(', ')} FROM clientss ${joinClause} ${whereSql} ${hasCreatedAt ? 'ORDER BY clientss.created_at DESC' : 'ORDER BY clientss.id DESC'} LIMIT ? OFFSET ?`;
     const rows = await q(listSql, params.concat([perPage, offset]));
@@ -731,7 +717,6 @@ router.get('/:id', ruleEngine(RULES.CLIENT_VIEW), requireRole(['Admin','Manager'
       const tc = await q('SELECT COUNT(*) as c FROM tasks WHERE client_id = ?', [id]); taskCount = tc[0] ? tc[0].c : 0;
       const comp = await q("SELECT COUNT(*) as c FROM tasks WHERE client_id = ? AND status = 'Done'", [id]); completedTasks = comp[0] ? comp[0].c : 0;
       const pend = await q("SELECT COUNT(*) as c FROM tasks WHERE client_id = ? AND status != 'Done'", [id]); pendingTasks = pend[0] ? pend[0].c : 0;
-      // resolve manager public id and name if manager_id present
       if (client.manager_id) {
         try {
           const mgr = await q('SELECT public_id, name FROM users WHERE _id = ? OR public_id = ? LIMIT 1', [client.manager_id, String(client.manager_id)]);
@@ -937,7 +922,7 @@ router.delete('/:id', ruleEngine(RULES.CLIENT_DELETE), requireRole('Admin'), asy
       try {
         await NotificationService.createAndSendToRoles(['Admin'], 'Client Deleted', `Client with ID "${id}" has been deleted`, 'CLIENT_DELETED', 'client', id, req.user ? req.user.tenant_id : null);
       } catch (notifErr) {
-        console.error('Client delete notification error:', notifErr);
+        logger.error('Client delete notification error:', notifErr);
       }
     })();    return res.json({ success: true, message: 'Client permanently deleted' });
   } catch (e) {
@@ -1059,7 +1044,6 @@ router.post('/:id/create-viewer', ruleEngine(RULES.CLIENT_CREATE), requireRole('
         logger.error(`[CREATE-VIEWER] Failed client_viewers mapping: ${e.message}`);
       }
 
-      // Update clientss.user_id if column exists
       try {
         if (await hasColumn('clientss', 'user_id')) {
           await q('UPDATE clientss SET user_id = ? WHERE id = ?', [newUserId, id]);
@@ -1069,7 +1053,6 @@ router.post('/:id/create-viewer', ruleEngine(RULES.CLIENT_CREATE), requireRole('
         logger.error(`[CREATE-VIEWER] Failed clientss update: ${e.message}`);
       }
 
-      // FORCE CORRECT ROLE if wrong (temporary fix)
       if (verifyRole[0]?.role !== 'Client-Viewer') {
         await q('UPDATE users SET role = "Client-Viewer" WHERE id = ?', [newUserId]);
         logger.warn(`[CREATE-VIEWER] FORCE-UPDATED role from "${verifyRole[0]?.role}" to "Client-Viewer"`);
@@ -1098,7 +1081,6 @@ router.post('/:id/create-viewer', ruleEngine(RULES.CLIENT_CREATE), requireRole('
   }
 });
  
-// Get viewer info (including modules) for a specific mapped viewer
 router.get('/:id/viewers/:userId', requireRole(['Admin','Manager']), async (req, res) => {
   try {
     const clientId = req.params.id;
@@ -1115,7 +1097,6 @@ router.get('/:id/viewers/:userId', requireRole(['Admin','Manager']), async (req,
   } catch (e) { logger.error('Error fetching viewer info: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
 });
  
-// Update modules/permissions for a mapped viewer (Admin/Manager)
 router.put('/:id/viewers/:userId/modules', requireRole(['Admin','Manager']), async (req, res) => {
   try {
     const clientId = req.params.id;
@@ -1153,7 +1134,6 @@ router.post('/:id/documents', ruleEngine(RULES.CLIENT_UPDATE), requireRole(['Adm
       if (!d) continue;
       const fileName = d.file_name || d.fileName || null;
       if (!fileName) continue;
-      // Normalize to uploads-relative path; never persist blob: or full URLs
       const candidate = d.file_url || d.fileUrl || null;
       let storedPath = '/uploads/' + encodeURIComponent(fileName);
       if (candidate && typeof candidate === 'string' && candidate.startsWith('/uploads/')) storedPath = candidate;

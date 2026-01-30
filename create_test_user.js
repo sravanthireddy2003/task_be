@@ -1,9 +1,12 @@
 const db = require('./src/db');
 const bcrypt = require('bcryptjs');
 
+let logger;
+try { logger = require('./logger'); } catch (e) { logger = console; }
+
 async function createTestUser() {
   try {
-    console.log('Creating test admin user...');
+    logger.info('Creating test admin user...');
 
     const hashedPassword = await bcrypt.hash('admin123', 10);
 
@@ -30,13 +33,13 @@ async function createTestUser() {
       });
     });
 
-    console.log('✅ Test admin user created/updated successfully');
-    console.log('Email: admin@example.com');
-    console.log('Password: admin123');
-    console.log('Role: Admin');
+    logger.info('✅ Test admin user created/updated successfully');
+    logger.info('Email: admin@example.com');
+    logger.info('Password: admin123');
+    logger.info('Role: Admin');
 
   } catch (error) {
-    console.error('❌ Failed to create test user:', error);
+    logger.error('❌ Failed to create test user:', error);
   } finally {
     process.exit(0);
   }

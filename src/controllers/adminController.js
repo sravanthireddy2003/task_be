@@ -4,6 +4,11 @@ const path = require('path');
 const crypto = require('crypto');
 const NotificationService = require('../services/notificationService');
 
+let logger;
+try { logger = require(global.__root + 'logger'); } catch (e) { try { logger = require('../../logger'); } catch (e2) { logger = console; } }
+let env;
+try { env = require(global.__root + 'config/env'); } catch (e) { env = require('../config/env'); }
+
 const MODULES_FILE = path.join(__root, 'data', 'modules.json');
 
 function q(sql, params = []) {
@@ -17,7 +22,7 @@ function readModules() {
     if (!fs.existsSync(MODULES_FILE)) return [];
     const raw = fs.readFileSync(MODULES_FILE, 'utf8');
     return JSON.parse(raw || '[]');
-  } catch (e) { console.error('readModules error', e && e.message); return []; }
+  } catch (e) { logger.error('readModules error', e && e.message); return []; }
 }
 
 function writeModules(arr) {
@@ -25,10 +30,9 @@ function writeModules(arr) {
     fs.mkdirSync(path.dirname(MODULES_FILE), { recursive: true });
     fs.writeFileSync(MODULES_FILE, JSON.stringify(arr, null, 2), 'utf8');
     return true;
-  } catch (e) { console.error('writeModules error', e && e.message); return false; }
+  } catch (e) { logger.error('writeModules error', e && e.message); return false; }
 }
 
-// Helper to build SELECT column list including optional columns only if present in table
 function buildSelect(table, baseCols, optionalCols=[]) {
   return new Promise((resolve) => {
     db.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", [table], (err, cols) => {
@@ -62,7 +66,7 @@ async function fetchClientDocuments(clientIds = []) {
     [clientIds]
   );
   // convert stored uploads-relative paths to public URLs using configured base
-  const base = process.env.BASE_URL || process.env.FRONTEND_URL || 'http://localhost:4000';
+  const base = env.BASE_URL || env.FRONTEND_URL;
   return (rows || []).reduce((memo, row) => {
     if (!row || row.client_id === undefined || row.client_id === null) return memo;
     if (!memo[row.client_id]) memo[row.client_id] = [];
@@ -88,7 +92,6 @@ function getColumnType(table, column) {
   });
 }
 
-// Safe select: attempts to SELECT columns (including optionalCols) and if MySQL returns ER_BAD_FIELD_ERROR
 // retries with only columns that actually exist in the table. Calls callback(err, rows).
 function safeSelect(table, baseCols, optionalCols=[], whereClause='', params=[], cb) {
   (async () => {
@@ -97,7 +100,6 @@ function safeSelect(table, baseCols, optionalCols=[], whereClause='', params=[],
       const sql = `SELECT ${selectCols} FROM ${table} ${whereClause || ''}`;
       return db.query(sql, params, (err, rows) => {
         if (!err) return cb(null, rows);
-        // if column missing, try to compute present columns and retry
         if (err && err.code === 'ER_BAD_FIELD_ERROR') {
           db.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", [table], (colErr, cols) => {
             if (colErr || !Array.isArray(cols) || cols.length === 0) return cb(err);
@@ -129,13 +131,11 @@ module.exports = {
         ipAddress: req.ip || req.connection.remoteAddress,
         timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19)
       };
-      console.log(JSON.stringify(logData));
-      // Insert into audit_logs if table exists
+      logger.info(JSON.stringify(logData));
       try {
         await q("INSERT INTO audit_logs (action, module, performed_by, user_id, tenant_id, ip_address, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)", 
           [logData.action, logData.module, logData.performedBy, logData.userId, logData.tenantId, logData.ipAddress, logData.timestamp]);
       } catch (e) {
-        // Ignore if table doesn't exist
       }
 
       // Dashboard Metrics
@@ -239,7 +239,6 @@ module.exports = {
         { day: 'Sun', tasks: 6, color: '#3B82F6', status: 'Medium Activity', tasksList: [ { id: 216, title: 'Customer follow-up', status: 'Pending', dueDate: '2026-01-25T10:00:00.000Z' }, { id: 217, title: 'Prepare weekly report', status: 'Pending', dueDate: '2026-01-25T14:00:00.000Z' } ] }
       ];
 
-      // Use computed metrics but return the requested richer payload structure
       return res.json({
         status: 'success',
         data: {
@@ -284,8 +283,8 @@ module.exports = {
         timestamp
       });
     } catch (e) {
-      console.error('Dashboard error:', e);
-      console.error('Error stack:', e.stack);
+      logger.error('Dashboard error:', e && e.message ? e.message : e);
+      logger.error('Error stack:', e && e.stack ? e.stack : e);
       return res.status(500).json({
         status: "error",
         message: "Unable to load dashboard data",
@@ -400,7 +399,6 @@ module.exports = {
     const filterUserParam = req.query.userId;
 
     const runQuery = async (resolvedUserId) => {
-    // prefer selecting public_id when available; include created_at in responses
     const hasPublic = await tableHasColumn('departments', 'public_id');
     const optional = [].concat(hasPublic ? ['public_id'] : []).concat(['manager_id','head_id']);
     safeSelect('departments', ['id','name','created_at'], optional, '', [], (err, rows) => {
@@ -436,7 +434,6 @@ module.exports = {
         };
 
         if (!resolvedUserId) return finishWith(rows);
-        // detect user-related columns on departments and filter if present
         db.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'departments' AND TABLE_SCHEMA = DATABASE() AND COLUMN_NAME IN ('head_id','manager_id','created_by','user_id')", [], (colErr, cols) => {
           if (colErr || !Array.isArray(cols) || cols.length === 0) return finishWith(rows);
           const colNames = cols.map(c => c.COLUMN_NAME);
@@ -498,7 +495,6 @@ module.exports = {
       const hasHead = await tableHasColumn('departments', 'head_id');
       const hasCreatedBy = await tableHasColumn('departments', 'created_by');
       const hasPublic = await tableHasColumn('departments', 'public_id');
-      // optional name columns for manager/head (store snapshot)
       const hasManagerNameCol = await tableHasColumn('departments', 'manager_name');
       const hasHeadNameCol = await tableHasColumn('departments', 'head_name');
 
@@ -545,10 +541,10 @@ module.exports = {
       if (hasCreatedBy) { fields.push('created_by'); placeholders.push('?'); params.push(created_by); }
       if (hasPublic) { fields.unshift('public_id'); placeholders.unshift('?'); params.unshift(publicId); }
       const sql = `INSERT INTO departments (${fields.join(', ')}, created_at) VALUES (${placeholders.join(', ')}, NOW())`;
-      console.log('createDepartment insert:', sql, params);
+      logger.info('createDepartment insert:', sql, params);
       db.query(sql, params, (err, result) => {
         if (err) {
-          console.error('createDepartment error', err && err.message);
+          logger.error('createDepartment error', err && err.message);
           return res.status(500).json({ success: false, error: err.message });
         }
         const insertId = result && result.insertId ? result.insertId : null;
@@ -557,7 +553,7 @@ module.exports = {
           try {
             await NotificationService.createAndSendToRoles(['Admin'], 'Department Created', `New department "${name}" has been created`, 'DEPARTMENT_CREATED', 'department', insertId, req.user ? req.user.tenant_id : null);
           } catch (notifErr) {
-            console.error('Department creation notification error:', notifErr);
+            logger.error('Department creation notification error:', notifErr);
           }
           const selOptional = [].concat(hasPublic ? ['public_id'] : [])
             .concat(['manager_id','head_id'])
@@ -566,7 +562,6 @@ module.exports = {
           safeSelect('departments', ['id','name'], selOptional, 'WHERE id = ? LIMIT 1', [insertId], (sErr, rows) => {
             if (sErr) return res.status(201).json({ success: true, data: { id: hasPublic ? publicId : insertId, name, manager_id, head_id } });
           const row = (rows && rows[0]) || { id: insertId, name, manager_id, head_id, public_id: publicId, manager_name: manager_name_val, head_name: head_name_val };
-          // prefer stored manager_name/head_name if present
           if ((row.manager_name || row.head_name) && (row.manager_name || row.head_name).length >= 0) {
             const outRow = {
               id: row.public_id || row.id,
@@ -576,7 +571,6 @@ module.exports = {
               head_id: row.head_id ? String(row.head_id) : null,
               head_name: row.head_name || null
             };
-            // if names are present, attempt to map ids to external ids as before
             const uids = [];
             if (row.manager_id) uids.push(row.manager_id);
             if (row.head_id) uids.push(row.head_id);
@@ -623,7 +617,7 @@ module.exports = {
           })();
       });
     } catch (e) {
-      console.error('createDepartment catch', e && e.message);
+      logger.error('createDepartment catch', e && e.message);
       return res.status(500).json({ success: false, error: e.message });
     }
   },
@@ -633,7 +627,6 @@ module.exports = {
     try {
       let { id } = req.params;
       if (!id) return res.status(400).json({ success: false, message: 'Department id required' });
-      // if id is a public_id (non-numeric), resolve to internal id
       if (!/^\d+$/.test(String(id))) {
         const rows = await new Promise((resolve) => db.query('SELECT id FROM departments WHERE public_id = ? LIMIT 1', [id], (e, r) => e ? resolve([]) : resolve(r)));
         if (!rows || !rows[0]) return res.status(404).json({ success: false, message: 'Department not found' });
@@ -651,7 +644,6 @@ module.exports = {
         });
       });
 
-      // Only include updates for columns that exist
       const updates = [];
       const params = [];
       const hasManagerCol = await tableHasColumn('departments', 'manager_id');
@@ -681,7 +673,7 @@ module.exports = {
       params.push(id);
       db.query(sql, params, (err, result) => {
         if (err) {
-          console.error('updateDepartment error', err && err.message);
+          logger.error('updateDepartment error', err && err.message);
           return res.status(500).json({ success: false, error: err.message });
         }
         if (!result || result.affectedRows === 0) return res.status(404).json({ success: false, message: 'Department not found' });
@@ -689,7 +681,7 @@ module.exports = {
           try {
             await NotificationService.createAndSendToRoles(['Admin'], 'Department Updated', `Department "${name || 'Unknown'}" has been updated`, 'DEPARTMENT_UPDATED', 'department', id, req.user ? req.user.tenant_id : null);
           } catch (notifErr) {
-            console.error('Department update notification error:', notifErr);
+            logger.error('Department update notification error:', notifErr);
           }
           const hasPublic = await tableHasColumn('departments', 'public_id');
           const selOptional = [].concat(hasPublic ? ['public_id'] : []).concat(['manager_id','head_id']);
@@ -724,7 +716,7 @@ module.exports = {
         })();
       });
     } catch (e) {
-      console.error('updateDepartment catch', e && e.message);
+      logger.error('updateDepartment catch', e && e.message);
       return res.status(500).json({ success: false, error: e.message });
     }
   },
@@ -733,11 +725,10 @@ module.exports = {
   deleteDepartment: (req, res) => {
     let { id } = req.params;
     if (!id) return res.status(400).json({ success: false, message: 'Department id required' });
-    // if non-numeric, assume public_id and delete by public_id
     if (!/^\d+$/.test(String(id))) {
       db.query('DELETE FROM departments WHERE public_id = ?', [id], (err, result) => {
         if (err) {
-          console.error('deleteDepartment error', err && err.message);
+          logger.error('deleteDepartment error', err && err.message);
           return res.status(500).json({ success: false, error: err.message });
         }
         if (!result || result.affectedRows === 0) return res.status(404).json({ success: false, message: 'Department not found' });
@@ -745,14 +736,14 @@ module.exports = {
           try {
             await NotificationService.createAndSendToRoles(['Admin'], 'Department Deleted', `Department with ID "${id}" has been deleted`, 'DEPARTMENT_DELETED', 'department', id, req.user ? req.user.tenant_id : null);
           } catch (notifErr) {
-            console.error('Department delete notification error:', notifErr);
+            logger.error('Department delete notification error:', notifErr);
           }
         })();
         (async () => {
           try {
             await NotificationService.createAndSendToRoles(['Admin'], 'Department Deleted', `Department with ID "${id}" has been deleted`, 'DEPARTMENT_DELETED', 'department', id, req.user ? req.user.tenant_id : null);
           } catch (notifErr) {
-            console.error('Department delete notification error:', notifErr);
+            logger.error('Department delete notification error:', notifErr);
           }
         })();
         return res.json({ success: true, message: 'Department deleted' });
@@ -761,7 +752,7 @@ module.exports = {
     }
     db.query('DELETE FROM departments WHERE id = ?', [id], (err, result) => {
       if (err) {
-        console.error('deleteDepartment error', err && err.message);
+        logger.error('deleteDepartment error', err && err.message);
         return res.status(500).json({ success: false, error: err.message });
       }
       if (!result || result.affectedRows === 0) return res.status(404).json({ success: false, message: 'Department not found' });
@@ -984,7 +975,7 @@ module.exports = {
       try {
         await NotificationService.createAndSendToRoles(['Admin'], 'Module Created', `New module "${name}" has been created`, 'MODULE_CREATED', 'module', moduleId, req.user ? req.user.tenant_id : null);
       } catch (notifErr) {
-        console.error('Module creation notification error:', notifErr);
+        logger.error('Module creation notification error:', notifErr);
       }
     })();
     return res.status(201).json({ success: true, data: m });
@@ -1003,7 +994,7 @@ module.exports = {
       try {
         await NotificationService.createAndSendToRoles(['Admin'], 'Module Updated', `Module "${name || modules[idx].name}" has been updated`, 'MODULE_UPDATED', 'module', id, req.user ? req.user.tenant_id : null);
       } catch (notifErr) {
-        console.error('Module update notification error:', notifErr);
+        logger.error('Module update notification error:', notifErr);
       }
     })();
     return res.json({ success: true, data: modules[idx] });
@@ -1020,7 +1011,7 @@ module.exports = {
       try {
         await NotificationService.createAndSendToRoles(['Admin'], 'Module Deleted', `Module "${removed.name}" has been deleted`, 'MODULE_DELETED', 'module', id, req.user ? req.user.tenant_id : null);
       } catch (notifErr) {
-        console.error('Module delete notification error:', notifErr);
+        logger.error('Module delete notification error:', notifErr);
       }
     })();
     return res.json({ success: true, data: removed });

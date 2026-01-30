@@ -52,7 +52,6 @@ router.post('/', ruleEngine(RULES.SUBTASK_CREATE), requireRole(['Admin', 'Manage
       try {
         await q('ALTER TABLE subtasks ADD COLUMN estimated_hours DECIMAL(8,2) NULL');
       } catch (e) {
-        // ignore if cannot add
       }
     }
 

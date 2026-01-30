@@ -1,5 +1,4 @@
 // Canonical RoleBasedLoginResponse util
-// Minimal implementation to keep app functional; replace with real metrics/resources logic.
 const db = require(__root + 'db');
 
 function q(sql, params = []) {

@@ -1,10 +1,14 @@
-// Frontend API client for Document Management Module
 // Assumes JWT token is stored in localStorage as 'token'
 // Base URL should be set to your backend (e.g., 'http://localhost:4000/api')
 
 class DocumentAPI {
-  constructor(baseURL = 'http://localhost:4000/api') {
-    this.baseURL = baseURL;
+  constructor(baseURL) {
+    const nodeEnvBase = (typeof process !== 'undefined' && process.env)
+      ? (process.env.API_BASE_URL || process.env.BASE_URL || process.env.BACKEND_URL || null)
+      : null;
+    const globalOverride = (typeof window !== 'undefined' && window.__BACKEND_BASE_URL) ? window.__BACKEND_BASE_URL : null;
+    const defaultBase = nodeEnvBase || globalOverride || 'http://localhost:4000/api';
+    this.baseURL = baseURL || defaultBase;
   }
 
   // Helper: Get auth headers
@@ -138,7 +142,6 @@ class DocumentAPI {
     return this.handleResponse(response);
   }
 
-  // 8. Get Notifications (for access updates)
   async getNotifications(limit = 50, offset = 0) {
     const response = await fetch(`${this.baseURL}/notifications?limit=${limit}&offset=${offset}`, {
       method: 'GET',
@@ -157,6 +160,4 @@ class DocumentAPI {
   }
 }
 
-// Export for use in frontend
-// Example: const docAPI = new DocumentAPI(); docAPI.listDocuments({ projectId: '123' });
 export default DocumentAPI;

@@ -3,6 +3,11 @@ const express = require('express');
 const multer = require('multer');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const router = express.Router();
+const path = require('path');
+const fs = require('fs');
+
+let logger;
+try { logger = require(global.__root + 'logger'); } catch (e) { try { logger = require('../../logger'); } catch (e2) { logger = console; } }
 // tenantMiddleware intentionally not applied here (only Tasks/Projects are tenant-scoped)
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const ruleEngine = require(__root + 'middleware/ruleEngine');
@@ -25,11 +30,9 @@ const s3 = new S3Client({
   },
 });
 
-// Multer Storage Setup (in-memory storage for file upload)
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
-// POST route for file upload (Admin/Manager/Employee only)
 router.post('/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin','Manager','Employee']), upload.single('file'), async (req, res) => {
   try {
     const { taskId, userId } = req.body;
@@ -37,7 +40,6 @@ router.post('/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin','Ma
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     if (!taskId || !userId) return res.status(400).json({ error: 'Task ID and User ID are required' });
 
-    // Generate unique file name and upload to S3 (if configured) or store in uploads
     const uniqueName = `${Date.now()}-${req.file.originalname.replace(/[^a-zA-Z0-9._()-]/g, '_')}`;
 
     let fileUrl = null;
@@ -52,7 +54,6 @@ router.post('/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin','Ma
       };
       await s3.send(new PutObjectCommand(uploadParams));
       fileUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${uniqueName}`;
-      // Do NOT persist full HTTP URL in DB; store s3 pseudo-path instead
       storedPath = `s3://${process.env.AWS_S3_BUCKET_NAME}/${uniqueName}`;
     } else {
       // persist to local uploads folder
@@ -69,7 +70,7 @@ router.post('/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin','Ma
       const params = [storedPath, req.file.originalname, req.file.mimetype, req.file.size, taskId, resolvedUserId];
       db.query(sql, params, (err) => {
         if (err) {
-          console.error('Database Error:', err);
+          logger.error('Database Error:', err);
           return res.status(500).json({ error: 'Failed to save file details to the database' });
         }
         return res.status(201).json({ message: 'File uploaded successfully', fileUrl });
@@ -80,7 +81,7 @@ router.post('/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin','Ma
       // resolve public_id -> _id
       db.query('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [userId], (uErr, uRows) => {
         if (uErr) {
-          console.error('User lookup error:', uErr);
+          logger.error('User lookup error:', uErr);
           return res.status(500).json({ error: 'Failed to resolve userId' });
         }
         if (!uRows || uRows.length === 0) return res.status(400).json({ error: 'Invalid userId' });
@@ -90,7 +91,7 @@ router.post('/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin','Ma
       doInsert(userId);
     }
   } catch (error) {
-    console.error('Error in file upload process:', error);
+    logger.error('Error in file upload process:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
@@ -122,7 +123,7 @@ router.get('/getuploads/:id', ruleEngine(RULES.UPLOAD_VIEW), requireRole(['Admin
       }
       db.query(sql, params, (err, results) => {
         if (err) {
-          console.error('Database Error:', err);
+          logger.error('Database Error:', err);
           return res.status(500).json({ error: 'Failed to fetch the file upload from database' });
         }
         if (!results || results.length === 0) return res.status(201).json({ message: 'Please upload a File' });
@@ -167,7 +168,7 @@ router.get('/getuploads/:id', ruleEngine(RULES.UPLOAD_VIEW), requireRole(['Admin
 
     runQuery(null);
   } catch (error) {
-    console.error('Error fetching file upload:', error);
+    logger.error('Error fetching file upload:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

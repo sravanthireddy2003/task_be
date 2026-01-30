@@ -26,7 +26,6 @@ module.exports = {
     // upload to configured storage provider
     const storageInfo = await storageService.upload(file, documentId + path.extname(file.originalname));
     // persist metadata into DB using the project's schema (documentId primary key)
-    // If local provider, convert absolute file.path into uploads-relative public path for DB
     if (storageInfo && storageInfo.provider === 'local' && typeof storageInfo.storagePath === 'string') {
       try {
         const candidateUploads = path.resolve(path.join(__dirname, '..', '..', 'uploads'));
@@ -53,7 +52,6 @@ module.exports = {
       [documentId, file.originalname, storageInfo.storagePath, storageInfo.provider, entityType, entityId, file.mimetype, user && (user.id || user._id) || null, createdAt]
     );
 
-    // Return backward-compatible shape (include `id` for callers expecting numeric id)
     return { id: documentId, documentId, fileName: file.originalname, storagePath: storageInfo.storagePath, entityType, entityId, mimeType: file.mimetype };
   },
 
@@ -104,7 +102,6 @@ module.exports = {
     return rows[0];
   },
 
-  // preview: return signed url for providers that support it, or stream info
   async getDocumentPreview({ id, user = {} }) {
     const doc = await this.getDocumentById(id);
     // storageService will accept storagePath (which may encode provider info)

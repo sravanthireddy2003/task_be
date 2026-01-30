@@ -2,6 +2,8 @@ const zxcvbn = require('zxcvbn');
 const bcrypt = require('bcryptjs');
 const Redis = require('ioredis');
 require('dotenv').config();
+let logger;
+try { logger = require(__root + 'logger'); } catch (e) { logger = require('../../logger'); }
 
 const requireRedis = process.env.REQUIRE_REDIS !== 'false';
 let redis = null;
@@ -9,14 +11,14 @@ if (requireRedis && process.env.REDIS_URL) {
   try {
     redis = new Redis(process.env.REDIS_URL);
     redis.on('error', (err) => {
-      console.warn('Redis error (passwordPolicy):', err && err.message);
+      logger.warn('Redis error (passwordPolicy):', err && err.message);
     });
-  } catch (e) {
-    console.warn('Failed to initialize Redis client (passwordPolicy):', e && e.message);
+    } catch (e) {
+    logger.warn('Failed to initialize Redis client (passwordPolicy):', e && e.message);
     redis = null;
   }
 } else {
-  if (process.env.REDIS_URL) console.log('REQUIRE_REDIS is false — passwordPolicy skipping Redis client creation');
+  if (process.env.REDIS_URL) logger.info('REQUIRE_REDIS is false — passwordPolicy skipping Redis client creation');
 }
 
 // Basic password policy validator
@@ -33,7 +35,6 @@ function validatePassword(password) {
     const score = zxcvbn(password).score; // 0..4
     if (score < 2) return { valid: false, reason: 'Password too weak' };
   } catch (e) {
-    // zxcvbn may not be available; ignore
   }
 
   return { valid: true };
@@ -43,7 +44,6 @@ function validatePassword(password) {
 async function isPasswordReused(db, userId, newPassword, limit = 5) {
   if (!db) return false;
 
-  // Try to use Redis cache for recent password hashes (optional)
   const cacheKey = `pwdhist:${String(userId)}`;
   let rows = null;
   if (redis) {

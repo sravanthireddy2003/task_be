@@ -1,6 +1,8 @@
 // src/workflow/workflowService.js
 const db = require('../db');
 const NotificationService = require('../services/notificationService');
+let logger;
+try { logger = require(global.__root + 'logger'); } catch (e) { try { logger = require('../logger'); } catch (e2) { logger = console; } }
 
 // Promisified db.query
 const q = (sql, params = [], connection = db) => new Promise((resolve, reject) => {
@@ -68,7 +70,6 @@ const hasColumn = async (table, column) => {
  * @returns {string} The role required for approval (e.g., 'MANAGER', 'ADMIN').
  */
 const getApproverRole = async (tenantId, entityType, fromState, toState) => {
-    // Attempt to read approver_role from workflow_definitions if present, otherwise
     // fall back to sensible defaults: TASK reviews need MANAGER, PROJECT closures need ADMIN.
     try {
         const sql = `
@@ -82,7 +83,7 @@ const getApproverRole = async (tenantId, entityType, fromState, toState) => {
         }
     } catch (err) {
         // If the column doesn't exist or query fails, we'll fallback to defaults below
-        console.warn('[WARN] getApproverRole: fallback due to error querying workflow_definitions:', err && err.message);
+        logger.warn('[WARN] getApproverRole: fallback due to error querying workflow_definitions:', err && err.message);
     }
 
     // Fallback defaults
@@ -108,7 +109,6 @@ const requestTransition = async ({ tenantId, entityType, entityId, toState, user
 
         const connection = await beginTransaction();
         try {
-            // 0. Resolve internal ID if TASK
             let internalId = entityId;
             if (entityType === 'TASK') {
                 const rows = await q('SELECT id FROM tasks WHERE id = ? OR public_id = ? LIMIT 1', [entityId, entityId]);
@@ -126,7 +126,6 @@ const requestTransition = async ({ tenantId, entityType, entityId, toState, user
                 await q(updateSql, ['REVIEW', internalId], connection);
             }
 
-            // 2. Create a new workflow request for the manager (do not rely on a project_id column)
             const insertRequestSql = `
                 INSERT INTO workflow_requests 
                 (tenant_id, entity_type, entity_id, requested_by_id, approver_role, status, from_state, to_state) 
@@ -166,7 +165,6 @@ const requestTransition = async ({ tenantId, entityType, entityId, toState, user
             throw error;
         }
     }
-    // Add other entityType/toState combinations here if needed
     throw new Error("This transition is not supported or requires a different flow.");
 };
 
@@ -204,6 +202,23 @@ const requestProjectClosure = async ({ tenantId, projectId, reason, userId }) =>
             await q('UPDATE projects SET status = ? WHERE id = ?', ['PENDING_FINAL_APPROVAL', internalProjectId], connection);
         }
 
+        // When a project closure is requested, lock the project (and its tasks) so no further edits happen
+        // while final approval is pending.
+        if (await hasColumn('projects', 'is_locked')) {
+            if (await hasColumn('projects', 'tenant_id')) {
+                await q('UPDATE projects SET is_locked = 1 WHERE id = ? AND tenant_id = ?', [internalProjectId, tenantId], connection);
+            } else {
+                await q('UPDATE projects SET is_locked = 1 WHERE id = ?', [internalProjectId], connection);
+            }
+        }
+        if (await hasColumn('tasks', 'is_locked')) {
+            if (await hasColumn('tasks', 'tenant_id')) {
+                await q('UPDATE tasks SET is_locked = 1 WHERE project_id = ? AND tenant_id = ?', [internalProjectId, tenantId], connection);
+            } else {
+                await q('UPDATE tasks SET is_locked = 1 WHERE project_id = ?', [internalProjectId], connection);
+            }
+        }
+
         const approverRole = await getApproverRole(tenantId, 'PROJECT', 'ACTIVE', 'CLOSED');
         const insertRequestSql = `
             INSERT INTO workflow_requests (tenant_id, entity_type, entity_id, project_id, requested_by_id, approver_role, status, from_state, to_state, reason)
@@ -225,7 +240,7 @@ const requestProjectClosure = async ({ tenantId, projectId, reason, userId }) =>
             if (NotificationService && typeof NotificationService.createAndSendToRoles === 'function') {
                 await NotificationService.createAndSendToRoles(['Admin'], 'Project Closure Requested', `Project ${internalProjectId} submitted for final approval.`, 'PROJECT_CLOSE_REQUEST', 'project', internalProjectId, tenantId);
             }
-        } catch (nerr) { console.warn('[WARN] notify admins failed:', nerr && nerr.message); }
+        } catch (nerr) { logger.warn('[WARN] notify admins failed:', nerr && nerr.message); }
 
         return { projectId: internalProjectId, projectStatus: 'PENDING_FINAL_APPROVAL', requestId };
     } catch (e) {
@@ -248,7 +263,6 @@ const processApproval = async ({ tenantId, requestId, action, reason, userId, us
         
         const req = requests[0];
         if (req.status !== 'PENDING') throw new Error(`Request is already ${req.status}.`);
-        // Allow case-insensitive matching and let Admin/ADMIN approve any request.
         const approverRole = (req.approver_role || '').toUpperCase();
         const actingRole = (userRole || '').toUpperCase();
         if (approverRole) {
@@ -279,13 +293,26 @@ const processApproval = async ({ tenantId, requestId, action, reason, userId, us
         if (await hasColumn(table, 'tenant_id')) {
             const updateEntitySql = `UPDATE ${table} SET status = ? WHERE id = ? AND tenant_id = ?`;
             await q(updateEntitySql, [newStatus, entity_id, tenantId], connection);
-            // For project approvals, also set locking/closed_at columns if present
             if (entity_type === 'PROJECT' && action === 'APPROVE') {
                 if (await hasColumn('projects', 'is_locked')) {
                     await q('UPDATE projects SET is_locked = 1 WHERE id = ? AND tenant_id = ?', [entity_id, tenantId], connection);
                 }
                 if (await hasColumn('projects', 'closed_at')) {
                     await q('UPDATE projects SET closed_at = NOW() WHERE id = ? AND tenant_id = ?', [entity_id, tenantId], connection);
+                }
+                if (await hasColumn('tasks', 'is_locked')) {
+                    await q('UPDATE tasks SET is_locked = 1 WHERE project_id = ? AND tenant_id = ?', [entity_id, tenantId], connection);
+                }
+            }
+            if (entity_type === 'PROJECT' && action === 'REJECT') {
+                if (await hasColumn('projects', 'is_locked')) {
+                    await q('UPDATE projects SET is_locked = 0 WHERE id = ? AND tenant_id = ?', [entity_id, tenantId], connection);
+                }
+                if (await hasColumn('projects', 'closed_at')) {
+                    await q('UPDATE projects SET closed_at = NULL WHERE id = ? AND tenant_id = ?', [entity_id, tenantId], connection);
+                }
+                if (await hasColumn('tasks', 'is_locked')) {
+                    await q('UPDATE tasks SET is_locked = 0 WHERE project_id = ? AND tenant_id = ?', [entity_id, tenantId], connection);
                 }
             }
         } else {
@@ -298,11 +325,24 @@ const processApproval = async ({ tenantId, requestId, action, reason, userId, us
                 if (await hasColumn('projects', 'closed_at')) {
                     await q('UPDATE projects SET closed_at = NOW() WHERE id = ?', [entity_id], connection);
                 }
+                if (await hasColumn('tasks', 'is_locked')) {
+                    await q('UPDATE tasks SET is_locked = 1 WHERE project_id = ?', [entity_id], connection);
+                }
+            }
+            if (entity_type === 'PROJECT' && action === 'REJECT') {
+                if (await hasColumn('projects', 'is_locked')) {
+                    await q('UPDATE projects SET is_locked = 0 WHERE id = ?', [entity_id], connection);
+                }
+                if (await hasColumn('projects', 'closed_at')) {
+                    await q('UPDATE projects SET closed_at = NULL WHERE id = ?', [entity_id], connection);
+                }
+                if (await hasColumn('tasks', 'is_locked')) {
+                    await q('UPDATE tasks SET is_locked = 0 WHERE project_id = ?', [entity_id], connection);
+                }
             }
         }
 
         // 3. Update the workflow request itself
-        // Only set a processed/approved column if it exists in the tenant schema.
         let processedColumn = null;
         if (await hasColumn('workflow_requests', 'processed_by_id')) processedColumn = 'processed_by_id';
         else if (await hasColumn('workflow_requests', 'approved_by')) processedColumn = 'approved_by';
@@ -335,7 +375,6 @@ const processApproval = async ({ tenantId, requestId, action, reason, userId, us
 
         await commitTransaction(connection);
 
-        // 5. Post-approval actions (e.g., check if project can be closed)
         if (entity_type === 'TASK' && action === 'APPROVE') {
             await checkAndTriggerProjectApproval(tenantId, project_id, userId);
         }
@@ -359,7 +398,6 @@ const processApproval = async ({ tenantId, requestId, action, reason, userId, us
 const checkAndTriggerProjectApproval = async (tenantId, projectId, systemUserId) => {
     if (!projectId) return;
 
-    // Count tasks for the project, taking into account optional tenant_id column
     let results;
     if (await hasColumn('tasks', 'tenant_id')) {
         const sql = `
@@ -384,7 +422,14 @@ const checkAndTriggerProjectApproval = async (tenantId, projectId, systemUserId)
             // 1. Update project status
             await q('UPDATE projects SET status = ? WHERE id = ?', ['PENDING_FINAL_APPROVAL', projectId], connection);
 
-            // 2. Create a new workflow request for the Admin
+            // Lock project/tasks while pending final approval
+            if (await hasColumn('projects', 'is_locked')) {
+                await q('UPDATE projects SET is_locked = 1 WHERE id = ?', [projectId], connection);
+            }
+            if (await hasColumn('tasks', 'is_locked')) {
+                await q('UPDATE tasks SET is_locked = 1 WHERE project_id = ?', [projectId], connection);
+            }
+
             const approverRole = await getApproverRole(tenantId, 'PROJECT', 'ACTIVE', 'CLOSED');
             const insertRequestSql = `
                 INSERT INTO workflow_requests 
@@ -408,11 +453,11 @@ const checkAndTriggerProjectApproval = async (tenantId, projectId, systemUserId)
             ], connection);
 
             await commitTransaction(connection);
-            console.log(`[INFO] Project ${projectId} submitted for final admin approval.`);
+            logger.info(`[INFO] Project ${projectId} submitted for final admin approval.`);
             // TODO: Notify Admin
-        } catch (error) {
+            } catch (error) {
             await rollbackTransaction(connection);
-            console.error(`[ERROR] Failed to trigger project approval for project ${projectId}:`, error);
+            logger.error(`[ERROR] Failed to trigger project approval for project ${projectId}:`, error);
         }
     }
 };
@@ -422,9 +467,23 @@ const checkAndTriggerProjectApproval = async (tenantId, projectId, systemUserId)
  * Enrich with deep productivity data for project closure requests.
  */
 const getRequests = async ({ tenantId, role, status }) => {
+    // workflow_requests may store the processor in different columns across schemas
+    let processedColumn = null;
+    if (await hasColumn('workflow_requests', 'processed_by_id')) processedColumn = 'processed_by_id';
+    else if (await hasColumn('workflow_requests', 'approved_by_id')) processedColumn = 'approved_by_id';
+    else if (await hasColumn('workflow_requests', 'approved_by')) processedColumn = 'approved_by';
+
+    const processedSelect = processedColumn
+        ? `, u2._id as processed_by_id, u2.name as processed_by_name, u2.email as processed_by_email, u2.role as processed_by_role`
+        : `, NULL as processed_by_id, NULL as processed_by_name, NULL as processed_by_email, NULL as processed_by_role`;
+
+    const processedJoin = processedColumn ? `LEFT JOIN users u2 ON wr.${processedColumn} = u2._id` : '';
+
     let sql = `
         SELECT wr.*, 
                u.name as requested_by_name, 
+               u.email as requested_by_email,
+               u.role as requested_by_role,
                p.name as project_name, 
                p.public_id as project_public_id,
                p.status as project_status,
@@ -435,8 +494,10 @@ const getRequests = async ({ tenantId, role, status }) => {
                c.name as client_name,
                c.company as client_company,
                c.email as client_email
+               ${processedSelect}
         FROM workflow_requests wr
         LEFT JOIN users u ON wr.requested_by_id = u._id
+        ${processedJoin}
         LEFT JOIN tasks t ON wr.entity_type = 'TASK' AND wr.entity_id = t.id
         LEFT JOIN projects p ON (wr.entity_type = 'PROJECT' AND wr.entity_id = p.id) OR (wr.entity_type = 'TASK' AND t.project_id = p.id)
         LEFT JOIN clientss c ON p.client_id = c.id
@@ -453,7 +514,6 @@ const getRequests = async ({ tenantId, role, status }) => {
 
     const requests = await q(sql, params);
 
-    // Fetch sub-data for productivity and status logic
     for (const req of requests) {
         // 1. Status acknowledgement message
         const actionVerb = req.status === 'APPROVED' ? 'approved' : (req.status === 'REJECTED' ? 'rejected' : 'pending approval');
@@ -467,13 +527,43 @@ const getRequests = async ({ tenantId, role, status }) => {
         const projectId = req.entity_type === 'PROJECT' ? req.entity_id : (req.project_id || (req.entity_type === 'TASK' ? (await q('SELECT project_id FROM tasks WHERE id = ?', [req.entity_id]))[0]?.project_id : null));
         
         // 3. Add Lock & Restriction Info
-        const isProjectClosed = req.project_status === 'CLOSED' || req.project_is_locked === 1;
+        const toStateUpper = String(req.to_state || '').toUpperCase();
+        const projectStatusUpper = String(req.project_status || '').toUpperCase();
+
+        // Treat "PENDING_FINAL_APPROVAL" (or any close-request) as closed/locked for all downstream behavior.
+        const isPendingClosure = (toStateUpper === 'CLOSED') && projectStatusUpper === 'PENDING_FINAL_APPROVAL';
+        const isProjectClosed = projectStatusUpper === 'CLOSED' || req.project_is_locked === 1 || isPendingClosure;
+
+        // Present an effective project status for clients that only understand CLOSED/ACTIVE.
+        if (isPendingClosure && projectStatusUpper !== 'CLOSED') {
+            req.project_status_raw = req.project_status;
+            req.project_status = 'CLOSED';
+        }
+
+        req.project_effective_status = (isProjectClosed ? 'CLOSED' : (req.project_status || 'ACTIVE'));
         req.can_create_tasks = !isProjectClosed;
         req.can_send_request = !isProjectClosed && (req.entity_type !== 'TASK' || req.task_is_locked !== 1);
-        req.project_closed = isProjectClosed;
+        req.project_closed = !!isProjectClosed;
+
+        // Normalize requested/processed user objects (avoid nulls in UI)
+        if (req.requested_by_id) {
+            req.requested_by = {
+                id: req.requested_by_id,
+                name: req.requested_by_name || null,
+                email: req.requested_by_email || null,
+                role: req.requested_by_role || null
+            };
+        }
+        if (req.processed_by_id) {
+            req.approved_by = {
+                id: req.processed_by_id,
+                name: req.processed_by_name || null,
+                email: req.processed_by_email || null,
+                role: req.processed_by_role || null
+            };
+        }
 
         if (projectId) {
-            // Fetch Client Details (if not already sufficient from join)
             req.client_details = {
                 name: req.client_name,
                 company: req.client_company,
@@ -520,7 +610,9 @@ const getRequests = async ({ tenantId, role, status }) => {
 
             req.tasks = tasks;
             req.total_project_hours = (totalProjectSeconds / 3600).toFixed(2);
-            req.productivity_score = tasks.length > 0 ? (tasks.filter(t => t.status === 'Completed').length / tasks.length * 100).toFixed(0) + '%' : '0%';
+            req.productivity_score = tasks.length > 0
+                ? (tasks.filter(t => String(t.status || '').toUpperCase() === 'COMPLETED').length / tasks.length * 100).toFixed(0) + '%'
+                : '0%';
 
             // 5. Project Level Attachments
             const projectDocSql = `

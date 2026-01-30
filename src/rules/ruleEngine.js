@@ -43,7 +43,6 @@ class RuleEngine {
     }
   }
 
-  // Evaluate rules for a request
   async evaluate(req, user, resource = {}, ruleCode = null) {
     if (!this.loaded) {
       await this.loadRules();
@@ -51,7 +50,6 @@ class RuleEngine {
 
     const context = buildRuleContext(req, user, resource);
     
-    // Filter rules by ruleCode if provided
     let rulesToEvaluate = this.rules;
     if (ruleCode) {
       rulesToEvaluate = this.rules.filter(rule => rule.ruleCode === ruleCode);
@@ -75,7 +73,6 @@ class RuleEngine {
     return decision;
   }
 
-  // Add or update a rule (for dynamic rule management)
   async addRule(rule) {
     // Validate rule structure
     const requiredFields = ['ruleCode', 'description', 'conditions', 'action', 'priority', 'active', 'version'];

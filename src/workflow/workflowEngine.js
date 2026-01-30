@@ -1,5 +1,4 @@
 // src/workflow/workflowEngine.js
-// State machines and transition validation for TASK and PROJECT workflows
 
 const TASK_STATES = {
   DRAFT: 'Draft',

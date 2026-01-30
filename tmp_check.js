@@ -1,10 +1,12 @@
+let logger;
+try { logger = require(__root + 'logger'); } catch (e) { try { logger = require('./logger'); } catch (e2) { try { logger = require('../logger'); } catch (e3) { logger = console; } } }
 const fs = require('fs');
 const source = fs.readFileSync('src/controllers/Tasks.js', 'utf8');
 try {
   new Function(source);
-  console.log('Syntax OK');
+  logger.info('Syntax OK');
 } catch (err) {
-  console.error('SyntaxError:', err.stack || err.toString());
+  logger.error('SyntaxError:', err.stack || err.toString());
 }
 
 let braceDepth = 0;
@@ -46,13 +48,13 @@ for (let i = 0; i < source.length; i += 1) {
     bracketDepth -= 1;
   }
 }
-console.log('brace depth at EOF:', braceDepth);
-console.log('paren depth at EOF:', parenDepth);
-console.log('bracket depth at EOF:', bracketDepth);
+logger.info('brace depth at EOF:', braceDepth);
+logger.info('paren depth at EOF:', parenDepth);
+logger.info('bracket depth at EOF:', bracketDepth);
 if (parenStack.length > 0) {
-  console.log('Unclosed parens count:', parenStack.length);
+  logger.info('Unclosed parens count:', parenStack.length);
   parenStack.forEach((entry, idx) => {
     if (idx >= 5) return;
-    console.log(`  Line ${entry.line}: ${entry.snippet.trim()}`);
+    logger.info(`  Line ${entry.line}: ${entry.snippet.trim()}`);
   });
 }

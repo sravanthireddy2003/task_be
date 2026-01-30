@@ -4,7 +4,6 @@ const logger = require(__root + 'logger');
 const q = (sql, params = []) => new Promise((resolve, reject) => db.query(sql, params, (e, r) => e ? reject(e) : resolve(r)));
 
 // Minimal role-based enforcement inside service. The system uses rule engine
-// for authorization flow; this provides a second-layer enforcement.
 function canAssign(user) {
   if (!user || !user.role) return false;
   const role = String(user.role).toLowerCase();

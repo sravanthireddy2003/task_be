@@ -3,7 +3,11 @@ const http = require('http');
 const socketIo = require('socket.io');
 const jwt = require('jsonwebtoken');
 const db = require('./db');
+const env = require('./config/env');
 const { requireRole } = require('./middleware/roles');
+
+let logger;
+try { logger = require('./logger'); } catch (e) { logger = console; }
 
 class ChatService {
   constructor() {
@@ -27,7 +31,6 @@ class ChatService {
   // Validate user access to project
   async validateProjectAccess(userId, projectId) {
     try {
-      // Check if user is assigned to the project
       const userProjects = await this.query(
         `SELECT DISTINCT p.id, p.project_name
          FROM projects p
@@ -42,7 +45,7 @@ class ChatService {
 
       return userProjects.some(project => project.id === projectId);
     } catch (error) {
-      console.error('Error validating project access:', error);
+      logger.error('Error validating project access:', error);
       return false;
     }
   }
@@ -72,7 +75,7 @@ class ChatService {
         created_at: new Date()
       };
     } catch (error) {
-      console.error('Error creating/getting project chat:', error);
+      logger.error('Error creating/getting project chat:', error);
       throw error;
     }
   }
@@ -95,7 +98,7 @@ class ChatService {
         created_at: new Date()
       };
     } catch (error) {
-      console.error('Error saving message:', error);
+      logger.error('Error saving message:', error);
       throw error;
     }
   }
@@ -110,7 +113,7 @@ class ChatService {
 
       return messages.reverse(); // Return in chronological order
     } catch (error) {
-      console.error('Error getting project messages:', error);
+      logger.error('Error getting project messages:', error);
       throw error;
     }
   }
@@ -129,7 +132,7 @@ class ChatService {
         [projectId, userId, userName, userRole]
       );
     } catch (error) {
-      console.error('Error adding participant:', error);
+      logger.error('Error adding participant:', error);
       throw error;
     }
   }
@@ -142,7 +145,7 @@ class ChatService {
         [projectId, userId]
       );
     } catch (error) {
-      console.error('Error removing participant:', error);
+      logger.error('Error removing participant:', error);
       throw error;
     }
   }
@@ -156,7 +159,7 @@ class ChatService {
       );
       return participants;
     } catch (error) {
-      console.error('Error getting online participants:', error);
+      logger.error('Error getting online participants:', error);
       throw error;
     }
   }
@@ -187,7 +190,7 @@ class ChatService {
         last_message_time: messageStats.last_message_time
       };
     } catch (error) {
-      console.error('Error getting chat stats:', error);
+      logger.error('Error getting chat stats:', error);
       throw error;
     }
   }
@@ -209,7 +212,6 @@ class ChatService {
           break;
 
         case '/tasks':
-          // Get user's tasks for this project
           const tasks = await this.query(
             `SELECT t.task_name, t.status, t.priority
              FROM tasks t
@@ -278,7 +280,7 @@ class ChatService {
 
       return response;
     } catch (error) {
-      console.error('Error handling chatbot command:', error);
+      logger.error('Error handling chatbot command:', error);
       return '🤖 Sorry, I encountered an error processing your command.';
     }
   }
@@ -309,7 +311,7 @@ io.use((socket, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.SECRET || 'secret');
+    const decoded = jwt.verify(token, env.JWT_SECRET || 'secret');
     socket.user = decoded;
     next();
   } catch (err) {
@@ -322,9 +324,8 @@ io.on('connection', (socket) => {
   const userName = socket.user.name || 'Unknown User';
   const userRole = socket.user.role || 'Employee';
 
-  console.log(`User ${userName} (${userId}) connected`);
+  logger.info(`User ${userName} (${userId}) connected`);
 
-  // Join user-specific room for private messages
   socket.join(`user_${userId}`);
 
   // Handle joining project chat
@@ -357,10 +358,10 @@ io.on('connection', (socket) => {
       const onlineParticipants = await chatService.getOnlineParticipants(projectId);
       socket.emit('online_participants', onlineParticipants);
 
-      console.log(`User ${userName} joined project chat: ${projectId}`);
+      logger.info(`User ${userName} joined project chat: ${projectId}`);
 
     } catch (error) {
-      console.error('Error joining project chat:', error);
+      logger.error('Error joining project chat:', error);
       socket.emit('error', { message: 'Failed to join project chat' });
     }
   });
@@ -384,10 +385,10 @@ io.on('connection', (socket) => {
         timestamp: new Date()
       });
 
-      console.log(`User ${userName} left project chat: ${projectId}`);
+      logger.info(`User ${userName} left project chat: ${projectId}`);
 
     } catch (error) {
-      console.error('Error leaving project chat:', error);
+      logger.error('Error leaving project chat:', error);
     }
   });
 
@@ -416,10 +417,10 @@ io.on('connection', (socket) => {
       // Broadcast to room
       io.to(roomName).emit('chat_message', savedMessage);
 
-      console.log(`Message sent in ${projectId} by ${userName}: ${message}`);
+      logger.info(`Message sent in ${projectId} by ${userName}: ${message}`);
 
     } catch (error) {
-      console.error('Error sending message:', error);
+      logger.error('Error sending message:', error);
       socket.emit('error', { message: 'Failed to send message' });
     }
   });
@@ -436,7 +437,7 @@ io.on('connection', (socket) => {
         isTyping: true
       });
     } catch (error) {
-      console.error('Error handling typing start:', error);
+      logger.error('Error handling typing start:', error);
     }
   });
 
@@ -451,7 +452,7 @@ io.on('connection', (socket) => {
         isTyping: false
       });
     } catch (error) {
-      console.error('Error handling typing stop:', error);
+      logger.error('Error handling typing stop:', error);
     }
   });
 
@@ -478,16 +479,15 @@ io.on('connection', (socket) => {
       io.to(roomName).emit('chat_message', botMessage);
 
     } catch (error) {
-      console.error('Error handling chatbot command:', error);
+      logger.error('Error handling chatbot command:', error);
       socket.emit('error', { message: 'Failed to process command' });
     }
   });
 
   // Handle disconnection
   socket.on('disconnect', async () => {
-    console.log(`User ${userName} (${userId}) disconnected`);
+    logger.info(`User ${userName} (${userId}) disconnected`);
 
-    // Update online status for all projects they were in
     try {
       // This is a simplified approach - in production you'd track which projects each socket is in
       await db.query(
@@ -495,7 +495,7 @@ io.on('connection', (socket) => {
         [userId]
       );
     } catch (error) {
-      console.error('Error updating participant status on disconnect:', error);
+      logger.error('Error updating participant status on disconnect:', error);
     }
   });
 });
@@ -528,7 +528,7 @@ app.get('/api/projects/:projectId/chat/messages', requireRole(['Admin', 'Manager
     });
 
   } catch (error) {
-    console.error('Error getting chat messages:', error);
+    logger.error('Error getting chat messages:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to retrieve chat messages'
@@ -574,7 +574,7 @@ app.post('/api/projects/:projectId/chat/messages', requireRole(['Admin', 'Manage
     });
 
   } catch (error) {
-    console.error('Error sending message:', error);
+    logger.error('Error sending message:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to send message'
@@ -604,7 +604,7 @@ app.get('/api/projects/:projectId/chat/participants', requireRole(['Admin', 'Man
     });
 
   } catch (error) {
-    console.error('Error getting participants:', error);
+    logger.error('Error getting participants:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to retrieve participants'
@@ -633,7 +633,7 @@ app.get('/api/projects/:projectId/chat/stats', requireRole(['Admin', 'Manager', 
     });
 
   } catch (error) {
-    console.error('Error getting chat stats:', error);
+    logger.error('Error getting chat stats:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to retrieve chat statistics'
@@ -646,7 +646,6 @@ app.delete('/api/projects/:projectId/chat/messages/:messageId', requireRole(['Ad
   try {
     const { projectId, messageId } = req.params;
 
-    // Check if user owns the message or is admin
     const [message] = await db.query(
       'SELECT sender_id FROM chat_messages WHERE id = ? AND project_id = ?',
       [messageId, projectId]
@@ -674,7 +673,7 @@ app.delete('/api/projects/:projectId/chat/messages/:messageId', requireRole(['Ad
     });
 
   } catch (error) {
-    console.error('Error deleting message:', error);
+    logger.error('Error deleting message:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to delete message'

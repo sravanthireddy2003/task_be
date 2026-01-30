@@ -1,13 +1,18 @@
 const nodemailer = require('nodemailer');
 require('dotenv').config();
+let logger;
+try { logger = require(__root + 'logger'); } catch (e) { logger = require('../../logger'); }
 
-const SMTP_HOST = process.env.SMTP_HOST;
-const SMTP_PORT = parseInt(process.env.SMTP_PORT || '587', 10);
-const SMTP_SECURE = process.env.SMTP_SECURE === 'true';
-const SMTP_USER = process.env.SMTP_USER;
-const SMTP_PASS = process.env.SMTP_PASS;
-const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER;
-const COMPANY_NAME = process.env.COMPANY_NAME || "Your Company";
+let env;
+try { env = require(__root + 'config/env'); } catch (e) { env = require('../config/env'); }
+
+const SMTP_HOST = env.SMTP_HOST || process.env.SMTP_HOST;
+const SMTP_PORT = parseInt(env.SMTP_PORT || process.env.SMTP_PORT || '587', 10);
+const SMTP_SECURE = (env.SMTP_SECURE === true) || (process.env.SMTP_SECURE === 'true');
+const SMTP_USER = env.SMTP_USER || process.env.SMTP_USER;
+const SMTP_PASS = env.SMTP_PASS || process.env.SMTP_PASS;
+const SMTP_FROM = env.SMTP_FROM || process.env.SMTP_FROM || SMTP_USER;
+const COMPANY_NAME = env.COMPANY_NAME || process.env.COMPANY_NAME || "Your Company";
 
 let transporter = null;
 const smtpConfigured = SMTP_HOST && SMTP_USER && SMTP_PASS;
@@ -19,12 +24,11 @@ if (smtpConfigured) {
     secure: SMTP_SECURE,
     auth: { user: SMTP_USER, pass: SMTP_PASS }
   });
-
   transporter.verify()
-    .then(() => console.log('emailService: SMTP verified'))
-    .catch(e => console.warn('emailService: SMTP verify failed', e && e.message));
+    .then(() => logger.info('emailService: SMTP verified'))
+    .catch(e => logger.warn('emailService: SMTP verify failed: ' + (e && e.message ? e.message : String(e))));
 } else {
-  console.log('emailService: SMTP not configured, emails will be logged to console');
+  logger.info('emailService: SMTP not configured, emails will be logged to console');
 }
 
 
@@ -494,16 +498,15 @@ async function sendEmail({ to, subject, text, html }) {
       });
       return { sent: true };
     } catch (e) {
-      console.error('emailService: sendMail failed', e && e.message);
+      logger.error('emailService: sendMail failed', e && e.message);
       return { sent: false, error: e && e.message };
     }
   }
 
-  console.log('emailService (dev) to:', to, 'subject:', subject, 'text:', text);
+  logger.info('emailService (dev) to:', to, 'subject:', subject, 'text:', text);
   return { sent: false };
 }
 
-// Convenience function to send project notifications
 async function sendProjectNotifications({
   projectManagerInfo,
   clientInfo,
@@ -677,12 +680,12 @@ async function sendTaskAssignmentEmails({
   try {
     // Basic validation
     if (!connection) {
-      console.warn('⚠️ Database connection not provided');
+      logger.warn('⚠️ Database connection not provided');
       return results;
     }
 
     if (!Array.isArray(finalAssigned) || finalAssigned.length === 0) {
-      console.info('ℹ️ No assigned users to notify');
+      logger.info('ℹ️ No assigned users to notify');
       return results;
     }
 
@@ -699,7 +702,7 @@ async function sendTaskAssignmentEmails({
     });
 
     if (publicIds.length === 0 && internalIds.length === 0) {
-      console.info('ℹ️ No valid assigned user identifiers provided');
+      logger.info('ℹ️ No valid assigned user identifiers provided');
       return results;
     }
 
@@ -723,11 +726,11 @@ async function sendTaskAssignmentEmails({
     });
 
     if (users.length === 0) {
-      console.info('ℹ️ No matching users found for email notification');
+      logger.info('ℹ️ No matching users found for email notification');
       return results;
     }
 
-    console.log(`📧 Preparing to send ${users.length} task assignment emails`);
+    logger.info(`📧 Preparing to send ${users.length} task assignment emails`);
 
     /**
      * Send emails
@@ -759,23 +762,20 @@ async function sendTaskAssignmentEmails({
           messageId: mailResult?.messageId || null,
         };
 
-        console.log(`✅ Email sent to ${user.name} (${user.email})`);
+        logger.info(`Email sent to ${user.name} (${user.email})`);
       } catch (mailError) {
         results[user.email] = {
           sent: false,
           error: mailError.message,
         };
 
-        console.error(
-          `❌ Failed to send email to ${user.email}:`,
-          mailError.message
-        );
+        logger.error(`Failed to send email to ${user.email}:`, mailError.message);
       }
     }
 
     return results;
-  } catch (error) {
-    console.error('❌ Task assignment email process failed:', error.message);
+    } catch (error) {
+    logger.error('Task assignment email process failed:', error.message);
     return results;
   }
 }
@@ -804,17 +804,16 @@ module.exports = {
 // Convenience: send credentials/welcome email to newly created users
 async function sendCredentials(to, name, publicId, tempPassword, setupLink) {
   try {
-    const link = setupLink || `${process.env.BASE_URL || process.env.FRONTEND_URL || 'http://localhost:4000'}/auth/setup?uid=${encodeURIComponent(publicId)}`;
+    const link = setupLink || `${env.BASE_URL || env.FRONTEND_URL}/auth/setup?uid=${encodeURIComponent(publicId)}`;
     const tpl = welcomeTemplate(name || '', to || '', tempPassword || '', link);
     const r = await sendEmail({ to, subject: tpl.subject, text: tpl.text, html: tpl.html });
     return r;
   } catch (e) {
-    console.error('emailService.sendCredentials error', e && e.message);
+    logger.error('emailService.sendCredentials error', e && e.message);
     return { sent: false, error: e && e.message };
   }
 }
  
-// attach convenience function to exports
 module.exports.sendCredentials = sendCredentials;
  
  

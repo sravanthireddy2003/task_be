@@ -138,7 +138,6 @@ async function generateProjectReport(user, projectIdentifier, startDate, endDate
       tasks = await q(v.sql, v.params);
       break;
     } catch (e) {
-      // If DB reports missing field(s) or missing table, try next variant; otherwise surface the error
       if (e && (e.code === 'ER_BAD_FIELD_ERROR' || e.code === 'ER_NO_SUCH_TABLE')) {
         lastErr = e;
         logger.warn('Task query variant failed (schema issue), trying next', { sql: v.sql, err: e && e.message, code: e && e.code });
@@ -224,7 +223,6 @@ async function generateProjectReport(user, projectIdentifier, startDate, endDate
     userProductivity = entries;
   }
 
-  // Attempt to include clientName if present on project row; try to enrich if missing
   let clientName = project.client_name || project.clientName || project.client || '';
   if (!clientName) {
     try {

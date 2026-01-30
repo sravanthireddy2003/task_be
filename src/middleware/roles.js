@@ -1,33 +1,31 @@
 const jwt = require('jsonwebtoken');
 const db = require('../db');
-require('dotenv').config();
+const HttpError = require('../errors/HttpError');
+const env = require('../config/env');
 
-// Verify JWT and attach user to req.user. Also enforce tenant if present.
 async function requireAuth(req, res, next) {
   const auth = req.headers.authorization || req.headers.Authorization || req.headers['authorization'];
   if (!auth || !auth.startsWith('Bearer ')) {
-    return res.status(401).json({ message: 'Missing or invalid Authorization header' });
+    return next(new HttpError(401, 'Missing or invalid Authorization header', 'AUTH_MISSING'));
   }
   const token = auth.split(' ')[1];
   try {
-    const payload = jwt.verify(token, process.env.SECRET || 'secret');
-    if (!payload || !payload.id) return res.status(401).json({ message: 'Invalid token' });
+    const secret = env.JWT_SECRET || env.SECRET || 'secret';
+    const payload = jwt.verify(token, secret);
+    if (!payload || !payload.id) return next(new HttpError(401, 'Invalid token', 'AUTH_INVALID'));
 
-    // payload.id may be internal numeric _id or external public_id (string)
     const tokenId = payload.id;
     const isNumeric = /^\d+$/.test(String(tokenId));
     const sql = isNumeric ? 'SELECT * FROM users WHERE _id = ? LIMIT 1' : 'SELECT * FROM users WHERE public_id = ? LIMIT 1';
     db.query(sql, [tokenId], (err, results) => {
-      if (err) return res.status(500).json({ message: 'DB error', error: err });
-      if (!results || results.length === 0) return res.status(401).json({ message: 'User not found' });
+      if (err) return next(new HttpError(500, 'DB error', 'DB_ERROR'));
+      if (!results || results.length === 0) return next(new HttpError(401, 'User not found', 'AUTH_USER_NOT_FOUND'));
       const user = results[0];
 
-      // tenant enforcement: if req.tenantId exists, ensure user.tenant_id matches
       if (req.tenantId && String(user.tenant_id) !== String(req.tenantId)) {
-        return res.status(403).json({ message: 'Tenant mismatch' });
+        return next(new HttpError(403, 'Tenant mismatch', 'TENANT_MISMATCH'));
       }
 
-      // normalize user object attached to request: expose external `id` for API consumers
       const externalId = user.public_id || user._id;
       req.user = {
         _id: user._id,
@@ -38,28 +36,26 @@ async function requireAuth(req, res, next) {
         role: user.role,
         tenant_id: user.tenant_id
       };
-      // token valid and not expired
       req.tokenExpired = false;
       next();
     });
   } catch (e) {
-    // If token expired, attempt to decode/verify ignoring expiration so we can
-    // attach the user (useful for flows that want to recover or refresh tokens).
     if (e && e.name === 'TokenExpiredError') {
       try {
-        const payload = jwt.verify(token, process.env.SECRET || 'secret', { ignoreExpiration: true });
-        if (!payload || !payload.id) return res.status(401).json({ message: 'Invalid token' });
+        const secret = env.JWT_SECRET || env.SECRET || 'secret';
+        const payload = jwt.verify(token, secret, { ignoreExpiration: true });
+        if (!payload || !payload.id) return next(new HttpError(401, 'Invalid token', 'AUTH_INVALID'));
 
         const tokenId = payload.id;
         const isNumeric = /^\d+$/.test(String(tokenId));
         const sql = isNumeric ? 'SELECT * FROM users WHERE _id = ? LIMIT 1' : 'SELECT * FROM users WHERE public_id = ? LIMIT 1';
         return db.query(sql, [tokenId], (err, results) => {
-          if (err) return res.status(500).json({ message: 'DB error', error: err });
-          if (!results || results.length === 0) return res.status(401).json({ message: 'User not found' });
+          if (err) return next(new HttpError(500, 'DB error', 'DB_ERROR'));
+          if (!results || results.length === 0) return next(new HttpError(401, 'User not found', 'AUTH_USER_NOT_FOUND'));
           const user = results[0];
 
           if (req.tenantId && String(user.tenant_id) !== String(req.tenantId)) {
-            return res.status(403).json({ message: 'Tenant mismatch' });
+            return next(new HttpError(403, 'Tenant mismatch', 'TENANT_MISMATCH'));
           }
 
           const externalId = user.public_id || user._id;
@@ -72,15 +68,14 @@ async function requireAuth(req, res, next) {
             role: user.role,
             tenant_id: user.tenant_id
           };
-          // mark that the token was expired; callers can decide how to handle
           req.tokenExpired = true;
           next();
         });
       } catch (e2) {
-        return res.status(401).json({ message: 'Invalid token', error: e2.message });
+        return next(new HttpError(401, 'Invalid token', 'AUTH_INVALID'));
       }
     }
-    return res.status(401).json({ message: 'Invalid token', error: e.message });
+    return next(new HttpError(401, 'Invalid token', 'AUTH_INVALID'));
   }
 }
 
@@ -88,9 +83,9 @@ async function requireAuth(req, res, next) {
 function requireRole(roles) {
   const allowed = (Array.isArray(roles) ? roles : [roles]).map(r => String(r || '').toLowerCase());
   return function (req, res, next) {
-    if (!req.user) return res.status(401).json({ message: 'Not authenticated' });
+    if (!req.user) return next(new HttpError(401, 'Not authenticated', 'AUTH_MISSING'));
     const userRole = String(req.user.role || '').toLowerCase();
-    if (!allowed.includes(userRole)) return res.status(403).json({ message: 'Insufficient role' });
+    if (!allowed.includes(userRole)) return next(new HttpError(403, 'Insufficient role', 'AUTH_FORBIDDEN'));
     next();
   };
 }

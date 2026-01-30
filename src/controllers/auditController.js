@@ -2,6 +2,9 @@ const db = require('../db');
 
 const q = (sql, params = []) => new Promise((resolve, reject) => db.query(sql, params, (e, r) => e ? reject(e) : resolve(r)));
 
+let logger;
+try { logger = require(global.__root + 'logger'); } catch (e) { try { logger = require('../logger'); } catch (e2) { logger = console; } }
+
 function parsePagination(req) {
   const perPage = parseInt(req.query.limit || '25', 10) || 25;
   const page = parseInt(req.query.page || '1', 10) || 1;
@@ -69,7 +72,6 @@ function normalizeLogRow(r) {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
-  // Merge commonly-used detail fields into top-level for easier consumption
   const merged = Object.assign({}, details || {});
   const topLevelFields = [
     'performedBy','userName','tenant','ipAddress','device','status',
@@ -88,14 +90,12 @@ function normalizeLogRow(r) {
     timestamp: fmt(r.createdAt)
   };
 
-  // Copy recognized detail keys to top-level (if present)
   for (const k of topLevelFields) {
     if (merged && Object.prototype.hasOwnProperty.call(merged, k)) {
       out[k] = merged[k];
     }
   }
 
-  // Master audit fields for Admin-friendly consumption
   out.logId = `LOG${r.id}`;
   out.module = r.entity || (merged.module || merged.entity) || null;
   out.performedBy = out.performedBy || actorName || null;
@@ -119,7 +119,7 @@ module.exports = {
       const details = entry.metadata || entry.details || {};
       await q(`INSERT INTO audit_logs (actor_id, tenant_id, action, entity, entity_id, details, createdAt) VALUES (?, ?, ?, ?, ?, ?, NOW())`, [actorId, tenantId, action, entity, entityId, JSON.stringify(details)]);
     } catch (e) {
-      console.error('auditController.log failed:', e && e.message);
+      logger.error('auditController.log failed:', e && e.message);
     }
   },
   // GET /api/admin/audit-logs
@@ -129,7 +129,6 @@ module.exports = {
       const filters = { from: req.query.from, to: req.query.to, actor: req.query.actor, action: req.query.action };
       const base = await buildBaseQuery(filters);
 
-      // support returning all logs when ?all=true (useful for admin export)
       const returnAll = String(req.query.all || '').toLowerCase() === 'true';
       let rows = [];
       let total = 0;
@@ -180,7 +179,6 @@ module.exports = {
       const managerInternalId = req.user && (req.user._id || null);
       const managerPublicId = req.user && (req.user.public_id || req.user.id || null);
 
-      // gather accessible client ids from RoleBasedLoginResponse if available
       let assignedClientIds = [];
       try {
         const RoleBasedLoginResponse = require('../controller/utils/RoleBasedLoginResponse');
@@ -240,7 +238,6 @@ module.exports = {
         params.push(...mgrParams);
       }
 
-      // manager: support all=true
       const returnAll = String(req.query.all || '').toLowerCase() === 'true';
       let rows = [];
       let total = 0;
@@ -291,14 +288,12 @@ module.exports = {
       if (actorPublic !== null && actorPublic !== undefined && actorPublic !== actorInternal) actorIds.push(actorPublic);
 
       if (actorIds.length === 0) {
-        // No actor identifiers available on the request — return empty result rather than a DB error
         return res.json({ success: true, data: { total: 0, page, perPage, logs: [] } });
       }
 
       const whereClause = base.whereClause ? (base.whereClause + ' AND (a.actor_id IN (?))') : 'WHERE (a.actor_id IN (?))';
       const params = [...base.params, actorIds];
 
-      // employee: support all=true (but still restricted to own actor_id)
       const returnAll = String(req.query.all || '').toLowerCase() === 'true';
       let rows = [];
       let total = 0;

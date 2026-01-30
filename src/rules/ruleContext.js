@@ -35,11 +35,9 @@ const buildRuleContext = (req, user, resource = {}) => {
     // Configurable thresholds from env
     LEAVE_MAX_DAYS: parseInt(process.env.LEAVE_MAX_DAYS || '5', 10),
     OTP_MAX_REQUESTS: parseInt(process.env.OTP_MAX_REQUESTS || '3', 10),
-    // Add recent requests count if available (would need to be fetched)
     recentRequests: 0 // Placeholder, implement based on your rate limiting logic
   };
 
-  // Add leave days if in payload
   if (context.payload.leaveDays) {
     context.leaveDays = context.payload.leaveDays;
   }

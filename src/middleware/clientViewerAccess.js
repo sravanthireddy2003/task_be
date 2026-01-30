@@ -5,10 +5,11 @@
  */
 
 const db = require('../db');
+let logger;
+try { logger = require(global.__root + 'logger'); } catch (e) { logger = require('../logger'); }
 
 module.exports = async function clientViewerAccessControl(req, res, next) {
   try {
-    // Only enforce for Client-Viewer role
     if (!req.user || req.user.role !== 'Client-Viewer') {
       return next();
     }
@@ -39,10 +40,8 @@ module.exports = async function clientViewerAccessControl(req, res, next) {
       });
     }
 
-    // Attach the client ID to request for use in route handlers
     req.viewerMappedClientId = clientId;
 
-    // Define allowed endpoints for Client-Viewer
     const allowedPatterns = [
       /^\/api\/clients\/\d+$/,           // GET /api/clients/:id
       /^\/api\/tasks$/,                  // GET /api/tasks
@@ -86,13 +85,12 @@ module.exports = async function clientViewerAccessControl(req, res, next) {
       }
     }
 
-    // Attach access level for route handlers
     req.accessLevel = 'Limited Read-Only';
     req.allowedModules = ['Dashboard', 'Assigned Tasks', 'Documents'];
 
     return next();
   } catch (e) {
-    console.error('Error in clientViewerAccessControl:', e.message);
+    logger.error('Error in clientViewerAccessControl:', e.message);
     return res.status(500).json({
       success: false,
       error: 'Access control check failed',

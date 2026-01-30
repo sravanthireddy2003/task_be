@@ -476,7 +476,6 @@ const rules = [
     version: '1.0'
   },
 
-  // Default Allow for other cases
   {
     ruleCode: 'DEFAULT_ALLOW',
     description: 'Allow by default if no rules match',

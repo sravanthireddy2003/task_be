@@ -3,6 +3,9 @@ const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
 
+let logger;
+try { logger = require('./logger'); } catch (e) { logger = console; }
+
 const BASE_URL = 'http://localhost:3000';
 
 // Test credentials
@@ -12,7 +15,7 @@ const TEST_CREDENTIALS = {
 };
 
 async function testDocumentManagement() {
-  console.log('🚀 Starting Document Management API Tests...\n');
+  logger.info('🚀 Starting Document Management API Tests...\n');
 
   let authToken = '';
   let projectId = '';
@@ -20,13 +23,12 @@ async function testDocumentManagement() {
 
   try {
     // 1. Login
-    console.log('1. 🔐 Logging in...');
+    logger.info('1. 🔐 Logging in...');
     const loginResponse = await axios.post(`${BASE_URL}/api/auth/login`, TEST_CREDENTIALS);
     authToken = loginResponse.data.token;
-    console.log('✅ Login successful\n');
+    logger.info('✅ Login successful\n');
 
-    // 2. Create client first (needed for project creation)
-    console.log('2. 👥 Creating client for project...');
+    logger.info('2. 👥 Creating client for project...');
     const clientForm = new FormData();
     clientForm.append('name', 'Test Client for Project');
     clientForm.append('email', 'testclient@example.com');
@@ -41,11 +43,11 @@ async function testDocumentManagement() {
     });
 
     clientId = clientResponse.data.data.id;
-    console.log(`✅ Client created with ID: ${clientId}`);
-    console.log('');
+    logger.info(`✅ Client created with ID: ${clientId}`);
+    logger.info('');
 
     // 3. Create project with documents
-    console.log('3. 📁 Creating project with documents...');
+    logger.info('3. 📁 Creating project with documents...');
     const projectForm = new FormData();
     projectForm.append('name', 'Test Project with Documents');
     projectForm.append('description', 'Project created via automated test');
@@ -56,7 +58,6 @@ async function testDocumentManagement() {
     projectForm.append('client_id', clientId); // Required by business rules
     projectForm.append('departmentNames', JSON.stringify(['Development', 'Testing']));
 
-    // Create a dummy PDF file for testing
     const testPdfPath = path.join(__dirname, 'test_document.pdf');
     if (!fs.existsSync(testPdfPath)) {
       // Create a simple text file as placeholder
@@ -72,14 +73,14 @@ async function testDocumentManagement() {
     });
 
     projectId = projectResponse.data.data.id;
-    console.log(`✅ Project created with ID: ${projectId}`);
+    logger.info(`✅ Project created with ID: ${projectId}`);
     if (projectResponse.data.data.documents) {
-      console.log(`📎 Documents attached: ${projectResponse.data.data.documents.length}`);
+      logger.info(`📎 Documents attached: ${projectResponse.data.data.documents.length}`);
     }
-    console.log('');
+    logger.info('');
 
     // 4. Create client with documents
-    console.log('4. 👥 Creating client with documents...');
+    logger.info('4. 👥 Creating client with documents...');
     const clientForm2 = new FormData();
     clientForm2.append('name', 'Test Client with Documents');
     clientForm2.append('email', 'testclient2@example.com');
@@ -99,14 +100,14 @@ async function testDocumentManagement() {
     });
 
     const clientId2 = clientResponse2.data.data.id;
-    console.log(`✅ Client created with ID: ${clientId2}`);
+    logger.info(`✅ Client created with ID: ${clientId2}`);
     if (clientResponse2.data.data.documents) {
-      console.log(`📎 Documents attached: ${clientResponse2.data.data.documents.length}`);
+      logger.info(`📎 Documents attached: ${clientResponse2.data.data.documents.length}`);
     }
-    console.log('');
+    logger.info('');
 
     // 5. List documents
-    console.log('5. 📄 Listing all documents...');
+    logger.info('5. 📄 Listing all documents...');
     const documentsResponse = await axios.get(`${BASE_URL}/api/documents`, {
       headers: {
         'Authorization': `Bearer ${authToken}`
@@ -114,16 +115,15 @@ async function testDocumentManagement() {
     });
 
     const documents = documentsResponse.data.data;
-    console.log(`✅ Found ${documents.length} documents:`);
+    logger.info(`✅ Found ${documents.length} documents:`);
     documents.forEach((doc, index) => {
-      console.log(`   ${index + 1}. ${doc.fileName} (${doc.fileType}) - ${doc.entityType}:${doc.entityId}`);
+      logger.info(`   ${index + 1}. ${doc.fileName} (${doc.fileType}) - ${doc.entityType}:${doc.entityId}`);
     });
-    console.log('');
+    logger.info('');
 
-    // 6. Test document preview/download (if documents exist)
     if (documents.length > 0) {
       const firstDoc = documents[0];
-      console.log(`6. 👁️ Testing document preview for ${firstDoc.fileName}...`);
+      logger.info(`6. 👁️ Testing document preview for ${firstDoc.fileName}...`);
 
       try {
         const previewResponse = await axios.get(`${BASE_URL}/api/documents/${firstDoc.documentId}/preview`, {
@@ -131,12 +131,12 @@ async function testDocumentManagement() {
             'Authorization': `Bearer ${authToken}`
           }
         });
-        console.log('✅ Document preview successful');
+        logger.info('✅ Document preview successful');
       } catch (error) {
-        console.log('⚠️ Document preview failed:', error.response?.data?.error || error.message);
+        logger.warn('⚠️ Document preview failed:', error.response?.data?.error || error.message);
       }
 
-      console.log(`7. 📥 Testing document download for ${firstDoc.fileName}...`);
+      logger.info(`7. 📥 Testing document download for ${firstDoc.fileName}...`);
       try {
         const downloadResponse = await axios.get(`${BASE_URL}/api/documents/${firstDoc.documentId}/download`, {
           headers: {
@@ -144,9 +144,9 @@ async function testDocumentManagement() {
           },
           responseType: 'stream'
         });
-        console.log('✅ Document download successful');
+        logger.info('✅ Document download successful');
       } catch (error) {
-        console.log('⚠️ Document download failed:', error.response?.data?.error || error.message);
+        logger.warn('⚠️ Document download failed:', error.response?.data?.error || error.message);
       }
     }
 
@@ -155,10 +155,10 @@ async function testDocumentManagement() {
       fs.unlinkSync(testPdfPath);
     }
 
-    console.log('\n🎉 All tests completed successfully!');
+    logger.info('\n🎉 All tests completed successfully!');
 
   } catch (error) {
-    console.error('❌ Test failed:', error.response?.data || error.message);
+    logger.error('❌ Test failed:', error.response?.data || error.message);
     process.exit(1);
   }
 }
