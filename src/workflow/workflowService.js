@@ -375,9 +375,10 @@ const processApproval = async ({ tenantId, requestId, action, reason, userId, us
 
         await commitTransaction(connection);
 
-        if (entity_type === 'TASK' && action === 'APPROVE') {
-            await checkAndTriggerProjectApproval(tenantId, project_id, userId);
-        }
+        // Removed automatic project closure triggering - manager must explicitly request closure
+        // if (entity_type === 'TASK' && action === 'APPROVE') {
+        //     await checkAndTriggerProjectApproval(tenantId, project_id, userId);
+        // }
         
         // TODO: Notify original requestor
         const actionVerb = action === 'APPROVE' ? 'approved' : 'rejected';
@@ -530,20 +531,39 @@ const getRequests = async ({ tenantId, role, status }) => {
         const toStateUpper = String(req.to_state || '').toUpperCase();
         const projectStatusUpper = String(req.project_status || '').toUpperCase();
 
-        // Treat "PENDING_FINAL_APPROVAL" (or any close-request) as closed/locked for all downstream behavior.
+        // ========================================
+        // PROJECT STATUS STANDARDIZATION
+        // ========================================
+        // The project_status field should ALWAYS reflect the ACTUAL current state from the database.
+        // For PENDING closure requests, the DB holds "PENDING_FINAL_APPROVAL" but we need a clear UI status.
+        
         const isPendingClosure = (toStateUpper === 'CLOSED') && projectStatusUpper === 'PENDING_FINAL_APPROVAL';
-        const isProjectClosed = projectStatusUpper === 'CLOSED' || req.project_is_locked === 1 || isPendingClosure;
+        const isProjectClosed = projectStatusUpper === 'CLOSED' || req.project_is_locked === 1;
+        
+        // NEW: Standardized status object for frontend consumption
+        req.project_status_info = {
+            // The raw database value (what's actually in projects.status)
+            raw: req.project_status,
+            
+            // The display-friendly status for UI (ACTIVE, PENDING_CLOSURE, CLOSED)
+            display: isPendingClosure ? 'PENDING_CLOSURE' : (isProjectClosed ? 'CLOSED' : req.project_status || 'ACTIVE'),
+            
+            // Boolean flags for easy conditional logic
+            is_closed: isProjectClosed,
+            is_pending_closure: isPendingClosure,
+            is_locked: req.project_is_locked === 1,
+            
+            // Permissions derived from status
+            can_create_tasks: !isProjectClosed && !isPendingClosure,
+            can_edit_project: !isProjectClosed && !isPendingClosure,
+            can_request_closure: !isProjectClosed && !isPendingClosure
+        };
 
-        // Present an effective project status for clients that only understand CLOSED/ACTIVE.
-        if (isPendingClosure && projectStatusUpper !== 'CLOSED') {
-            req.project_status_raw = req.project_status;
-            req.project_status = 'CLOSED';
-        }
-
-        req.project_effective_status = (isProjectClosed ? 'CLOSED' : (req.project_status || 'ACTIVE'));
-        req.can_create_tasks = !isProjectClosed;
-        req.can_send_request = !isProjectClosed && (req.entity_type !== 'TASK' || req.task_is_locked !== 1);
-        req.project_closed = !!isProjectClosed;
+        // DEPRECATED: Keep old fields for backward compatibility, but mark them
+        req.project_effective_status = req.project_status_info.display;
+        req.can_create_tasks = req.project_status_info.can_create_tasks;
+        req.can_send_request = !isProjectClosed && !isPendingClosure && (req.entity_type !== 'TASK' || req.task_is_locked !== 1);
+        req.project_closed = isProjectClosed;
 
         // Normalize requested/processed user objects (avoid nulls in UI)
         if (req.requested_by_id) {

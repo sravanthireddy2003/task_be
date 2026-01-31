@@ -32,7 +32,7 @@ This Postman collection provides comprehensive testing for the Document Manageme
 
 ### 2. Configure Environment
 Create a new environment in Postman with these variables:
-- `baseUrl`: `http://localhost:3000` (or your server URL)
+- `BASE_URL`: `http://localhost:4000` (or your server URL)
 - `authToken`: (will be set automatically after login)
 - `projectId`: (will be set automatically after project creation)
 - `clientId`: (will be set automatically after client creation)

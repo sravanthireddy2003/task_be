@@ -534,7 +534,7 @@ const postmanCollection = {
   "variable": [
     {
       "key": "baseUrl",
-      "value": "http://localhost:4000"
+      "value": "{{BASE_URL}}", "type": "string"
     },
     {
       "key": "token",
@@ -896,7 +896,7 @@ module.exports = postmanCollection;
   "variable": [
     {
       "key": "baseUrl",
-      "value": "http://localhost:4000",
+      "value": "{{BASE_URL}}", "type": "string",
       "type": "string"
     },
     {

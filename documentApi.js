@@ -4,7 +4,7 @@
 class DocumentAPI {
   constructor(baseURL) {
     const nodeEnvBase = (typeof process !== 'undefined' && process.env)
-      ? (process.env.API_BASE_URL || process.env.BASE_URL || process.env.BACKEND_URL || null)
+      ? (process.env.BASE_URL ? `${process.env.BASE_URL}/api` : null)
       : null;
     const globalOverride = (typeof window !== 'undefined' && window.__BACKEND_BASE_URL) ? window.__BACKEND_BASE_URL : null;
     const defaultBase = nodeEnvBase || globalOverride || 'http://localhost:4000/api';

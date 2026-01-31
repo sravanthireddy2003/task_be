@@ -32,8 +32,28 @@ app.disable('x-powered-by');
 app.use(helmet());
 app.use(xss());
 app.use(hpp());
-// Basic rate limiting
-app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 200 }));
+
+// Rate limiting configuration
+const isDevelopment = process.env.NODE_ENV !== 'production';
+const globalRateLimitConfig = isDevelopment
+  ? { windowMs: 15 * 60 * 1000, max: 1000 } // More permissive for development
+  : { windowMs: 15 * 60 * 1000, max: 200 }; // Stricter for production
+
+// More permissive rate limiting for auth routes
+const authRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: isDevelopment ? 50 : 10, // Allow more login attempts
+  message: {
+    success: false,
+    error: 'Too many authentication attempts. Please try again later.',
+    retryAfter: '15 minutes'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use('/api/auth', authRateLimit);
+app.use(rateLimit(globalRateLimitConfig));
 
 // Request logging: morgan -> winston
 app.use(morgan('combined', { stream: { write: msg => logger.info(msg.trim()) } }));

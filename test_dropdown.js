@@ -1,11 +1,12 @@
 let logger;
 try { logger = require(__root + 'logger'); } catch (e) { try { logger = require('./logger'); } catch (e2) { try { logger = require('../logger'); } catch (e3) { logger = console; } } }
 const axios = require('axios');
+require('dotenv').config();
 
 async function testProjectDropdown() {
   try {
     // Login
-    const login = await axios.post('http://localhost:4000/api/auth/login', {
+    const login = await axios.post(`${process.env.BASE_URL || 'http://localhost:4000'}/api/auth/login`, {
       email: 'korapatiashwini@gmail.com',
       password: 'admin123'  // Assuming default password
     });
@@ -13,7 +14,7 @@ async function testProjectDropdown() {
     logger.info('Login successful');
 
     // Get project dropdown
-    const dropdown = await axios.get('http://localhost:4000/api/projects/projectdropdown', {
+    const dropdown = await axios.get(`${process.env.BASE_URL || 'http://localhost:4000'}/api/projects/projectdropdown`, {
       headers: { Authorization: `Bearer ${token}` }
     });
     logger.info('Projects:', dropdown.data);
@@ -22,7 +23,7 @@ async function testProjectDropdown() {
     if (dropdown.data.length > 0) {
       const projectPublicId = dropdown.data[0].id;
       logger.info(`Testing documents for project ${projectPublicId}`);
-      const docs = await axios.get('http://localhost:4000/api/documents', {
+      const docs = await axios.get(`${process.env.BASE_URL || 'http://localhost:4000'}/api/documents`, {
         headers: {
           Authorization: `Bearer ${token}`,
           'project-id': projectPublicId

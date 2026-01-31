@@ -764,7 +764,7 @@ module.exports = {
     const filterUserParam = req.query.userId;
 
     const runQuery = async (resolvedUserId) => {
-      safeSelect('projects', ['id','name','description','manager_id'], ['tenant_id'], '', [], (err, rows) => {
+      safeSelect('projects', ['id','name','description','status','manager_id'], ['tenant_id'], '', [], (err, rows) => {
         if (err) return res.status(500).json({ success: false, error: err.message });
         // map manager_id to public_id when possible
         try {

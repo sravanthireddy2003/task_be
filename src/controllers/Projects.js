@@ -11,6 +11,33 @@ const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const ruleEngine = require(__root + 'middleware/ruleEngine');
 const RULES = require(__root + 'rules/ruleCodes');
 const { normalizeProjectStatus } = require(__root + 'utils/projectStatus');
+
+// Helper function to create standardized project status info (matches workflow service logic)
+function createProjectStatusInfo(projectStatus, isLocked) {
+  const raw = projectStatus == null ? null : String(projectStatus);
+  const upper = raw ? raw.toUpperCase() : '';
+  const locked = isLocked === 1 || isLocked === true;
+  
+  // For PENDING closure requests, the DB holds "PENDING_FINAL_APPROVAL" but we need a clear UI status
+  const isPendingClosure = upper === 'PENDING_FINAL_APPROVAL';
+  const isProjectClosed = upper === 'CLOSED' || (locked && !isPendingClosure);
+  
+  return {
+    // The raw database value (what's actually in projects.status)
+    raw: raw,
+    
+    // The display-friendly status for UI (ACTIVE, PENDING_CLOSURE, CLOSED)
+    display: isPendingClosure ? 'PENDING_CLOSURE' : (isProjectClosed ? 'CLOSED' : raw || 'ACTIVE'),
+    
+    // Boolean flags for UI logic
+    is_closed: isProjectClosed,
+    is_pending_closure: isPendingClosure,
+    is_locked: locked,
+    can_create_tasks: !locked && !isPendingClosure,
+    can_edit_project: !locked && !isPendingClosure,
+    can_request_closure: !locked && !isPendingClosure && upper === 'ACTIVE'
+  };
+}
 /*
   Rule codes used in this router:
   - PROJECT_CREATE, PROJECT_VIEW, PROJECT_UPDATE, PROJECT_DELETE
@@ -303,7 +330,7 @@ router.get('/', async (req, res) => {
         start_date: p.start_date,
         end_date: p.end_date,
         budget: p.budget,
-        status: normalizeProjectStatus(p.status, p.is_locked).status,
+        status: createProjectStatusInfo(p.status, p.is_locked).display,
         created_at: p.created_at,
         departments: depts.map(d => ({ public_id: d.public_id, name: d.name }))
       };
@@ -608,6 +635,7 @@ router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Mana
     const out = {
       ...updated[0],
       id: updated[0].public_id,
+      status: createProjectStatusInfo(updated[0].status, updated[0].is_locked).display,
       departments: depts.map(d => ({ id: d.department_id, name: d.name, public_id: d.public_id }))
     };
     if (updated[0].project_manager_id) {
@@ -784,7 +812,7 @@ router.get('/:id/summary', async (req, res) => {
         project: {
           id: project[0].public_id,
           name: project[0].name,
-          status: project[0].status
+          status: createProjectStatusInfo(project[0].status, project[0].is_locked).display
         },
         tasks: {
           total: totalTasks,

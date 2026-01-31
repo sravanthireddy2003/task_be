@@ -1,4 +1,5 @@
 const axios = require('axios');
+require('dotenv').config();
 
 let logger;
 try { logger = require('./logger'); } catch (e) { logger = console; }
@@ -15,12 +16,12 @@ async function basicDocumentTest() {
   try {
     // 1. Login
     logger.info('1. 🔐 Logging in...');
-    const loginResponse = await axios.post('http://localhost:3000/api/auth/login', TEST_CREDENTIALS);
+    const loginResponse = await axios.post(`${process.env.BASE_URL || 'http://localhost:4000'}/api/auth/login`, TEST_CREDENTIALS);
     const authToken = loginResponse.data.token;
     logger.info('✅ Login successful\n');
 
     logger.info('2. 📄 Listing documents...');
-    const documentsResponse = await axios.get('http://localhost:3000/api/documents', {
+    const documentsResponse = await axios.get(`${process.env.BASE_URL || 'http://localhost:4000'}/api/documents`, {
       headers: {
         'Authorization': `Bearer ${authToken}`
       }

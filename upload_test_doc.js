@@ -2,11 +2,12 @@ const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
+require('dotenv').config();
 
 let logger;
 try { logger = require('./logger'); } catch (e) { logger = console; }
 
-const BASE_URL = 'http://localhost:4000';
+const BASE_URL = process.env.BASE_URL || 'http://localhost:4000';
 
 async function uploadDocumentToProject() {
   logger.info('🚀 Uploading test document to project...\n');

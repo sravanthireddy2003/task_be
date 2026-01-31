@@ -3,7 +3,7 @@ import io from 'socket.io-client';
 
 // ChatAPI Service
 class ChatAPI {
-  constructor(baseURL = 'http://localhost:4000') {
+  constructor(baseURL = process.env.REACT_APP_BASE_URL || 'http://localhost:4000') {
     this.baseURL = baseURL;
     this.token = localStorage.getItem('authToken');
   }
@@ -124,7 +124,7 @@ function ProjectChat({ projectId, currentUser }) {
     const token = localStorage.getItem('authToken');
     if (!token) return;
 
-    const newSocket = io('http://localhost:4000', {
+    const newSocket = io(process.env.REACT_APP_BASE_URL || 'http://localhost:4000', {
       auth: { token }
     });
 

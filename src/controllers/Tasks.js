@@ -844,6 +844,43 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
           req.user.tenant_id
         );
 
+        // Update project status to ACTIVE if it's currently Planning
+        if (projectId) {
+          try {
+            // Check if project status is Planning and update to ACTIVE
+            const updateProjectStatus = () => {
+              return new Promise((resolve, reject) => {
+                const checkStatusQuery = 'SELECT status FROM projects WHERE id = ?';
+                db.query(checkStatusQuery, [projectId], (err, rows) => {
+                  if (err) {
+                    logger.error('Error checking project status:', err);
+                    return resolve(); // Don't fail the task creation
+                  }
+                  
+                  if (rows && rows.length > 0 && rows[0].status === 'Planning') {
+                    const updateQuery = 'UPDATE projects SET status = ? WHERE id = ?';
+                    db.query(updateQuery, ['ACTIVE', projectId], (updateErr) => {
+                      if (updateErr) {
+                        logger.error('Error updating project status to ACTIVE:', updateErr);
+                      } else {
+                        logger.info(`Project ${projectId} status updated from Planning to ACTIVE`);
+                      }
+                      resolve();
+                    });
+                  } else {
+                    resolve();
+                  }
+                });
+              });
+            };
+            
+            await updateProjectStatus();
+          } catch (e) {
+            logger.error('Failed to update project status:', e && e.message);
+            // Don't fail task creation if project status update fails
+          }
+        }
+
         // Overdue/on-time summary logic
         let summary = {};
         try {

@@ -1,6 +1,8 @@
 // Chat Backend API Test Script
 // Run with: node chat_api_test.js
 
+require('dotenv').config();
+
 let logger;
 try { logger = require('./logger'); } catch (e) { logger = console; }
 
@@ -8,7 +10,7 @@ const io = require('socket.io-client');
 const fetch = require('node-fetch'); // npm install node-fetch
 
 // Configuration
-const BASE_URL = 'http://localhost:4000';
+const BASE_URL = process.env.BASE_URL || 'http://localhost:4000';
 const PROJECT_ID = 'TEST_PROJECT_123'; // Replace with actual project ID
 const JWT_TOKEN = 'YOUR_JWT_TOKEN_HERE'; // Replace with actual token
 
