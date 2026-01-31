@@ -1,5 +1,5 @@
 // Assumes JWT token is stored in localStorage as 'token'
-// Base URL should be set to your backend (e.g., 'http://localhost:4000/api')
+// Base URL should be set to your backend via BASE_URL environment variable
 
 class DocumentAPI {
   constructor(baseURL) {
@@ -7,7 +7,10 @@ class DocumentAPI {
       ? (process.env.BASE_URL ? `${process.env.BASE_URL}/api` : null)
       : null;
     const globalOverride = (typeof window !== 'undefined' && window.__BACKEND_BASE_URL) ? window.__BACKEND_BASE_URL : null;
-    const defaultBase = nodeEnvBase || globalOverride || 'http://localhost:4000/api';
+    const defaultBase = nodeEnvBase || globalOverride;
+    if (!defaultBase) {
+      throw new Error('BASE_URL environment variable is required');
+    }
     this.baseURL = baseURL || defaultBase;
   }
 
