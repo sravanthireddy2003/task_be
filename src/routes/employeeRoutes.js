@@ -12,4 +12,8 @@ router.post('/subtask', Employee.addSubtask);
 router.put('/subtask/:id', Employee.updateSubtask);
 router.post('/subtask/:id/complete', Employee.softDeleteChecklistItem);
 
+// Settings
+router.get('/settings', Employee.getSettings);
+router.put('/settings', Employee.putSettings);
+
 module.exports = router;

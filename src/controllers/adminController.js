@@ -1024,5 +1024,77 @@ module.exports = {
       }
     })();
     return res.json({ success: true, data: removed });
+  },
+
+  getSettings: (req, res) => {
+    // Return current settings
+    const settings = {
+      version: "1.0.0",
+      general: {
+        site_name: "Task Manager",
+        support_email: "support@taskmanager.com",
+        timezone: "Asia/Kolkata"
+      },
+      database: {
+        primary_db: "connected",
+        replica_db: "connected"
+      },
+      security: {
+        password_expiry: true,
+        login_notifications: true,
+        session_timeout: false
+      },
+      notifications: {
+        email_alerts: true,
+        sms_alerts: false,
+        weekly_summary: true
+      },
+      api: {
+        base_url: "https://api.taskmanager.com",
+        public_key: "pk_live_123456",
+        secret_key: "sk_live_123456"
+      }
+    };
+    return res.json({ success: true, data: settings });
+  },
+
+  putSettings: (req, res) => {
+    const updates = req.body;
+    // In a real app, validate and save to DB or config
+    // For now, just return success with updated data
+    const current = {
+      version: "1.0.0",
+      general: {
+        site_name: "Task Manager",
+        support_email: "support@taskmanager.com",
+        timezone: "Asia/Kolkata"
+      },
+      database: {
+        primary_db: "connected",
+        replica_db: "connected"
+      },
+      security: {
+        password_expiry: true,
+        login_notifications: true,
+        session_timeout: false
+      },
+      notifications: {
+        email_alerts: true,
+        sms_alerts: false,
+        weekly_summary: true
+      },
+      api: {
+        base_url: "https://api.taskmanager.com",
+        public_key: "pk_live_123456",
+        secret_key: "sk_live_123456"
+      }
+    };
+    // Merge updates
+    Object.keys(updates).forEach(key => {
+      if (current[key]) {
+        Object.assign(current[key], updates[key]);
+      }
+    });
+    return res.json({ success: true, data: current });
   }
 };

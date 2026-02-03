@@ -15,4 +15,8 @@ router.get('/tasks', Manager.getTaskTimeline);
 router.get('/employees', Manager.getDepartmentEmployees);
 router.get('/employees/all', Manager.listEmployees);
 
+// Settings
+router.get('/settings', Manager.getSettings);
+router.put('/settings', Manager.putSettings);
+
 module.exports = router;

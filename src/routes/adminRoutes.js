@@ -20,6 +20,10 @@ router.delete('/departments/:id', Admin.deleteDepartment);
 router.get('/projects', Admin.manageProjects);
 router.get('/tasks', Admin.manageTasks);
 
+// Settings
+router.get('/settings', Admin.getSettings);
+router.put('/settings', Admin.putSettings);
+
 // Modules CRUD
 router.get('/modules', Admin.getModules);
 router.get('/modules/:id', Admin.getModuleById);

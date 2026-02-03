@@ -1184,6 +1184,75 @@ router.post('/:id/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin'
   }
 });
  
+// Settings
+router.get('/settings', requireRole(['Admin','Manager','Employee','Client-Viewer']), (req, res) => {
+  const settings = {
+    version: "1.0.0",
+    general: {
+      site_name: "Task Manager",
+      support_email: "support@taskmanager.com",
+      timezone: "Asia/Kolkata"
+    },
+    database: {
+      primary_db: "connected",
+      replica_db: "connected"
+    },
+    security: {
+      password_expiry: true,
+      login_notifications: true,
+      session_timeout: false
+    },
+    notifications: {
+      email_alerts: true,
+      sms_alerts: false,
+      weekly_summary: true
+    },
+    api: {
+      base_url: "https://api.taskmanager.com",
+      public_key: "pk_live_123456",
+      secret_key: "sk_live_123456"
+    }
+  };
+  return res.json({ success: true, data: settings });
+});
+
+router.put('/settings', requireRole(['Admin','Manager','Employee','Client-Viewer']), (req, res) => {
+  const updates = req.body;
+  const current = {
+    version: "1.0.0",
+    general: {
+      site_name: "Task Manager",
+      support_email: "support@taskmanager.com",
+      timezone: "Asia/Kolkata"
+    },
+    database: {
+      primary_db: "connected",
+      replica_db: "connected"
+    },
+    security: {
+      password_expiry: true,
+      login_notifications: true,
+      session_timeout: false
+    },
+    notifications: {
+      email_alerts: true,
+      sms_alerts: false,
+      weekly_summary: true
+    },
+    api: {
+      base_url: "https://api.taskmanager.com",
+      public_key: "pk_live_123456",
+      secret_key: "sk_live_123456"
+    }
+  };
+  Object.keys(updates).forEach(key => {
+    if (current[key]) {
+      Object.assign(current[key], updates[key]);
+    }
+  });
+  return res.json({ success: true, data: current });
+});
+
 module.exports = router;
  
  
