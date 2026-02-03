@@ -10,6 +10,7 @@ const validateRequest = require(__root + 'middleware/validateRequest');
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const upload = require(__root + 'multer');
 const otpService = require(__root + 'utils/otpService');
+const passwordPolicy = require('../services/passwordPolicy');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');

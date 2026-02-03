@@ -3,11 +3,11 @@ const env = require('./env');
 const logger = require('../logger');
 
 const dbConfig = {
-    host: env.DB_HOST || '127.0.0.1',
-    port: env.DB_PORT || 3306,
-    user: env.DB_USER || 'root',
-    password: env.DB_PASSWORD || '',
-    database: env.DB_NAME || 'market_task_db',
+    host: env.DB_HOST,
+    port: env.DB_PORT,
+    user: env.DB_USER,
+    password: env.DB_PASSWORD,
+    database: env.DB_NAME,
     multipleStatements: false,
     connectionLimit: 10,
 };

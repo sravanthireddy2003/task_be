@@ -783,11 +783,11 @@ router.get('/:id/summary', async (req, res) => {
     const projectId = project[0].id;
 
     // Task counts
-    const taskStats = await q('SELECT stage, COUNT(*) as count FROM tasks WHERE project_id = ? GROUP BY stage', [projectId]);
-    const tasksByStage = {};
+    const taskStats = await q('SELECT status, COUNT(*) as count FROM tasks WHERE project_id = ? GROUP BY status', [projectId]);
+    const tasksByStatus = {};
     let totalTasks = 0;
     taskStats.forEach(ts => {
-      tasksByStage[ts.stage] = ts.count;
+      tasksByStatus[ts.status] = ts.count;
       totalTasks += ts.count;
     });
 
@@ -818,7 +818,7 @@ router.get('/:id/summary', async (req, res) => {
           total: totalTasks,
           completed: completedCount,
           inProgress: inProgressCount,
-          byStage: tasksByStage
+          byStatus: tasksByStatus
         },
         totalHours: totalHours,
         progressPercentage: progressPercentage

@@ -154,12 +154,12 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
         t.status,
         t.createdAt,
         t.updatedAt${optionalSelect},
-        c.id AS client_id,
-        c.name AS client_name,
-        ap.name AS approved_by_name,
-        ap.public_id AS approved_by_public_id,
-        rj.name AS rejected_by_name,
-        rj.public_id AS rejected_by_public_id,
+        MIN(c.id) AS client_id,
+        MIN(c.name) AS client_name,
+        MIN(ap.name) AS approved_by_name,
+        MIN(ap.public_id) AS approved_by_public_id,
+        MIN(rj.name) AS rejected_by_name,
+        MIN(rj.public_id) AS rejected_by_public_id,
         GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
         GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
         GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names,
@@ -496,8 +496,7 @@ async function createJsonHandler(req, res) {
           }
 
           const checkHighPriorityQuery = `
-            SELECT COUNT(*) as highPriorityCount, priority as existingPriority, taskDate as existingTaskDate 
-            FROM tasks 
+            SELECT COUNT(*) as highPriorityCount FROM tasks 
             WHERE client_id = ? AND priority = 'HIGH'
           `;
 
@@ -517,37 +516,53 @@ async function createJsonHandler(req, res) {
             logger.debug('High priority check:', { highPriorityCount, finalPriority, finalTaskDate });
 
             if (priorityNorm === "HIGH" && highPriorityCount > 0) {
-              const existingTaskDate = new Date(checkResults[0].existingTaskDate);
-              const currentDate = new Date();
-              const daysDifference = Math.ceil((existingTaskDate - currentDate) / (1000 * 60 * 60 * 24));
-
-              let dateAdjustmentDays = 0;
-              if (checkResults[0].existingPriority === "LOW") {
-                dateAdjustmentDays = Math.ceil(daysDifference * 1.5);
-              } else if (checkResults[0].existingPriority === "MEDIUM") {
-                dateAdjustmentDays = Math.ceil(daysDifference * 1.2);
-              }
-
-              adjustedTaskDate = new Date(existingTaskDate);
-              adjustedTaskDate.setDate(adjustedTaskDate.getDate() + dateAdjustmentDays);
-
-              const updateExistingTaskQuery = `
-                UPDATE tasks 
-                SET priority = 'MEDIUM', updatedAt = ?, taskDate = ?
-                WHERE client_id = ? AND priority = 'HIGH'
+              // Get the existing high priority task details
+              const getExistingQuery = `
+                SELECT priority as existingPriority, taskDate as existingTaskDate 
+                FROM tasks 
+                WHERE client_id = ? AND priority = 'HIGH' LIMIT 1
               `;
-
-              connection.query(updateExistingTaskQuery, [updatedAt, adjustedTaskDate.toISOString(), finalClientId], (updateErr) => {
-                if (updateErr) {
-                  logger.error('Error updating existing tasks:', updateErr);
+              connection.query(getExistingQuery, [finalClientId], (getErr, getResults) => {
+                if (getErr) {
+                  logger.error('Error getting existing task details:', getErr);
                   return connection.rollback(() => {
                     connection.release();
-                    return res.status(500).send("Error managing task priorities");
+                    return res.status(500).send("Error checking existing tasks");
                   });
                 }
 
-                logger.info('Continuing task creation with adjusted date');
-                continueTaskCreation(req, connection, { 
+                if (getResults.length > 0) {
+                  const existingTaskDate = new Date(getResults[0].existingTaskDate);
+                  const currentDate = new Date();
+                  const daysDifference = Math.ceil((existingTaskDate - currentDate) / (1000 * 60 * 60 * 24));
+
+                  let dateAdjustmentDays = 0;
+                  if (getResults[0].existingPriority === "LOW") {
+                    dateAdjustmentDays = Math.ceil(daysDifference * 1.5);
+                  } else if (getResults[0].existingPriority === "MEDIUM") {
+                    dateAdjustmentDays = Math.ceil(daysDifference * 1.2);
+                  }
+
+                  adjustedTaskDate = new Date(existingTaskDate);
+                  adjustedTaskDate.setDate(adjustedTaskDate.getDate() + dateAdjustmentDays);
+
+                  const updateExistingTaskQuery = `
+                    UPDATE tasks 
+                    SET priority = 'MEDIUM', updatedAt = ?, taskDate = ?
+                    WHERE client_id = ? AND priority = 'HIGH'
+                  `;
+
+                  connection.query(updateExistingTaskQuery, [updatedAt, adjustedTaskDate.toISOString(), finalClientId], (updateErr) => {
+                    if (updateErr) {
+                      logger.error('Error updating existing tasks:', updateErr);
+                      return connection.rollback(() => {
+                        connection.release();
+                        return res.status(500).send("Error managing task priorities");
+                      });
+                    }
+
+                    logger.info('Continuing task creation with adjusted date');
+                    continueTaskCreation(req, connection, { 
                   ...req.body, 
                   assigned_to: finalAssigned, 
                   stage: normalizedStage, 
@@ -558,6 +573,7 @@ async function createJsonHandler(req, res) {
                   projectPublicId: finalProjectPublicId 
                 }, createdAt, updatedAt, "HIGH", res);
               });
+            } });
             } else {
                 logger.info('Continuing task creation without priority adjustment');
               continueTaskCreation(req, connection, { 
@@ -1050,12 +1066,12 @@ router.get('/', async (req, res) => {
           t.status,
           t.createdAt,
           t.updatedAt${optionalSelect},
-          c.id AS client_id,
-          c.name AS client_name,
-          ap.name AS approved_by_name,
-          ap.public_id AS approved_by_public_id,
-          rj.name AS rejected_by_name,
-          rj.public_id AS rejected_by_public_id,
+          MIN(c.id) AS client_id,
+          MIN(c.name) AS client_name,
+          MIN(ap.name) AS approved_by_name,
+          MIN(ap.public_id) AS approved_by_public_id,
+          MIN(rj.name) AS rejected_by_name,
+          MIN(rj.public_id) AS rejected_by_public_id,
           GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
           GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
           GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names
@@ -1133,12 +1149,12 @@ router.get('/', async (req, res) => {
           t.status,
           t.createdAt,
           t.updatedAt${optionalSelect},
-          c.id AS client_id,
-          c.name AS client_name,
-          ap.name AS approved_by_name,
-          ap.public_id AS approved_by_public_id,
-          rj.name AS rejected_by_name,
-          rj.public_id AS rejected_by_public_id,
+          MIN(c.id) AS client_id,
+          MIN(c.name) AS client_name,
+          MIN(ap.name) AS approved_by_name,
+          MIN(ap.public_id) AS approved_by_public_id,
+          MIN(rj.name) AS rejected_by_name,
+          MIN(rj.public_id) AS rejected_by_public_id,
           GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
           GROUP_CONCAT(DISTINCT u.public_id) AS assigned_user_public_ids,
           GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names

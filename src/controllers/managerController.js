@@ -88,8 +88,8 @@ async function clientHasPublicId() {
 }
 
 async function clientFieldSelects(alias = 'c') {
-  const selects = [`${alias}.name AS client_name`];
-  if (await clientHasPublicId()) selects.push(`${alias}.public_id AS client_public_id`);
+  const selects = [`MIN(${alias}.name) AS client_name`];
+  if (await clientHasPublicId()) selects.push(`MIN(${alias}.public_id) AS client_public_id`);
   return selects;
 }
 
@@ -237,15 +237,15 @@ async function fetchTaskTimeline(projectIds = [], projectPublicIds = []) {
 
       ${clientFields.join(', ')},
 
-      p.id AS project_internal_id,
-      p.public_id AS project_public_id,
-      p.name AS project_name,
-      p.priority AS project_priority,
-      p.status AS project_status,
-      ${hasProjectIsLocked ? 'p.is_locked AS project_is_locked,' : ''}
-      p.start_date AS project_start_date,
-      p.end_date AS project_end_date,
-      p.client_id AS project_client_id,
+      MIN(p.id) AS project_internal_id,
+      MIN(p.public_id) AS project_public_id,
+      MIN(p.name) AS project_name,
+      MIN(p.priority) AS project_priority,
+      MIN(p.status) AS project_status,
+      ${hasProjectIsLocked ? 'MIN(p.is_locked) AS project_is_locked,' : ''}
+      MIN(p.start_date) AS project_start_date,
+      MIN(p.end_date) AS project_end_date,
+      MIN(p.client_id) AS project_client_id,
 
       GROUP_CONCAT(DISTINCT u._id ORDER BY u._id) AS assigned_user_internal_ids,
       GROUP_CONCAT(DISTINCT u.public_id ORDER BY u._id) AS assigned_user_public_ids,
