@@ -21,7 +21,6 @@ if (requireRedis && process.env.REDIS_URL) {
   if (process.env.REDIS_URL) logger.info('REQUIRE_REDIS is false — passwordPolicy skipping Redis client creation');
 }
 
-// Basic password policy validator
 function validatePassword(password) {
   if (!password || typeof password !== 'string') return { valid: false, reason: 'Password required' };
   if (password.length < 10) return { valid: false, reason: 'Password must be at least 10 characters' };
@@ -30,7 +29,6 @@ function validatePassword(password) {
   if (!/[0-9]/.test(password)) return { valid: false, reason: 'Password must include a digit' };
   if (!/[!@#\$%\^&\*]/.test(password)) return { valid: false, reason: 'Password must include a special character (!@#$%^&*)' };
 
-  // optional: strength estimation
   try {
     const score = zxcvbn(password).score; // 0..4
     if (score < 2) return { valid: false, reason: 'Password too weak' };
@@ -40,7 +38,6 @@ function validatePassword(password) {
   return { valid: true };
 }
 
-// Check recent passwords stored in DB. Will read last N entries from password_history and compare hashes.
 async function isPasswordReused(db, userId, newPassword, limit = 5) {
   if (!db) return false;
 
@@ -53,12 +50,12 @@ async function isPasswordReused(db, userId, newPassword, limit = 5) {
         rows = JSON.parse(cached);
       }
     } catch (e) {
-      // ignore cache errors
+
     }
   }
 
   if (!rows) {
-    // db.query is callback-based, wrap in Promise
+
     rows = await new Promise((resolve, reject) => {
       const q = 'SELECT password_hash FROM password_history WHERE user_id = ? ORDER BY changed_at DESC LIMIT ?';
       db.query(q, [userId, limit], (err, results) => {
@@ -80,7 +77,7 @@ async function isPasswordReused(db, userId, newPassword, limit = 5) {
     try {
       if (await bcrypt.compare(newPassword, r.password_hash)) return true;
     } catch (e) {
-      // ignore compare errors
+
     }
   }
 

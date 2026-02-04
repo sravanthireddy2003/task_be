@@ -3,7 +3,6 @@ const logger = require(__root + 'logger');
 
 const q = (sql, params = []) => new Promise((resolve, reject) => db.query(sql, params, (e, r) => e ? reject(e) : resolve(r)));
 
-// Minimal role-based enforcement inside service. The system uses rule engine
 function canAssign(user) {
   if (!user || !user.role) return false;
   const role = String(user.role).toLowerCase();
@@ -11,7 +10,7 @@ function canAssign(user) {
 }
 
 module.exports = {
-  // documentId, assigneeId, accessType (e.g., 'READ')
+
   async assignAccess({ documentId, assigneeId, accessType = 'READ', user = {} }) {
     if (!documentId || !assigneeId) {
       const err = new Error('documentId and assigneeId required');

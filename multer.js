@@ -5,7 +5,6 @@ const fsp = require("fs").promises;
 const env = require('./src/config/env');
 const { safeFilename } = require('./src/utils/fileHelper');
 
-// Ensure uploads directory exists
 const ensureUploadsDir = async () => {
   const dir = path.join(process.cwd(), "uploads/profiles");
   try {
@@ -16,8 +15,6 @@ const ensureUploadsDir = async () => {
 };
 
 
-// Use disk storage so uploaded files have a filesystem path (used by storageService)
-// Use memory storage: multer will expose `file.buffer` and we'll persist it in `storageService.upload`
 const storage = multer.memoryStorage();
 
 const MAX_SIZE = parseInt(process.env.MAX_UPLOAD_SIZE || String(env.MAX_UPLOAD_SIZE || 25 * 1024 * 1024), 10);
@@ -41,7 +38,7 @@ const upload = multer({
 });
 
 upload.ensureUploadsDir = ensureUploadsDir;
-// expose helper to create safe filenames
+
 upload.safeFilename = safeFilename;
 
 module.exports = upload;

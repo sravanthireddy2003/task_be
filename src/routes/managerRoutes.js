@@ -13,9 +13,7 @@ router.get('/projects', Manager.getAssignedProjects);
 router.get('/timeline', Manager.getTaskTimeline);
 router.get('/tasks', Manager.getTaskTimeline);
 router.get('/employees', Manager.getDepartmentEmployees);
-router.get('/employees/all', Manager.listEmployees);
-
-// Settings
+router.get('/employees/all', Manager.listEmployees);
 router.get('/settings', Manager.getSettings);
 router.put('/settings', Manager.putSettings);
 

@@ -15,8 +15,7 @@ class ChatService {
       });
     });
   }
- 
-  // Create or get project chat room
+
   async getOrCreateProjectChat(projectId) {
     try {
       let chatRoom = await this.query(
@@ -27,8 +26,7 @@ class ChatService {
       if (chatRoom && chatRoom.length > 0) {
         return chatRoom[0];
       }
- 
-      // Create new chat room
+
       const roomName = `project_${projectId}`;
       const result = await this.query(
         'INSERT INTO project_chats (project_id, room_name) VALUES (?, ?)',
@@ -46,11 +44,10 @@ class ChatService {
       throw error;
     }
   }
- 
-  // Validate user can access project chat
+
   async validateProjectAccess(userId, projectId) {
     try {
-      // First, get user role
+
       const userResult = await this.query(
         'SELECT role FROM users WHERE _id = ?',
         [userId]
@@ -61,8 +58,7 @@ class ChatService {
       }
  
       const userRole = userResult[0].role;
- 
-      // Get the internal project ID from public_id
+
       const projectResult = await this.query(
         'SELECT id FROM projects WHERE public_id = ?',
         [projectId]
@@ -73,8 +69,7 @@ class ChatService {
       }
  
       const internalProjectId = projectResult[0].id;
- 
-      // Admin can access all projects
+
       if (userRole === 'Admin') {
         return true;
       }
@@ -125,8 +120,7 @@ class ChatService {
       return false;
     }
   }
- 
-  // Save message to database
+
   async saveMessage(projectId, senderId, senderName, message, messageType = 'text') {
     try {
       const result = await this.query(
@@ -189,8 +183,7 @@ class ChatService {
       throw error;
     }
   }
- 
-  // Add user to chat participants
+
   async addParticipant(projectId, userId, userName, userRole) {
     try {
       await this.query(`
@@ -207,8 +200,7 @@ class ChatService {
       throw error;
     }
   }
- 
-  // Remove user from chat participants (set offline)
+
   async removeParticipant(projectId, userId) {
     try {
       await this.query(
@@ -233,11 +225,10 @@ class ChatService {
       throw error;
     }
   }
- 
-  // Get all project members (users with access to the project)
+
   async getAllProjectMembers(projectId) {
     try {
-      // Get the internal project ID from public_id
+
       const projectResult = await this.query(
         'SELECT id FROM projects WHERE public_id = ?',
         [projectId]
@@ -248,8 +239,7 @@ class ChatService {
       }
  
       const internalProjectId = projectResult[0].id;
- 
-      // Get all users assigned to tasks in this project
+
       const taskUsers = await this.query(`
         SELECT DISTINCT
           u._id as user_id,
@@ -262,8 +252,7 @@ class ChatService {
         JOIN tasks t ON ta.task_Id = t.id
         WHERE t.project_id = ?
       `, [internalProjectId]);
- 
-      // Get project manager
+
       const projectManager = await this.query(`
         SELECT
           u._id as user_id,
@@ -275,8 +264,7 @@ class ChatService {
         JOIN projects p ON u._id = p.project_manager_id
         WHERE p.id = ?
       `, [internalProjectId]);
- 
-      // Get project creator
+
       const projectCreator = await this.query(`
         SELECT
           u._id as user_id,
@@ -288,8 +276,7 @@ class ChatService {
         JOIN projects p ON u._id = p.created_by
         WHERE p.id = ?
       `, [internalProjectId]);
- 
-      // Combine all users and remove duplicates
+
       const allUsers = [...taskUsers, ...projectManager, ...projectCreator];
       const uniqueUsers = allUsers.filter((user, index, self) =>
         index === self.findIndex(u => u.user_id === user.user_id)
@@ -301,8 +288,7 @@ class ChatService {
       throw error;
     }
   }
- 
-  // Get chat statistics
+
   async getChatStats(projectId) {
     try {
       const [messageStats] = await this.query(
@@ -314,8 +300,7 @@ class ChatService {
          FROM chat_messages WHERE project_id = ?`,
         [projectId]
       );
- 
-      // Get total project members instead of just online participants
+
       const allMembers = await this.getAllProjectMembers(projectId);
       const totalMembers = allMembers.length;
  
@@ -337,10 +322,10 @@ class ChatService {
       throw error;
     }
   }
-  // Handle chatbot commands
+
   async handleChatbotCommand(projectId, command, userName, userId) {
     try {
-      // Convert public_id to internal project id
+
       const projectResult = await this.query(
         'SELECT id FROM projects WHERE public_id = ?',
         [projectId]
@@ -380,7 +365,7 @@ class ChatService {
             try {
             logger.debug('userRole:', userRole);
             if (userRole && (userRole.toLowerCase() === 'admin' || userRole.toLowerCase() === 'manager')) {
-              // Get all tasks in this project
+
               const allTasks = await this.query(`
                 SELECT title, status, priority
                 FROM tasks
@@ -424,7 +409,7 @@ class ChatService {
           break;
  
         case '/status':
-          // Get project status
+
           const projectInfo = await this.query(`
             SELECT
               COUNT(CASE WHEN status = 'Completed' THEN 1 END) as completed_tasks,
@@ -443,7 +428,7 @@ class ChatService {
           break;
  
         case '/members':
-          // Get all project members using the existing method
+
           const allMembers = await this.getAllProjectMembers(projectId);
           if (allMembers.length === 0) {
             response = 'No members found in this project.';
@@ -454,7 +439,7 @@ class ChatService {
           break;
  
         case '/online':
-          // Get online members
+
           const onlineMembers = await this.getOnlineParticipants(projectId);
           if (onlineMembers.length === 0) {
             response = 'No members are currently online.';
@@ -474,13 +459,11 @@ class ChatService {
       return 'Sorry, I encountered an error processing your command.';
     }
   }
- 
-  // Send system message
+
   async sendSystemMessage(projectId, message) {
     try {
       const savedMessage = await this.saveMessage(projectId, 0, 'System', message, 'system');
- 
-      // Emit to project room
+
       if (this.io) {
         this.io.to(`project_${projectId}`).emit('chat_message', savedMessage);
       }
@@ -491,13 +474,11 @@ class ChatService {
       throw error;
     }
   }
- 
-  // Send bot message
+
   async sendBotMessage(projectId, message) {
     try {
       const savedMessage = await this.saveMessage(projectId, 0, 'ChatBot', message, 'bot');
- 
-      // Emit to project room
+
       if (this.io) {
         this.io.to(`project_${projectId}`).emit('chat_message', savedMessage);
       }
@@ -508,8 +489,7 @@ class ChatService {
       throw error;
     }
   }
- 
-  // Emit user joined/left messages
+
   async emitUserPresence(projectId, userName, action) {
     const message = action === 'joined'
       ? `${userName} joined the project chat`

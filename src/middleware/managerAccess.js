@@ -1,8 +1,4 @@
-/**
- * ManagerAccessMiddleware
- * Restricts Manager access to only their assigned clients
- * Admins see all clients
- */
+
 const db = require('../db');
 
 function q(sql, params = []) {
@@ -12,21 +8,16 @@ function q(sql, params = []) {
 }
 
 module.exports = async function managerAccessMiddleware(req, res, next) {
-  try {
-    // Only apply to Managers (Admins and Client-Viewers have different restrictions)
+  try {
     if (!req.user || req.user.role !== 'Manager') {
       return next();
     }
 
     const managerId = req.user._id;
-    const clientIdFromRoute = req.params.id;
-
-    // For list endpoints (no :id), no need to check here
+    const clientIdFromRoute = req.params.id;
     if (!clientIdFromRoute) {
       return next();
-    }
-
-    // Verify manager is assigned to this client
+    }
     const assignedClients = await q(
       'SELECT id FROM clientss WHERE id = ? AND manager_id = ? LIMIT 1',
       [clientIdFromRoute, managerId]
@@ -37,9 +28,7 @@ module.exports = async function managerAccessMiddleware(req, res, next) {
         success: false,
         error: 'Access denied: You are not assigned to this client'
       });
-    }
-
-    // Attach flag indicating manager is assigned
+    }
     req.isManagerOfClient = true;
     return next();
   } catch (e) {

@@ -5,6 +5,15 @@ function q(sql, params = []) {
   return new Promise((resolve, reject) => db.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows))));
 }
 
+async function hasColumn(table, column) {
+  try {
+    const rows = await q("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?", [table, column]);
+    return Array.isArray(rows) && rows.length > 0;
+  } catch (e) {
+    return false;
+  }
+}
+
 async function projectExistsAndBelongs(projectIdentifier) {
   if (!projectIdentifier && projectIdentifier !== 0) return null;
   const idRaw = String(projectIdentifier).trim();
@@ -27,6 +36,14 @@ async function projectExistsAndBelongs(projectIdentifier) {
     }
   }
 
+  return null;
+}
+
+async function findColumn(table, candidates) {
+  for (const c of candidates) {
+    // eslint-disable-next-line no-await-in-loop
+    if (await hasColumn(table, c)) return c;
+  }
   return null;
 }
 
@@ -77,57 +94,40 @@ async function generateProjectReport(user, projectIdentifier, startDate, endDate
   const end = endDate + ' 23:59:59';
 
   let tasks = [];
-  // Try several query variants to tolerate missing columns (due_date, timelogs)
+
+  // choose a numeric column from timelogs if present to avoid referencing missing columns
+  const candidates = ['hours', 'duration', 'logged_hours', 'total_hours'];
+  let tlCol = null;
+  for (const c of candidates) {
+    // eslint-disable-next-line no-await-in-loop
+    if (await hasColumn('timelogs', c)) { tlCol = c; break; }
+  }
+
+  const hoursExpr = tlCol ? `(SELECT SUM(tl.${tlCol}) FROM timelogs tl WHERE tl.task_id = t.id)` : null;
+
+  // find appropriate column names on tasks table for due date, taskDate and created
+  const dueCol = await findColumn('tasks', ['due_date', 'dueDate']);
+  const taskDateCol = await findColumn('tasks', ['taskDate', 'task_date']);
+  const createdCol = await findColumn('tasks', ['createdAt', 'created_at']) || 'createdAt';
+
+  const baseSelect = (includeDue) => {
+    const duePart = includeDue && dueCol ? `DATE_FORMAT(t.${dueCol}, '%Y-%m-%d') as dueDate,` : '';
+    return `SELECT t.public_id as taskId, t.title as taskName, t.status, ${duePart} DATE_FORMAT(t.${createdCol}, '%Y-%m-%d') as createdDate, GROUP_CONCAT(DISTINCT u.name SEPARATOR ', ') as assignedTo,`;
+  };
+
+  const hoursSelect = tlCol ? `COALESCE(${hoursExpr}, t.total_duration, 0) as hoursLogged` : `COALESCE(t.total_duration, 0) as hoursLogged`;
+
   const taskQueryVariants = [
     {
-      sql: `SELECT t.public_id as taskId, t.title as taskName, t.status, DATE_FORMAT(t.due_date, '%Y-%m-%d') as dueDate, DATE_FORMAT(t.createdAt, '%Y-%m-%d') as createdDate,
-            GROUP_CONCAT(DISTINCT u.name SEPARATOR ', ') as assignedTo,
-            COALESCE((SELECT SUM(hours) FROM timelogs tl WHERE tl.task_id = t.id), t.total_duration, 0) as hoursLogged
-          FROM tasks t
-          LEFT JOIN taskassignments ta ON t.id = ta.task_Id
-          LEFT JOIN users u ON ta.user_Id = u._id
-          WHERE t.project_id = ? AND ((t.taskDate BETWEEN ? AND ?) OR (t.createdAt BETWEEN ? AND ?))
-          GROUP BY t.id
-          ORDER BY t.createdAt DESC`,
+        sql: `${baseSelect(true)} ${hoursSelect} FROM tasks t LEFT JOIN taskassignments ta ON t.id = ta.task_Id LEFT JOIN users u ON ta.user_Id = u._id WHERE t.project_id = ? AND ((${ taskDateCol ? `t.${taskDateCol} BETWEEN ? AND ?` : `t.${createdCol} BETWEEN ? AND ?` }) OR (t.${createdCol} BETWEEN ? AND ?)) GROUP BY t.id ORDER BY t.${createdCol} DESC`,
       params: [project.id, start, end, start, end]
     },
     {
-      // Without timelogs subquery
-      sql: `SELECT t.public_id as taskId, t.title as taskName, t.status, DATE_FORMAT(t.due_date, '%Y-%m-%d') as dueDate, DATE_FORMAT(t.createdAt, '%Y-%m-%d') as createdDate,
-            GROUP_CONCAT(DISTINCT u.name SEPARATOR ', ') as assignedTo,
-            COALESCE(t.total_duration, 0) as hoursLogged
-          FROM tasks t
-          LEFT JOIN taskassignments ta ON t.id = ta.task_Id
-          LEFT JOIN users u ON ta.user_Id = u._id
-          WHERE t.project_id = ? AND ((t.taskDate BETWEEN ? AND ?) OR (t.createdAt BETWEEN ? AND ?))
-          GROUP BY t.id
-          ORDER BY t.createdAt DESC`,
+      sql: `${baseSelect(true)} ${hoursSelect} FROM tasks t LEFT JOIN taskassignments ta ON t.id = ta.task_Id LEFT JOIN users u ON ta.user_Id = u._id WHERE t.project_id = ? AND ((${ taskDateCol ? `t.${taskDateCol} BETWEEN ? AND ?` : `t.${createdCol} BETWEEN ? AND ?` }) OR (t.${createdCol} BETWEEN ? AND ?)) GROUP BY t.id ORDER BY t.${createdCol} DESC`,
       params: [project.id, start, end, start, end]
     },
     {
-      // Without due_date but with timelogs
-      sql: `SELECT t.public_id as taskId, t.title as taskName, t.status, DATE_FORMAT(t.createdAt, '%Y-%m-%d') as createdDate,
-        GROUP_CONCAT(DISTINCT u.name SEPARATOR ', ') as assignedTo,
-        COALESCE((SELECT SUM(hours) FROM timelogs tl WHERE tl.task_id = t.id), t.total_duration, 0) as hoursLogged
-          FROM tasks t
-          LEFT JOIN taskassignments ta ON t.id = ta.task_Id
-          LEFT JOIN users u ON ta.user_Id = u._id
-          WHERE t.project_id = ? AND ((t.taskDate BETWEEN ? AND ?) OR (t.createdAt BETWEEN ? AND ?))
-          GROUP BY t.id
-          ORDER BY t.createdAt DESC`,
-      params: [project.id, start, end, start, end]
-    },
-    {
-      // Minimal: no due_date, no timelogs
-      sql: `SELECT t.public_id as taskId, t.title as taskName, t.status, DATE_FORMAT(t.createdAt, '%Y-%m-%d') as createdDate,
-        GROUP_CONCAT(DISTINCT u.name SEPARATOR ', ') as assignedTo,
-        COALESCE(t.total_duration, 0) as hoursLogged
-          FROM tasks t
-          LEFT JOIN taskassignments ta ON t.id = ta.task_Id
-          LEFT JOIN users u ON ta.user_Id = u._id
-          WHERE t.project_id = ? AND ((t.taskDate BETWEEN ? AND ?) OR (t.createdAt BETWEEN ? AND ?))
-          GROUP BY t.id
-          ORDER BY t.createdAt DESC`,
+      sql: `${baseSelect(false)} ${hoursSelect} FROM tasks t LEFT JOIN taskassignments ta ON t.id = ta.task_Id LEFT JOIN users u ON ta.user_Id = u._id WHERE t.project_id = ? AND ((${ taskDateCol ? `t.${taskDateCol} BETWEEN ? AND ?` : `t.${createdCol} BETWEEN ? AND ?` }) OR (t.${createdCol} BETWEEN ? AND ?)) GROUP BY t.id ORDER BY t.${createdCol} DESC`,
       params: [project.id, start, end, start, end]
     }
   ];
@@ -148,7 +148,6 @@ async function generateProjectReport(user, projectIdentifier, startDate, endDate
   }
 
   if ((!tasks || tasks.length === 0) && lastErr) {
-    // No variant succeeded and we saw schema errors — throw the last schema error
     throw lastErr;
   }
 
@@ -167,13 +166,10 @@ async function generateProjectReport(user, projectIdentifier, startDate, endDate
     dueDate: (t.dueDate && String(t.dueDate).trim()) || (t.createdDate && String(t.createdDate).trim()) || endDate || ''
   }));
 
-  // Compute total hours
   const totalHoursLogged = tasksOut.reduce((s, t) => s + (Number(t.hoursLogged) || 0), 0);
 
-  // Productivity score: simple metric = completed / total * 100
   const productivityScore = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
-  // Status distribution
   const statusDistribution = { notStarted: 0, inProgress: 0, completed: 0 };
   for (const t of tasksOut) {
     const s = (t.status || '').toLowerCase();
@@ -182,24 +178,27 @@ async function generateProjectReport(user, projectIdentifier, startDate, endDate
     else statusDistribution.notStarted += 1;
   }
 
-  // Try aggregating user productivity from taskassignments + timelogs when possible
   let userProductivity = [];
   try {
-    const userAggSql = `SELECT u._id as userId, u.name as userName,
+    const userAggSql = (function() {
+      const tl = tlCol ? `SUM(tl.${tlCol})` : null;
+      const hoursPart = tl ? `COALESCE(${tl}, SUM(t.total_duration), 0) as hoursLogged` : `COALESCE(SUM(t.total_duration), 0) as hoursLogged`;
+      return `SELECT u._id as userId, u.name as userName,
         SUM(CASE WHEN LOWER(t.status) = 'completed' THEN 1 ELSE 0 END) as tasksCompleted,
-        COALESCE(SUM(tl.hours), SUM(t.total_duration), 0) as hoursLogged
+        ${hoursPart}
       FROM taskassignments ta
       JOIN users u ON ta.user_Id = u._id
       JOIN tasks t ON ta.task_Id = t.id
-      LEFT JOIN timelogs tl ON tl.task_id = t.id
+      ${tlCol ? 'LEFT JOIN timelogs tl ON tl.task_id = t.id' : ''}
       WHERE t.project_id = ? AND ((t.taskDate BETWEEN ? AND ?) OR (t.createdAt BETWEEN ? AND ?))
       GROUP BY u._id, u.name`;
+    })();
     const rows = await q(userAggSql, [project.id, start, end, start, end]);
     if (rows && rows.length > 0) {
       userProductivity = rows.map(r => ({ userId: r.userId || null, userName: r.userName || null, tasksCompleted: Number(r.tasksCompleted) || 0, hoursLogged: Number(r.hoursLogged) || 0 }));
     }
   } catch (e) {
-    // If user aggregation fails (missing tables/columns), fallback to deriving from tasksOut by name
+
     logger.warn('User productivity aggregation failed, falling back to names', { err: e && e.message });
     const map = Object.create(null);
     for (const t of tasksOut) {
@@ -210,7 +209,7 @@ async function generateProjectReport(user, projectIdentifier, startDate, endDate
         if ((t.status || '').toLowerCase() === 'completed') map[n].tasksCompleted += 1;
       }
     }
-    // Try to map names to real user IDs when possible
+
     const entries = Object.keys(map).map(k => map[k]);
     for (const ent of entries) {
       try {

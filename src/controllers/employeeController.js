@@ -445,9 +445,7 @@ getMyTasks: async (req, res) => {
     const lockSummary = {
       total_locked: tasks.filter(t => t.is_locked).length,
       has_pending_requests: Object.keys(lockStatuses).length > 0
-    };
-
-    // compute metrics
+    };
     const metrics = {
       totalTasks: tasks.length,
       completedTasks: tasks.filter(t => (t.status || '').toString().toUpperCase() === 'COMPLETED').length,

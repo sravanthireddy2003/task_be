@@ -6,10 +6,7 @@ const crypto = require('crypto');
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const ruleEngine = require(__root + 'middleware/ruleEngine');
 const RULES = require(__root + 'rules/ruleCodes');
-/*
-  Rule codes used in this router:
-  - SUBTASK_CREATE, SUBTASK_VIEW, SUBTASK_UPDATE, SUBTASK_DELETE
-*/
+
 require('dotenv').config();
 
 function q(sql, params = []) {
@@ -27,8 +24,7 @@ async function hasColumn(table, column) {
   }
 }
 
-// ==================== CREATE SUBTASK ====================
-// POST /api/subtasks
+
 router.post('/', ruleEngine(RULES.SUBTASK_CREATE), requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const { taskId, title, description, priority = 'Medium', assignedTo, estimatedHours } = req.body;
@@ -37,7 +33,6 @@ router.post('/', ruleEngine(RULES.SUBTASK_CREATE), requireRole(['Admin', 'Manage
       return res.status(400).json({ success: false, message: 'taskId and title are required' });
     }
 
-    // Verify parent task exists and get its project/department
     const task = await q('SELECT * FROM tasks WHERE id = ? OR public_id = ? LIMIT 1', [taskId, taskId]);
     if (!task || task.length === 0) {
       return res.status(404).json({ success: false, message: 'Task not found' });
@@ -47,7 +42,6 @@ router.post('/', ruleEngine(RULES.SUBTASK_CREATE), requireRole(['Admin', 'Manage
     const publicId = crypto.randomBytes(8).toString('hex');
     const createdBy = req.user._id;
 
-    // Ensure estimated_hours column exists (best-effort)
     if (!await hasColumn('subtasks', 'estimated_hours')) {
       try {
         await q('ALTER TABLE subtasks ADD COLUMN estimated_hours DECIMAL(8,2) NULL');
@@ -55,7 +49,6 @@ router.post('/', ruleEngine(RULES.SUBTASK_CREATE), requireRole(['Admin', 'Manage
       }
     }
 
-    // Build INSERT dynamically to avoid referencing missing columns (status/estimated_hours)
     const estimatedExists = await hasColumn('subtasks', 'estimated_hours');
     const statusExists = await hasColumn('subtasks', 'status');
 
@@ -65,10 +58,9 @@ router.post('/', ruleEngine(RULES.SUBTASK_CREATE), requireRole(['Admin', 'Manage
 
     if (estimatedExists) { cols.push('estimated_hours'); placeholders.push('?'); params.push(estimatedHours || null); }
     if (statusExists) { cols.push('status'); placeholders.push('?'); params.push('Open'); }
-    // created_by is expected
+
     cols.push('created_by'); placeholders.push('?'); params.push(createdBy);
 
-    // Deduplicate columns/params
     const seen = new Set();
     const dcols = [];
     const dparams = [];
@@ -80,7 +72,6 @@ router.post('/', ruleEngine(RULES.SUBTASK_CREATE), requireRole(['Admin', 'Manage
     const result = await q(subtaskSql, dparams);
     const subtaskId = result.insertId;
 
-    // Log activity
     await q('INSERT INTO task_activity_logs (task_id, user_id, action, details) VALUES (?, ?, ?, ?)', [parentTask.id, createdBy, 'subtask_created', `Subtask "${title}" created`]);
 
     const subtask = await q('SELECT * FROM subtasks WHERE id = ? LIMIT 1', [subtaskId]);
@@ -97,8 +88,7 @@ router.post('/', ruleEngine(RULES.SUBTASK_CREATE), requireRole(['Admin', 'Manage
   }
 });
 
-// ==================== GET SUBTASKS FOR TASK ====================
-// GET /api/tasks/:taskId/subtasks
+
 router.get('/task/:taskId', async (req, res) => {
   try {
     const { taskId } = req.params;
@@ -108,13 +98,25 @@ router.get('/task/:taskId', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Task not found' });
     }
 
-    const subtasks = await q(`
-      SELECT st.*, u.name as assigned_user_name, u.public_id as assigned_user_id
-      FROM subtasks st
-      LEFT JOIN users u ON st.assigned_to = u._id
-      WHERE st.task_id = ?
-      ORDER BY st.created_at DESC
-    `, [task[0].id]);
+    const hasAssignedTo = await hasColumn('subtasks', 'assigned_to');
+    
+    let subtasks;
+    if (hasAssignedTo) {
+      subtasks = await q(`
+        SELECT st.*, u.name as assigned_user_name, u.public_id as assigned_user_id
+        FROM subtasks st
+        LEFT JOIN users u ON st.assigned_to = u._id
+        WHERE st.task_id = ?
+        ORDER BY st.created_at DESC
+      `, [task[0].id]);
+    } else {
+      subtasks = await q(`
+        SELECT st.*
+        FROM subtasks st
+        WHERE st.task_id = ?
+        ORDER BY st.created_at DESC
+      `, [task[0].id]);
+    }
 
     const enriched = subtasks.map(st => ({
       ...st,
@@ -129,8 +131,7 @@ router.get('/task/:taskId', async (req, res) => {
   }
 });
 
-// ==================== GET SUBTASK BY ID ====================
-// GET /api/subtasks/:id
+
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -141,7 +142,13 @@ router.get('/:id', async (req, res) => {
     }
 
     const st = subtask[0];
-    const assignedUser = st.assigned_to ? await q('SELECT _id as id, public_id, name FROM users WHERE _id = ? LIMIT 1', [st.assigned_to]) : [];
+
+    const hasAssignedTo = await hasColumn('subtasks', 'assigned_to');
+    let assignedUser = [];
+    
+    if (hasAssignedTo && st.assigned_to) {
+      assignedUser = await q('SELECT _id as id, public_id, name FROM users WHERE _id = ? LIMIT 1', [st.assigned_to]);
+    }
 
     res.json({
       success: true,
@@ -157,8 +164,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// ==================== UPDATE SUBTASK ====================
-// PUT /api/subtasks/:id
+
 router.put('/:id', ruleEngine(RULES.SUBTASK_UPDATE), requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const { id } = req.params;
@@ -189,7 +195,6 @@ router.put('/:id', ruleEngine(RULES.SUBTASK_UPDATE), requireRole(['Admin', 'Mana
     const sql = `UPDATE subtasks SET ${updateFields.join(', ')} WHERE id = ?`;
     await q(sql, params);
 
-    // Log activity
     await q('INSERT INTO task_activity_logs (task_id, user_id, action, details) VALUES (?, ?, ?, ?)', [subtask[0].task_id, req.user._id, 'subtask_updated', `Subtask updated: ${updateFields.join(', ')}`]);
 
     const updated = await q('SELECT * FROM subtasks WHERE id = ? LIMIT 1', [subtaskId]);
@@ -206,8 +211,7 @@ router.put('/:id', ruleEngine(RULES.SUBTASK_UPDATE), requireRole(['Admin', 'Mana
   }
 });
 
-// ==================== DELETE SUBTASK ====================
-// DELETE /api/subtasks/:id
+
 router.delete('/:id', ruleEngine(RULES.SUBTASK_DELETE), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { id } = req.params;

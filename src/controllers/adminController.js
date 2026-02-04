@@ -64,8 +64,7 @@ async function fetchClientDocuments(clientIds = []) {
   const rows = await q(
     'SELECT id, client_id, file_url, file_name, file_type, uploaded_at FROM client_documents WHERE client_id IN (?) AND is_active = 1 ORDER BY uploaded_at DESC',
     [clientIds]
-  );
-  // convert stored uploads-relative paths to public URLs using configured base
+  );
   const base = env.BASE_URL || env.FRONTEND_URL;
   return (rows || []).reduce((memo, row) => {
     if (!row || row.client_id === undefined || row.client_id === null) return memo;
@@ -80,9 +79,7 @@ async function fetchClientDocuments(clientIds = []) {
     memo[row.client_id].push(row);
     return memo;
   }, {});
-}
-
-// helper to get column data type (e.g. 'int','varchar') at file scope
+}
 function getColumnType(table, column) {
   return new Promise((resolve) => {
     db.query("SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?", [table, column], (err, rows) => {
@@ -90,9 +87,7 @@ function getColumnType(table, column) {
       return resolve(rows[0].DATA_TYPE);
     });
   });
-}
-
-// retries with only columns that actually exist in the table. Calls callback(err, rows).
+}
 function safeSelect(table, baseCols, optionalCols=[], whereClause='', params=[], cb) {
   (async () => {
     try {
@@ -118,9 +113,7 @@ function safeSelect(table, baseCols, optionalCols=[], whereClause='', params=[],
 module.exports = {
   getDashboard: async (req, res) => {
     try {
-      const q = (sql, params=[]) => new Promise((r, rej) => db.query(sql, params, (e, rows) => e ? rej(e) : r(rows)));
-
-      // Log dashboard viewed
+      const q = (sql, params=[]) => new Promise((r, rej) => db.query(sql, params, (e, rows) => e ? rej(e) : r(rows)));
       const logData = {
         logId: `LOG-${Date.now()}`,
         action: "Dashboard Viewed",
@@ -136,18 +129,13 @@ module.exports = {
         await q("INSERT INTO audit_logs (action, module, performed_by, user_id, tenant_id, ip_address, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)", 
           [logData.action, logData.module, logData.performedBy, logData.userId, logData.tenantId, logData.ipAddress, logData.timestamp]);
       } catch (e) {
-      }
-
-      // Dashboard Metrics
+      }
       const totalClients = (await q("SELECT COUNT(*) as c FROM clientss WHERE isDeleted IS NULL OR isDeleted != 1"))[0].c || 0;
       const totalTasks = (await q("SELECT COUNT(*) as c FROM tasks WHERE LOWER(status) NOT IN ('closed')"))[0].c || 0;
-      const pendingTasks = (await q("SELECT COUNT(*) as c FROM tasks WHERE LOWER(status) IN ('pending', 'not started') AND LOWER(status) != 'closed'"))[0].c || 0;
-      // use `taskDate` as the due date field (some schemas use taskDate instead of due_date)
+      const pendingTasks = (await q("SELECT COUNT(*) as c FROM tasks WHERE LOWER(status) IN ('pending', 'not started') AND LOWER(status) != 'closed'"))[0].c || 0;
       const overdueTasks = (await q("SELECT COUNT(*) as c FROM tasks WHERE taskDate < CURDATE() AND LOWER(status) NOT IN ('completed', 'closed')"))[0].c || 0;
       const completedToday = (await q("SELECT COUNT(*) as c FROM tasks WHERE DATE(completed_at) = CURDATE() AND LOWER(status) = 'completed'"))[0].c || 0;
-      const activeProjects = (await q("SELECT COUNT(DISTINCT p.id) as c FROM projects p INNER JOIN tasks t ON p.id = t.project_id WHERE p.is_active = 1 AND DATE(t.taskDate) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND LOWER(t.status) != 'closed'"))[0].c || 0;
-
-      // Task Distribution
+      const activeProjects = (await q("SELECT COUNT(DISTINCT p.id) as c FROM projects p INNER JOIN tasks t ON p.id = t.project_id WHERE p.is_active = 1 AND DATE(t.taskDate) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND LOWER(t.status) != 'closed'"))[0].c || 0;
       const taskStatusRows = await q("SELECT LOWER(status) as s, COUNT(*) as c FROM tasks WHERE LOWER(status) != 'closed' GROUP BY status");
       const total = taskStatusRows.reduce((sum, r) => sum + r.c, 0);
       const taskDistribution = [
@@ -155,12 +143,8 @@ module.exports = {
         { name: "In Progress", value: total > 0 ? Math.round((taskStatusRows.find(r => r.s === 'in progress')?.c || 0) / total * 100) : 0, color: "#3B82F6" },
         { name: "Not Started", value: total > 0 ? Math.round((taskStatusRows.find(r => r.s === 'not started')?.c || 0) / total * 100) : 0, color: "#F59E0B" },
         { name: "Overdue", value: total > 0 ? Math.round(overdueTasks / total * 100) : 0, color: "#EF4444" }
-      ];
-
-      // Weekly Trends (last 7 days) - with actual task details
-      const weeklyRows = await q("SELECT DATE(createdAt) as day, COUNT(*) as tasks FROM tasks WHERE createdAt >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) AND LOWER(status) != 'closed' GROUP BY DATE(createdAt) ORDER BY day");
-
-      // Get actual task details for each day
+      ];
+      const weeklyRows = await q("SELECT DATE(createdAt) as day, COUNT(*) as tasks FROM tasks WHERE createdAt >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) AND LOWER(status) != 'closed' GROUP BY DATE(createdAt) ORDER BY day");
       const taskDetailsRows = await q(`
         SELECT
           DATE(createdAt) as day,
@@ -180,9 +164,7 @@ module.exports = {
         date.setDate(date.getDate() - (6 - i));
         const dayStr = date.toISOString().split('T')[0];
         const row = weeklyRows.find(r => r.day === dayStr);
-        const tasks = row ? row.tasks : 0;
-
-        // Get tasks for this specific day
+        const tasks = row ? row.tasks : 0;
         const dayTasks = taskDetailsRows.filter(t => t.day === dayStr).map(t => ({
           id: t.id,
           title: t.title,
@@ -207,9 +189,7 @@ module.exports = {
           status,
           tasksList: dayTasks
         };
-      });
-
-      // Top Employees
+      });
       const employeeRows = await q(`
         SELECT u.name, COUNT(CASE WHEN LOWER(t.status) = 'completed' THEN 1 END) as completed, COUNT(CASE WHEN LOWER(t.status) = 'in progress' THEN 1 END) as inProgress
         FROM users u
@@ -220,9 +200,7 @@ module.exports = {
         ORDER BY completed DESC, inProgress DESC
         LIMIT 4
       `);
-      const topEmployees = employeeRows.map(r => ({ name: r.name, completed: r.completed, inProgress: r.inProgress }));
-
-      // Client Workload
+      const topEmployees = employeeRows.map(r => ({ name: r.name, completed: r.completed, inProgress: r.inProgress }));
       const clientRows = await q(`
         SELECT c.name as client, COUNT(t.id) as tasks
         FROM clientss c
@@ -234,9 +212,7 @@ module.exports = {
         LIMIT 4
       `);
       const maxTasks = clientRows.length ? Math.max(...clientRows.map(r => r.tasks)) : 1;
-      const clientWorkload = clientRows.map(r => ({ client: r.client, workload: maxTasks ? r.tasks / maxTasks : 0 }));
-
-      // Recent Activities
+      const clientWorkload = clientRows.map(r => ({ client: r.client, workload: maxTasks ? r.tasks / maxTasks : 0 }));
       const recentTasks = await q("SELECT id, title, status, priority, taskDate FROM tasks WHERE LOWER(status) != 'closed' ORDER BY createdAt DESC LIMIT 2");
       const recentActivities = recentTasks.map(t => ({
         id: t.id,
@@ -244,9 +220,7 @@ module.exports = {
         status: t.status,
         priority: t.priority || 'Medium',
         dueDate: t.taskDate
-      }));
-
-      // Active Projects
+      }));
       const projectRows = await q(`
         SELECT p.id, p.name, COUNT(t.id) as tasks, c.name as client
         FROM projects p
@@ -420,8 +394,7 @@ module.exports = {
               if (uErr || !Array.isArray(uRows)) return res.json({ success: true, data: outRows });
               const mapId = {};
               const mapName = {};
-              uRows.forEach(u => {
-                // map by internal id and public_id so we can match whichever is stored on departments
+              uRows.forEach(u => {
                 if (u._id) mapId[String(u._id)] = u.public_id || String(u._id);
                 if (u.public_id) mapId[String(u.public_id)] = u.public_id || String(u._id);
                 if (u._id) mapName[String(u._id)] = u.name || null;
@@ -449,8 +422,7 @@ module.exports = {
           const whereParts = colNames.map(n => `${n} = ?`).join(' OR ');
           const params = colNames.map(() => resolvedUserId);
           const hasPublic2 = colNames.includes('public_id');
-          const optional2 = [].concat(hasPublic2 ? ['public_id'] : []).concat(['manager_id','head_id']);
-          // include created_at when selecting filtered rows as well
+          const optional2 = [].concat(hasPublic2 ? ['public_id'] : []).concat(['manager_id','head_id']);
           safeSelect('departments', ['id','name','created_at'], optional2, `WHERE ${whereParts}`, params, (fErr, fRows) => {
             if (fErr) return finishWith(rows);
             return finishWith(fRows);
@@ -471,14 +443,11 @@ module.exports = {
     }
 
     runQuery(null);
-  },
-
-  // Create a new department (Admin)
+  },
   createDepartment: async (req, res) => {
     try {
       const { name, managerId, headId } = req.body;
-      if (!name) return res.status(400).json({ success: false, message: 'Department name required' });
-      // managerId is required
+      if (!name) return res.status(400).json({ success: false, message: 'Department name required' });
       if (!managerId) return res.status(400).json({ success: false, message: 'managerId is required' });
 
       const resolveUser = (rawId) => new Promise((resolve, reject) => {
@@ -489,17 +458,13 @@ module.exports = {
           if (!rows || rows.length === 0) return resolve(null);
           return resolve(rows[0]._id);
         });
-      });
-
-      // helper to get column data type (e.g. 'int','varchar')
+      });
       const getColumnType = (table, column) => new Promise((resolve) => {
         db.query("SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?", [table, column], (err, rows) => {
           if (err || !Array.isArray(rows) || rows.length === 0) return resolve(null);
           return resolve(rows[0].DATA_TYPE);
         });
-      });
-
-      // detect which optional columns exist before building INSERT
+      });
       const hasManager = await tableHasColumn('departments', 'manager_id');
       const hasHead = await tableHasColumn('departments', 'head_id');
       const hasCreatedBy = await tableHasColumn('departments', 'created_by');
@@ -595,8 +560,7 @@ module.exports = {
               outRow.head_id = row.head_id ? (mapId[String(row.head_id)] || String(row.head_id)) : null;
               return res.status(201).json({ success: true, data: outRow });
             });
-          } else {
-            // fallback to resolving names from users
+          } else {
             const uids = [];
             if (row.manager_id) uids.push(row.manager_id);
             if (row.head_id) uids.push(row.head_id);
@@ -629,9 +593,7 @@ module.exports = {
       logger.error('createDepartment catch', e && e.message);
       return res.status(500).json({ success: false, error: e.message });
     }
-  },
-
-  // Update an existing department
+  },
   updateDepartment: async (req, res) => {
     try {
       let { id } = req.params;
@@ -728,9 +690,7 @@ module.exports = {
       logger.error('updateDepartment catch', e && e.message);
       return res.status(500).json({ success: false, error: e.message });
     }
-  },
-
-  // Delete a department
+  },
   deleteDepartment: (req, res) => {
     let { id } = req.params;
     if (!id) return res.status(400).json({ success: false, message: 'Department id required' });
@@ -774,13 +734,11 @@ module.exports = {
 
     const runQuery = async (resolvedUserId) => {
       safeSelect('projects', ['id','name','description','status','manager_id'], ['tenant_id'], '', [], (err, rows) => {
-        if (err) return res.status(500).json({ success: false, error: err.message });
-        // map manager_id to public_id when possible
+        if (err) return res.status(500).json({ success: false, error: err.message });
         try {
           const managerIds = new Set();
           rows.forEach(r => { if (r.manager_id) managerIds.add(r.manager_id); });
-            if (managerIds.size === 0) {
-              // optionally filter by resolvedUserId
+            if (managerIds.size === 0) {
               if (resolvedUserId) {
                 const filtered = rows.filter(r => String(r.manager_id) === String(resolvedUserId));
                 return res.json({ success: true, data: filtered });
@@ -850,8 +808,7 @@ module.exports = {
               if (Array.isArray(arr)) { r.assigned_to = arr.map(id => map[id] || id); return r; }
             } catch (e) {
               const parts = String(r.assigned_to).split(',').map(s=>s.trim()).filter(Boolean);
-              r.assigned_to = parts.map(id => map[id] || id);
-              // enrich time/summary fields
+              r.assigned_to = parts.map(id => map[id] || id);
               try {
                 const now = new Date();
                 const taskDate = r.taskDate ? new Date(r.taskDate) : null;
@@ -865,10 +822,9 @@ module.exports = {
                 r.total_time_hours = Number((totalSecs / 3600).toFixed(2));
                 r.total_time_hhmmss = `${hh}:${mm}:${ss}`;
                 r.summary = taskDate ? { dueStatus: taskDate < now ? 'Overdue' : 'On Time', dueDate: taskDate.toISOString() } : {};
-              } catch (er) { /* silent */ }
+              } catch (er) {  }
               return r;
-            }
-            // normal path: enrich as well
+            }
             try {
               const now = new Date();
               const taskDate = r.taskDate ? new Date(r.taskDate) : null;
@@ -882,10 +838,9 @@ module.exports = {
               r.total_time_hours = Number((totalSecs / 3600).toFixed(2));
               r.total_time_hhmmss = `${hh}:${mm}:${ss}`;
               r.summary = taskDate ? { dueStatus: taskDate < now ? 'Overdue' : 'On Time', dueDate: taskDate.toISOString() } : {};
-            } catch (er) { /* silent */ }
+            } catch (er) {  }
             return r;
-          });
-          // Attach checklist and activityTimeline similar to manager/employee responses
+          });
           try {
             const taskIds = out.map(r => r.id).filter(Boolean);
             if (!taskIds.length) return res.json({ success: true, data: out });
@@ -956,9 +911,7 @@ module.exports = {
         return res.json({ success: true, data: rows });
       }
     });
-  },
-
-  // Modules CRUD (file-backed simple store)
+  },
   getModules: (req, res) => {
     const modules = readModules();
     return res.json({ success: true, data: modules });
@@ -1026,8 +979,7 @@ module.exports = {
     return res.json({ success: true, data: removed });
   },
 
-  getSettings: (req, res) => {
-    // Return current settings
+  getSettings: (req, res) => {
     const settings = {
       version: "1.0.0",
       general: {
@@ -1059,9 +1011,7 @@ module.exports = {
   },
 
   putSettings: (req, res) => {
-    const updates = req.body;
-    // In a real app, validate and save to DB or config
-    // For now, just return success with updated data
+    const updates = req.body;
     const current = {
       version: "1.0.0",
       general: {
@@ -1088,8 +1038,7 @@ module.exports = {
         public_key: "pk_live_123456",
         secret_key: "sk_live_123456"
       }
-    };
-    // Merge updates
+    };
     Object.keys(updates).forEach(key => {
       if (current[key]) {
         Object.assign(current[key], updates[key]);

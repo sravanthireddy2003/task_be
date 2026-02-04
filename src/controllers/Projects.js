@@ -12,24 +12,20 @@ const ruleEngine = require(__root + 'middleware/ruleEngine');
 const RULES = require(__root + 'rules/ruleCodes');
 const { normalizeProjectStatus } = require(__root + 'utils/projectStatus');
 
-// Helper function to create standardized project status info (matches workflow service logic)
 function createProjectStatusInfo(projectStatus, isLocked) {
   const raw = projectStatus == null ? null : String(projectStatus);
   const upper = raw ? raw.toUpperCase() : '';
   const locked = isLocked === 1 || isLocked === true;
-  
-  // For PENDING closure requests, the DB holds "PENDING_FINAL_APPROVAL" but we need a clear UI status
+
   const isPendingClosure = upper === 'PENDING_FINAL_APPROVAL';
   const isProjectClosed = upper === 'CLOSED' || (locked && !isPendingClosure);
   
   return {
-    // The raw database value (what's actually in projects.status)
+
     raw: raw,
-    
-    // The display-friendly status for UI (ACTIVE, PENDING_CLOSURE, CLOSED)
+
     display: isPendingClosure ? 'PENDING_CLOSURE' : (isProjectClosed ? 'CLOSED' : raw || 'ACTIVE'),
-    
-    // Boolean flags for UI logic
+
     is_closed: isProjectClosed,
     is_pending_closure: isPendingClosure,
     is_locked: locked,
@@ -38,18 +34,13 @@ function createProjectStatusInfo(projectStatus, isLocked) {
     can_request_closure: !locked && !isPendingClosure && upper === 'ACTIVE'
   };
 }
-/*
-  Rule codes used in this router:
-  - PROJECT_CREATE, PROJECT_VIEW, PROJECT_UPDATE, PROJECT_DELETE
-  Note: Department add/remove mapped to PROJECT_UPDATE for CRUD mapping.
-*/
+
 const NotificationService = require('../services/notificationService');
 require('dotenv').config();
 let env;
 try { env = require(__root + 'config/env'); } catch (e) { env = require('../config/env'); }
 router.use(requireAuth);
 
-// Configure multer
 const uploadsRoot = path.join(__dirname, '..', 'uploads');
 if (!fs.existsSync(uploadsRoot)) fs.mkdirSync(uploadsRoot, { recursive: true });
 const storage = multer.diskStorage({
@@ -109,7 +100,7 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
     let deptIdMap = {};
     let departmentNames = [];
     if (Array.isArray(deptInput) && deptInput.length > 0) {
-      // split numeric ids and public_ids
+
       const numeric = deptInput.filter(d => /^\d+$/.test(String(d))).map(Number);
       const publicIds = deptInput.filter(d => !/^\d+$/.test(String(d)));
  
@@ -152,8 +143,7 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
       pmId = pmRows[0]._id;
       projectManagerInfo = pmRows[0]; // Store PM details for email
     }
- 
-    // Create project
+
     const projectSql = `
       INSERT INTO projects (public_id, client_id, project_manager_id, name, description, priority, start_date, end_date, budget, status, created_by)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Planning', ?)
@@ -162,8 +152,7 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
  
     const result = await q(projectSql, projectParams);
     const projectId = result.insertId;
- 
-    // Map departments to project
+
     if (Array.isArray(deptInput) && deptInput.length > 0) {
       for (const di of deptInput) {
         const deptId = deptIdMap[String(di)];
@@ -172,8 +161,7 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
         }
       }
     }
- 
-    // Fetch created project with departments
+
     const project = await q('SELECT * FROM projects WHERE id = ? LIMIT 1', [projectId]);
     const depts = await q('SELECT pd.department_id, d.name, d.public_id FROM project_departments pd JOIN departments d ON pd.department_id = d.id WHERE pd.project_id = ?', [projectId]);
  
@@ -222,7 +210,6 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
  
     logger.info('Project emails sent:', emailResults);
 
-    // Send notification
     (async () => {
       try {
         await NotificationService.createAndSendToRoles(['Admin', 'Manager'], 'Project Created', `New project "${projectName}" has been created`, 'PROJECT_CREATED', 'project', projectId, req.user ? req.user.tenant_id : null);
@@ -231,7 +218,6 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
       }
     })();
 
-    // Handle uploaded documents
     const attachedDocuments = [];
     if (req.files && Array.isArray(req.files) && req.files.length > 0) {
       for (const file of req.files) {
@@ -277,7 +263,6 @@ router.get('/', async (req, res) => {
         rows = [];
       }
 
-      // Normalize camelCase response expected by frontend
       const out = (rows || []).map(r => ({ projectId: r.projectId, projectName: r.projectName }));
       return res.json(out);
     }
@@ -285,10 +270,10 @@ router.get('/', async (req, res) => {
     let projects;
 
     if (req.user.role === 'Admin') {
-      // Admins see all projects (no soft-delete filtering)
+
       projects = await q('SELECT * FROM projects ORDER BY created_at DESC');
     } else if (req.user.role === 'Manager') {
-      // Managers see projects they manage + projects from their departments
+
       projects = await q(`
         SELECT DISTINCT p.* FROM projects p
         LEFT JOIN project_departments pd ON p.id = pd.project_id
@@ -300,7 +285,7 @@ router.get('/', async (req, res) => {
         ORDER BY p.created_at DESC
       `, [req.user._id, req.user._id]);
     } else if (req.user.role === 'Employee') {
-      // Employees see only projects where they have assigned tasks
+
       projects = await q(`
         SELECT DISTINCT p.* FROM projects p
         JOIN tasks t ON p.id = t.project_id
@@ -311,8 +296,7 @@ router.get('/', async (req, res) => {
     } else {
       projects = [];
     }
- 
-    // Enrich with department data
+
     const clientHasPublic = await hasColumn('clientss', 'public_id');
     const enriched = await Promise.all(projects.map(async (p) => {
       const depts = await q(`
@@ -334,7 +318,7 @@ router.get('/', async (req, res) => {
         created_at: p.created_at,
         departments: depts.map(d => ({ public_id: d.public_id, name: d.name }))
       };
-      // attach client info
+
       try {
         const clientInfo = clientHasPublic ? await q('SELECT public_id, name FROM clientss WHERE id = ? LIMIT 1', [p.client_id]) : await q('SELECT id as public_id, name FROM clientss WHERE id = ? LIMIT 1', [p.client_id]);
         if (clientInfo && clientInfo.length > 0) out.client = { public_id: clientInfo[0].public_id, name: clientInfo[0].name };
@@ -353,8 +337,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ==================== GET STATS ====================
-// GET /api/projects/stats
+
 router.get('/stats', async (req, res) => {
   try {
     let projectIds = [];
@@ -362,11 +345,11 @@ router.get('/stats', async (req, res) => {
     let subtaskIds = [];
 
     if (req.user.role === 'Admin') {
-      // All projects
+
       const projects = await q('SELECT id FROM projects');
       projectIds = projects.map(p => p.id);
     } else if (req.user.role === 'Manager') {
-      // Projects managed by user or from user's departments
+
       const projects = await q(`
         SELECT DISTINCT p.id FROM projects p
         LEFT JOIN project_departments pd ON p.id = pd.project_id
@@ -375,7 +358,7 @@ router.get('/stats', async (req, res) => {
       `, [req.user._id, req.user._id]);
       projectIds = projects.map(p => p.id);
     } else if (req.user.role === 'Employee') {
-      // Projects where employee has assigned tasks
+
       const projects = await q(`
         SELECT DISTINCT p.id FROM projects p
         JOIN tasks t ON p.id = t.project_id
@@ -396,22 +379,19 @@ router.get('/stats', async (req, res) => {
       });
     }
 
-    // Get task IDs
     if (req.user.role === 'Employee') {
-      // Only tasks assigned to employee
+
       const tasks = projectIds.length > 0 ? await q('SELECT t.id FROM tasks t JOIN taskassignments ta ON t.id = ta.task_id WHERE ta.user_id = ? AND t.project_id IN (?)', [req.user._id, projectIds]) : [];
       taskIds = tasks.map(t => t.id);
     } else {
-      // All tasks in projects
+
       const tasks = projectIds.length > 0 ? await q('SELECT id FROM tasks WHERE project_id IN (?)', [projectIds]) : [];
       taskIds = tasks.map(t => t.id);
     }
 
-    // Get subtask IDs
     const subtasks = taskIds.length > 0 ? await q('SELECT id FROM subtasks WHERE task_id IN (?)', [taskIds]) : [];
     subtaskIds = subtasks.map(s => s.id);
 
-    // Projects stats
     const projectStats = projectIds.length > 0 ? await q('SELECT status, COUNT(*) as count FROM projects WHERE id IN (?) GROUP BY status', [projectIds]) : [];
     const projectsByStatus = {};
     let totalProjects = 0;
@@ -421,7 +401,6 @@ router.get('/stats', async (req, res) => {
       totalProjects += ps.count;
     });
 
-    // Tasks stats
     const taskStats = taskIds.length > 0 ? await q('SELECT stage, COUNT(*) as count FROM tasks WHERE id IN (?) GROUP BY stage', [taskIds]) : [];
     const tasksByStage = {};
     let totalTasks = 0;
@@ -430,7 +409,6 @@ router.get('/stats', async (req, res) => {
       totalTasks += ts.count;
     });
 
-    // Subtasks stats
     const subtaskStats = subtaskIds.length > 0 ? await q('SELECT status, COUNT(*) as count FROM subtasks WHERE id IN (?) GROUP BY status', [subtaskIds]) : [];
     const subtasksByStatus = {};
     let totalSubtasks = 0;
@@ -439,7 +417,6 @@ router.get('/stats', async (req, res) => {
       totalSubtasks += ss.count;
     });
 
-    // Total hours from tasks
     const hoursResult = taskIds.length > 0 ? await q('SELECT SUM(total_duration) as totalHours FROM tasks WHERE id IN (?)', [taskIds]) : [{ totalHours: 0 }];
     const totalHours = hoursResult[0].totalHours || 0;
 
@@ -467,8 +444,7 @@ router.get('/stats', async (req, res) => {
   }
 });
 
-// ==================== GET PROJECT BY ID ====================
-// GET /api/projects/:id
+
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -515,13 +491,12 @@ router.get('/:id', async (req, res) => {
     res.status(500).json({ success: false, error: e.message });
   }
 });
- 
-// ==================== UPDATE PROJECT ====================
-// PUT /api/projects/:id
+
+
 router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { id } = req.params;
-    // ✅ FIXED: Added ALL missing fields
+
     const {
       name,
       description,
@@ -547,8 +522,7 @@ router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Mana
     const projectId = project[0].id;
     const updateFields = [];
     const params = [];
- 
-    // ✅ FIXED #1: CLIENT HANDLING (moved BEFORE main update)
+
     if (clientPublicId !== undefined) {
       const clientHasPublic = await hasColumn('clientss', 'public_id');
       let client;
@@ -567,8 +541,7 @@ router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Mana
       updateFields.push('client_id = ?');
       params.push(client[0].id);
     }
- 
-    // ✅ FIXED #2: MANAGER HANDLING (moved BEFORE main update + added projectManagerPublicId)
+
     if (projectManagerPublicId || projectManagerId || project_manager_id) {
       const pmPublic = projectManagerPublicId || projectManagerId || project_manager_id;
       const pmRows = await q('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [pmPublic]);
@@ -578,8 +551,7 @@ router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Mana
       updateFields.push('project_manager_id = ?');
       params.push(pmRows[0]._id);
     }
- 
-    // ✅ Regular field updates
+
     if (name) { updateFields.push('name = ?'); params.push(name); }
     if (description !== undefined) { updateFields.push('description = ?'); params.push(description); }
     if (priority) { updateFields.push('priority = ?'); params.push(priority); }
@@ -587,15 +559,13 @@ router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Mana
     if (endDate || end_date) { updateFields.push('end_date = ?'); params.push(endDate || end_date); }
     if (budget !== undefined) { updateFields.push('budget = ?'); params.push(budget); }
     if (status) { updateFields.push('status = ?'); params.push(status); }
- 
-    // ✅ FIXED #3: Main update (now includes client + manager)
+
     if (updateFields.length > 0) {
       params.push(projectId);
       const sql = `UPDATE projects SET ${updateFields.join(', ')}, updated_at = NOW() WHERE id = ?`;
       await q(sql, params);
     }
- 
-    // ✅ Departments (already perfect)
+
     if (Array.isArray(department_ids) && department_ids.length > 0) {
       await q('DELETE FROM project_departments WHERE project_id = ?', [projectId]);
       const placeholders = department_ids.map(() => '?').join(',');
@@ -622,8 +592,7 @@ router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Mana
         }
       }
     }
- 
-    // ✅ Response (already perfect)
+
     const updated = await q('SELECT * FROM projects WHERE id = ? LIMIT 1', [projectId]);
     const depts = await q(`
       SELECT pd.department_id, d.name, d.public_id
@@ -642,7 +611,7 @@ router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Mana
       const pmRows = await q('SELECT public_id, name FROM users WHERE _id = ? LIMIT 1', [updated[0].project_manager_id]);
       if (pmRows && pmRows.length > 0) out.project_manager = { id: pmRows[0].public_id, name: pmRows[0].name };
     }
-    // Send notification
+
     (async () => {
       try {
         await NotificationService.createAndSendToRoles(['Admin', 'Manager'], 'Project Updated', `Project "${name || updated[0].name}" has been updated`, 'PROJECT_UPDATED', 'project', projectId, req.user ? req.user.tenant_id : null);
@@ -656,9 +625,8 @@ router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Mana
     res.status(500).json({ success: false, error: e.message });
   }
 });
- 
-// ==================== ADD DEPARTMENTS TO PROJECT ====================
-// POST /api/projects/:id/departments
+
+
 router.post('/:id/departments', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { id } = req.params;
@@ -674,9 +642,8 @@ router.post('/:id/departments', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['
     }
  
     const projectId = project[0].id;
- 
-    // Add departments
-    // Convert public_ids to numeric ids
+
+
     const placeholders = department_ids.map(() => '?').join(',');
     const deptQuery = `SELECT id, public_id FROM departments WHERE public_id IN (${placeholders})`;
     const deptRecords = await q(deptQuery, department_ids);
@@ -718,9 +685,8 @@ router.post('/:id/departments', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['
     res.status(500).json({ success: false, error: e.message });
   }
 });
- 
-// ==================== REMOVE DEPARTMENT FROM PROJECT ====================
-// DELETE /api/projects/:id/departments/:deptId
+
+
 router.delete('/:id/departments/:deptId', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { id, deptId } = req.params;
@@ -738,9 +704,8 @@ router.delete('/:id/departments/:deptId', ruleEngine(RULES.PROJECT_UPDATE), requ
     res.status(500).json({ success: false, error: e.message });
   }
 });
- 
-// ==================== DELETE PROJECT ====================
-// DELETE /api/projects/:id
+
+
 router.delete('/:id', ruleEngine(RULES.PROJECT_DELETE), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { id } = req.params;
@@ -751,10 +716,9 @@ router.delete('/:id', ruleEngine(RULES.PROJECT_DELETE), requireRole(['Admin', 'M
     }
  
     const projectId = project[0].id;
- 
-    // Hard delete project and related rows (rely on FK CASCADE where available)
+
     try {
-      // Remove explicit dependent rows where FK may not cascade
+
       await q('DELETE FROM subtasks WHERE project_id = ?', [projectId]).catch(() => {});
       await q('DELETE FROM task_assignments WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)', [projectId]).catch(() => {});
       await q('DELETE FROM tasks WHERE project_id = ?', [projectId]).catch(() => {});
@@ -771,8 +735,7 @@ router.delete('/:id', ruleEngine(RULES.PROJECT_DELETE), requireRole(['Admin', 'M
   }
 });
 
-// ==================== GET PROJECT SUMMARY ====================
-// GET /api/projects/:id/summary
+
 router.get('/:id/summary', async (req, res) => {
   try {
     const { id } = req.params;
@@ -782,7 +745,6 @@ router.get('/:id/summary', async (req, res) => {
     }
     const projectId = project[0].id;
 
-    // Task counts
     const taskStats = await q('SELECT status, COUNT(*) as count FROM tasks WHERE project_id = ? GROUP BY status', [projectId]);
     const tasksByStatus = {};
     let totalTasks = 0;
@@ -791,19 +753,15 @@ router.get('/:id/summary', async (req, res) => {
       totalTasks += ts.count;
     });
 
-    // Completed tasks
     const completedTasks = await q('SELECT COUNT(*) as count FROM tasks WHERE project_id = ? AND status IN (?, ?)', [projectId, 'Completed', 'Review']);
     const completedCount = completedTasks[0].count;
 
-    // In-progress tasks
     const inProgressTasks = await q('SELECT COUNT(*) as count FROM tasks WHERE project_id = ? AND status IN (?, ?, ?)', [projectId, 'In Progress', 'On Hold', 'Review']);
     const inProgressCount = inProgressTasks[0].count;
 
-    // Total hours
     const hoursResult = await q('SELECT SUM(total_duration) as totalHours FROM tasks WHERE project_id = ?', [projectId]);
     const totalHours = hoursResult[0].totalHours || 0;
 
-    // Progress percentage
     const progressPercentage = totalTasks > 0 ? Math.round((completedCount / totalTasks) * 100) : 0;
 
     res.json({
@@ -830,8 +788,7 @@ router.get('/:id/summary', async (req, res) => {
   }
 });
 
-// ==================== GET PROJECT TASKS (KANBAN) ====================
-// GET /api/projects/:id/tasks
+
 router.get('/:id/tasks', async (req, res) => {
   try {
     const { id } = req.params;
@@ -845,7 +802,7 @@ router.get('/:id/tasks', async (req, res) => {
     let tasks;
 
     if (req.user.role === 'Admin' || req.user.role === 'Manager') {
-      // Admins and Managers see all tasks in the project
+
       tasks = await q(`
         SELECT
           t.id,
@@ -871,7 +828,7 @@ router.get('/:id/tasks', async (req, res) => {
         ORDER BY t.createdAt DESC
       `, [projectId]);
     } else if (req.user.role === 'Employee') {
-      // Employees only see tasks assigned to them in this project
+
       tasks = await q(`
         SELECT
           t.id,
@@ -916,7 +873,40 @@ router.get('/:id/tasks', async (req, res) => {
       created_at: task.created_at,
       assigned_users: task.assigned_users ? task.assigned_users.split(',') : [],
       assigned_user_ids: task.assigned_user_ids ? task.assigned_user_ids.split(',').map(id => parseInt(id)) : []
+    ,
+      subtasks: []
     }));
+
+    // Fetch subtasks for the tasks and attach only those that belong to this project
+    try {
+      const taskIds = formattedTasks.map(t => t.id).filter(Boolean);
+      if (taskIds.length) {
+        const subs = await q(`SELECT id, COALESCE(task_id, task_Id) AS task_id, COALESCE(project_id, project_Id) AS project_id, title, description, due_date, tag, status, estimated_hours, completed_at, created_at, updated_at, created_by FROM subtasks WHERE COALESCE(task_id, task_Id) IN (?) AND COALESCE(project_id, project_Id) = ?`, [taskIds, projectId]);
+        const subMap = {};
+        (subs || []).forEach(s => {
+          if (!s || s.task_id === undefined || s.task_id === null) return;
+          if (String(s.project_id) !== String(projectId)) return;
+          const key = String(s.task_id);
+          subMap[key] = subMap[key] || [];
+          subMap[key].push({
+            id: s.id,
+            title: s.title || null,
+            description: s.description || null,
+            due_date: s.due_date || null,
+            tag: s.tag || null,
+            status: s.status || null,
+            estimated_hours: s.estimated_hours != null ? Number(s.estimated_hours) : null,
+            completed_at: s.completed_at || null,
+            created_at: s.created_at || null,
+            updated_at: s.updated_at || null,
+            created_by: s.created_by || null
+          });
+        });
+        formattedTasks.forEach(t => { const key = String(t.id); if (subMap[key]) t.subtasks = subMap[key]; });
+      }
+    } catch (e) {
+      logger.debug('Failed to fetch subtasks for project tasks: ' + (e && e.message));
+    }
 
     res.json({
       success: true,

@@ -1,7 +1,7 @@
 const mysql = require('mysql');
 const env = require('./env');
 const logger = require('../logger');
-
+ 
 const dbConfig = {
     host: env.DB_HOST,
     port: env.DB_PORT,
@@ -11,17 +11,17 @@ const dbConfig = {
     multipleStatements: false,
     connectionLimit: 10,
 };
-
+ 
 const pool = mysql.createPool(dbConfig);
-
+ 
 pool.on('connection', function (connection) {
     logger.info(`DB connected (threadId=${connection.threadId})`);
 });
-
+ 
 pool.on('error', function (err) {
     logger.error('MySQL pool error: ' + (err && err.message));
 });
-
+ 
 pool.getConnection((err, connection) => {
     if (err) {
         if (err.code === 'PROTOCOL_CONNECTION_LOST') logger.error('Database connection was closed.');
@@ -31,7 +31,7 @@ pool.getConnection((err, connection) => {
     }
     if (connection) connection.release();
 });
-
+ 
 function endPool(cb) {
     try {
         pool.end(err => {
@@ -44,7 +44,9 @@ function endPool(cb) {
         if (typeof cb === 'function') cb(e);
     }
 }
-
+ 
 module.exports = pool;
 module.exports.end = endPool;
-
+ 
+ 
+ 

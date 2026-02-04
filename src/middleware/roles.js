@@ -79,7 +79,6 @@ async function requireAuth(req, res, next) {
   }
 }
 
-// role(s) can be a string or an array of allowed roles (case-insensitive)
 function requireRole(roles) {
   const allowed = (Array.isArray(roles) ? roles : [roles]).map(r => String(r || '').toLowerCase());
   return function (req, res, next) {

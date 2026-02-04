@@ -1,8 +1,4 @@
-/**
- * Client-Viewer Access Control Middleware
- * Restricts Client-Viewer users to only their assigned client and allowed endpoints
- * Enforces read-only access with proper access level validation
- */
+
 
 const db = require('../db');
 let logger;
@@ -14,7 +10,6 @@ module.exports = async function clientViewerAccessControl(req, res, next) {
       return next();
     }
 
-    // Only enforce GET requests (read-only)
     if (req.method !== 'GET') {
       return res.status(403).json({
         success: false,
@@ -22,7 +17,6 @@ module.exports = async function clientViewerAccessControl(req, res, next) {
       });
     }
 
-    // Get the client ID mapped to this viewer
     const clientId = await new Promise(resolve => {
       db.query(
         'SELECT client_id FROM client_viewers WHERE user_id = ? LIMIT 1',
@@ -73,7 +67,6 @@ module.exports = async function clientViewerAccessControl(req, res, next) {
       });
     }
 
-    // For client-specific endpoints, validate the requested client matches the mapped client
     const clientIdMatch = requestPath.match(/\/api\/clients\/(\d+)/);
     if (clientIdMatch) {
       const requestedClientId = parseInt(clientIdMatch[1], 10);

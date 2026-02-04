@@ -37,14 +37,12 @@ function inferActor(details, row) {
 
 function normalizeLogRow(r) {
   let details = r.details;
-  try { if (typeof details === 'string' && details.length) details = JSON.parse(details); } catch (e) { /* keep as-is */ }
+  try { if (typeof details === 'string' && details.length) details = JSON.parse(details); } catch (e) {  }
 
-  // Friendly system error message (frontend-safe)
   if (details && details.status === 'error' && details.message) {
     details.message = 'Something went wrong. Please try again later.';
   }
 
-  // Infer actor
   let actorId = (r.actor_id !== null && r.actor_id !== undefined) ? r.actor_id : null;
   let actorName = r.actor_name || null;
   if (!actorName || actorName === null) {
@@ -52,7 +50,6 @@ function normalizeLogRow(r) {
     if (inferred) { actorId = actorId || inferred.id; actorName = inferred.name; }
   }
 
-  // Defaults
   if (!actorId) {
     if ((r.entity && r.entity.toLowerCase() === 'system') || (r.action && /system/i.test(r.action))) actorId = 'system';
     else actorId = 'unknown';
@@ -64,7 +61,6 @@ function normalizeLogRow(r) {
 
   const entityId = (r.entity_id === null || r.entity_id === undefined) ? '' : r.entity_id;
 
-  // Format timestamp as 'YYYY-MM-DD HH:mm'
   function fmt(ts) {
     if (!ts) return '';
     const d = new Date(ts);
@@ -108,7 +104,7 @@ function normalizeLogRow(r) {
 }
 
 module.exports = {
-  // Generic programmatic audit logger used by other modules
+
   log: async (entry) => {
     try {
       const actorId = entry.user_id || entry.actor_id || null;
@@ -122,7 +118,7 @@ module.exports = {
       logger.error('auditController.log failed:', e && e.message);
     }
   },
-  // GET /api/admin/audit-logs
+
   admin: async (req, res, next) => {
     try {
       const { perPage, page, offset } = parsePagination(req);
@@ -166,16 +162,14 @@ module.exports = {
     }
   },
 
-  // GET /api/manager/audit-logs
   manager: async (req, res, next) => {
     try {
       const { perPage, page, offset } = parsePagination(req);
       const filters = { from: req.query.from, to: req.query.to, actor: req.query.actor, action: req.query.action };
-      // allow manager to scope by projectId
+
       const projectId = req.query.projectId || req.query.project_id;
       const base = await buildBaseQuery(filters);
 
-      // Build manager-scoped accesses: projects, clients, team members
       const managerInternalId = req.user && (req.user._id || null);
       const managerPublicId = req.user && (req.user.public_id || req.user.id || null);
 
@@ -188,12 +182,10 @@ module.exports = {
         assignedClientIds = [];
       }
 
-      // gather projects managed by this manager (internal id or public id)
       const projRows = await q(`SELECT id, public_id FROM projects WHERE project_manager_id = ? OR project_manager_id = ? OR manager_id = ? OR manager_id = ?`, [managerInternalId, managerPublicId || -1, managerInternalId, managerPublicId || -1]).catch(() => []);
       const projectIds = (projRows || []).map(r => r && r.id).filter(Boolean);
       const projectPublicIds = (projRows || []).map(r => r && r.public_id).filter(Boolean);
 
-      // gather direct team member ids (users who report to this manager via manager_id)
       const teamRows = await q('SELECT _id, public_id FROM users WHERE manager_id = ? OR manager_id = ? LIMIT 1000', [managerInternalId, managerPublicId || -1]).catch(() => []);
       const teamInternalIds = (teamRows || []).map(r => r && r._id).filter(Boolean);
       const teamPublicIds = (teamRows || []).map(r => r && r.public_id).filter(Boolean);
@@ -205,7 +197,6 @@ module.exports = {
         params.push('project'); params.push(projectId);
       }
 
-      // Manager-scoping: restrict to clients/projects/tasks/team-members the manager can access
       const mgrParts = [];
       const mgrParams = [];
       if (assignedClientIds && assignedClientIds.length) {
@@ -217,7 +208,7 @@ module.exports = {
         mgrParams.push(projectPublicIds);
       }
       if (projectIds && projectIds.length) {
-        // include tasks that belong to these projects
+
         mgrParts.push("(a.entity = 'Task' AND EXISTS (SELECT 1 FROM tasks t WHERE (t.public_id = a.entity_id OR t.id = a.entity_id) AND (t.project_id IN (?) OR t.project_public_id IN (?))))");
         mgrParams.push(projectIds);
         mgrParams.push(projectPublicIds.length ? projectPublicIds : projectIds);
@@ -271,16 +262,14 @@ module.exports = {
     }
   },
 
-  // GET /api/employee/audit-logs
   employee: async (req, res, next) => {
     try {
       const { perPage, page, offset } = parsePagination(req);
       const filters = { from: req.query.from, to: req.query.to, action: req.query.action };
       const base = await buildBaseQuery(filters);
 
-      // Restrict to logs where actor_id matches the requesting user.
-      // Support both internal (`_id`) and public (`public_id` or `id`) identifiers because
-      // audit entries may store either form depending on how they were created.
+
+
       const actorInternal = req.user && (req.user._id || null);
       const actorPublic = req.user && (req.user.public_id || req.user.id || null);
       const actorIds = [];

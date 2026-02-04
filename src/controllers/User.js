@@ -10,11 +10,7 @@ const emailService = require(__root + 'utils/emailService');
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const ruleEngine = require(__root + 'middleware/ruleEngine');
 const RULES = require(__root + 'rules/ruleCodes');
-/*
-  Rule codes used in this router:
-  - USER_CREATE, USER_VIEW, USER_LIST, USER_UPDATE, USER_DELETE
-  Note: `USER_LIST` covers the user listing endpoint.
-*/
+
 const NotificationService = require('../services/notificationService');
 require('dotenv').config();
 let env;
@@ -27,7 +23,6 @@ const queryAsync = (sql, params = []) =>
 
 router.use(requireAuth);
 
-// Get all users
 router.get("/getusers", ruleEngine(RULES.USER_LIST), requireRole('Admin','Manager'), async (req, res) => {
   const query = `
     SELECT 
@@ -144,7 +139,6 @@ router.get("/getusers", ruleEngine(RULES.USER_LIST), requireRole('Admin','Manage
   }
 });
 
-// ✅ FIXED: Create user - Supports BOTH departmentId AND departmentName
 router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), async (req, res) => {
   try {
     const { name, email, phone, role, departmentId, departmentName, title, isActive, isGuest } = req.body;
@@ -164,12 +158,11 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), asyn
       return res.status(409).json({ success: false, message: 'User already exists with this email' });
     }
 
-    // ✅ FIXED: Resolve department public_id - PRIORITIZE departmentId first
     let departmentPublicId = null;
     let resolvedDepartmentName = null;
     
     if (departmentId) {
-      // Direct departmentId from frontend
+
       const dept = await new Promise((resolve, reject) => {
         db.query('SELECT public_id, name FROM departments WHERE public_id = ? LIMIT 1', [departmentId], (err, rows) => {
           if (err) reject(err);
@@ -183,7 +176,7 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), asyn
         return res.status(400).json({ success: false, message: 'Invalid department ID' });
       }
     } else if (departmentName) {
-      // Fallback: departmentName lookup
+
       const dept = await new Promise((resolve, reject) => {
         db.query('SELECT public_id, name FROM departments WHERE name = ? LIMIT 1', [departmentName], (err, rows) => {
           if (err) reject(err);
@@ -197,12 +190,10 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), asyn
       resolvedDepartmentName = dept[0].name;
     }
 
-    // Generate credentials
     const tempPassword = crypto.randomBytes(6).toString('hex');
     const hashed = await bcrypt.hash(tempPassword, 10);
     const publicId = crypto.randomBytes(8).toString('hex');
 
-    // Build dynamic INSERT
     const fields = ['public_id', 'name', 'email', 'password', 'phone', 'role'];
     const placeholders = ['?', '?', '?', '?', '?', '?'];
     const params = [publicId, name, email, hashed, phone || null, role];
@@ -229,7 +220,6 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), asyn
 
     const insertId = result.insertId;
 
-    // Send notification
     (async () => {
       try {
         await NotificationService.createAndSendToRoles(['Admin'], 'User Created', `New user "${name}" has been created`, 'USER_CREATED', 'user', insertId, req.user ? req.user.tenant_id : null);
@@ -238,7 +228,6 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), asyn
       }
     })();
 
-    // Send welcome/setup email
     const setupToken = jwt.sign({ id: publicId, step: 'setup' }, env.JWT_SECRET || env.SECRET || 'change_this_secret', { expiresIn: '7d' });
     const setupUrlBase = env.FRONTEND_URL || env.BASE_URL;
     const setupLink = `${setupUrlBase.replace(/\/$/, '')}/setup-password?token=${encodeURIComponent(setupToken)}`;
@@ -262,7 +251,6 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), asyn
       })
       .catch(err => logger.error(`❌ Failed to send welcome email to ${email}:`, err?.message));
 
-    // Fetch created user with department info
     const selSql = `
       SELECT u._id, u.public_id, u.name, u.email, u.role, u.title, u.isActive, u.phone, u.isGuest,
              u.department_public_id, d.name AS department_name
@@ -308,7 +296,6 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), asyn
   }
 });
 
-// ✅ FIXED: Update user - Supports departmentId AND departmentName
 router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), async (req, res) => {
   const { id } = req.params;
   const { name, title, email, role, isActive, phone, departmentId, departmentName } = req.body;
@@ -316,7 +303,7 @@ router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), a
   if (!name || !email || !role) return res.status(400).json({ success: false, message: "Name, email and role required" });
 
   try {
-    // Resolve department public_id
+
     let departmentPublicId = null;
     let resolvedDepartmentName = null;
     
@@ -352,7 +339,6 @@ router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), a
       }
       if (result.affectedRows === 0) return res.status(404).json({ success: false, message: "User not found" });
 
-      // Fetch updated user
       const selectSql = `
         SELECT u._id, u.public_id, u.name, u.title, u.email, u.role, u.isActive, u.phone, u.isGuest,
                u.department_public_id, d.name AS department_name
@@ -395,7 +381,6 @@ router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), a
   }
 });
 
-// Get user by ID
 router.get("/getuserbyid/:id", ruleEngine(RULES.USER_VIEW), requireRole('Admin','Manager'), (req, res) => {
   const { id } = req.params;
   const isNumeric = /^\d+$/.test(String(id));
@@ -427,7 +412,6 @@ router.get("/getuserbyid/:id", ruleEngine(RULES.USER_VIEW), requireRole('Admin',
   });
 });
 
-// Delete user
 router.delete("/delete/:user_id", ruleEngine(RULES.USER_DELETE), requireRole('Admin'), (req, res) => {
   const { user_id } = req.params;
   const isNumeric = /^\d+$/.test(String(user_id));

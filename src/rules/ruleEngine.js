@@ -1,5 +1,5 @@
-// src/rules/ruleEngine.js
-// Main Rule Engine
+
+
 
 const db = require('../config/db');
 const { buildRuleContext } = require('./ruleContext');
@@ -12,7 +12,6 @@ class RuleEngine {
     this.loaded = false;
   }
 
-  // Load rules from database
   async loadRules() {
     if (this.loaded) return;
 
@@ -54,14 +53,13 @@ class RuleEngine {
     if (ruleCode) {
       rulesToEvaluate = this.rules.filter(rule => rule.ruleCode === ruleCode);
       if (rulesToEvaluate.length === 0) {
-        // If no specific rule found, fall back to all rules
+
         rulesToEvaluate = this.rules;
       }
     }
     
     const decision = evaluateRules(rulesToEvaluate, context);
 
-    // Audit log
     logger.info('Rule Evaluation', {
       userId: context.userId,
       ruleCode: decision.ruleCode,
@@ -74,7 +72,7 @@ class RuleEngine {
   }
 
   async addRule(rule) {
-    // Validate rule structure
+
     const requiredFields = ['ruleCode', 'description', 'conditions', 'action', 'priority', 'active', 'version'];
     for (const field of requiredFields) {
       if (!(field in rule)) {
@@ -82,7 +80,6 @@ class RuleEngine {
       }
     }
 
-    // Insert or update in database
     const query = `
       INSERT INTO business_rules (rule_code, description, conditions, action, priority, active, version)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -111,12 +108,10 @@ class RuleEngine {
       });
     });
 
-    // Reload rules
     this.loaded = false;
     await this.loadRules();
   }
 
-  // Get all active rules
   async getActiveRules() {
     if (!this.loaded) {
       await this.loadRules();

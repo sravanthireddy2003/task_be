@@ -14,7 +14,6 @@ async function runMigrations() {
       });
     });
 
-    // Add status column
     try {
       await q("ALTER TABLE tasks ADD COLUMN status ENUM('Pending', 'In Progress', 'On Hold', 'Completed') DEFAULT 'Pending'");
       logger.info('Added status column to tasks');
@@ -26,7 +25,6 @@ async function runMigrations() {
       }
     }
 
-    // Add started_at
     try {
       await q("ALTER TABLE tasks ADD COLUMN started_at DATETIME NULL");
       logger.info('Added started_at column to tasks');
@@ -38,7 +36,6 @@ async function runMigrations() {
       }
     }
 
-    // Add completed_at
     try {
       await q("ALTER TABLE tasks ADD COLUMN completed_at DATETIME NULL");
       logger.info('Added completed_at column to tasks');
@@ -50,7 +47,6 @@ async function runMigrations() {
       }
     }
 
-    // Add total_duration
     try {
       await q("ALTER TABLE tasks ADD COLUMN total_duration INT DEFAULT 0");
       logger.info('Added total_duration column to tasks');
@@ -62,7 +58,6 @@ async function runMigrations() {
       }
     }
 
-    // Add task_day (date-only) column and backfill from taskDate
     try {
       await q("ALTER TABLE tasks ADD COLUMN task_day DATE NULL");
       logger.info('Added task_day column to tasks');
@@ -88,7 +83,6 @@ async function runMigrations() {
       }
     }
 
-    // Create task_time_logs table
     await q(`
       CREATE TABLE IF NOT EXISTS task_time_logs (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -103,7 +97,6 @@ async function runMigrations() {
     `);
     logger.info('Created task_time_logs table');
 
-    // Create notifications table
     await q(`
       CREATE TABLE IF NOT EXISTS notifications (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -120,7 +113,6 @@ async function runMigrations() {
     `);
     logger.info('Created notifications table');
 
-    // Indexes
     await q("CREATE INDEX IF NOT EXISTS idx_task_time_logs_task_id ON task_time_logs(task_id)");
     await q("CREATE INDEX IF NOT EXISTS idx_task_time_logs_timestamp ON task_time_logs(timestamp)");
     await q("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)");
@@ -129,7 +121,6 @@ async function runMigrations() {
     await q("CREATE INDEX IF NOT EXISTS idx_notifications_is_read ON notifications(is_read)");
     await q("CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at)");
 
-    // Create project_chats table
     await q(`
       CREATE TABLE IF NOT EXISTS project_chats (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -143,7 +134,6 @@ async function runMigrations() {
     `);
     logger.info('Created project_chats table');
 
-    // Create chat_messages table
     await q(`
       CREATE TABLE IF NOT EXISTS chat_messages (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -165,7 +155,7 @@ async function runMigrations() {
       await q('ALTER TABLE chat_messages MODIFY COLUMN sender_id INT NULL');
       logger.info('Modified chat_messages sender_id to allow NULL');
     } catch (e) {
-      // Column might already be nullable or table doesn't exist yet
+
       logger.warn('Note: chat_messages sender_id modification skipped (might already be correct)');
     }
 
@@ -173,7 +163,7 @@ async function runMigrations() {
       await q('ALTER TABLE chat_messages DROP FOREIGN KEY chat_messages_ibfk_1');
       logger.info('Dropped foreign key constraint on chat_messages.sender_id');
     } catch (e) {
-      // Foreign key might not exist
+
       logger.warn('Note: foreign key drop skipped (might not exist)');
     }
 
@@ -196,7 +186,6 @@ async function runMigrations() {
     `);
     logger.info('Created chat_participants table');
 
-    // Seed some test notifications
     logger.info('Seeding test notifications...');
     await q(`
       INSERT INTO notifications (user_id, title, message, type, entity_type, entity_id, is_read, created_at) VALUES

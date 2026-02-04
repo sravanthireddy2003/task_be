@@ -1,4 +1,4 @@
-// src/workflow/workflowEngine.js
+
 
 const TASK_STATES = {
   DRAFT: 'Draft',
@@ -61,7 +61,7 @@ const APPROVAL_REQUIRED = {
   PROJECT: {
     [PROJECT_STATES.DRAFT]: [PROJECT_STATES.PENDING_APPROVAL], // MANAGER requests, ADMIN approves
     [PROJECT_STATES.ACTIVE]: [PROJECT_STATES.COMPLETED], // MANAGER requests, ADMIN approves
-    // Budget changes always require ADMIN approval (handled separately)
+
   }
 };
 

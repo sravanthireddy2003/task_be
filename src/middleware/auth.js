@@ -1,9 +1,7 @@
 const jwt = require('jsonwebtoken');
 const db = require(__root + 'db');
 const HttpError = require('../errors/HttpError');
-const env = require('../config/env');
-
-// JWT auth middleware -- attaches user to req.user
+const env = require('../config/env');
 module.exports = function (req, res, next) {
   const auth = req.headers.authorization || req.headers.Authorization;
   if (!auth || !auth.startsWith('Bearer ')) return next(new HttpError(401, 'Unauthorized', 'AUTH_MISSING'));
@@ -26,8 +24,7 @@ module.exports = function (req, res, next) {
       req.user = { _id: u._id, id: u.public_id || String(u._id), name: u.name, email: u.email, role: u.role, tenant_id: u.tenant_id };
       next();
     });
-  } catch (e) {
-    // Do not leak internal error messages in production
+  } catch (e) {
     if (e && e.name === 'TokenExpiredError') return next(new HttpError(401, 'Token expired', 'AUTH_EXPIRED'));
     return next(new HttpError(401, 'Invalid token', 'AUTH_INVALID'));
   }

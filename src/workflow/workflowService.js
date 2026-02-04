@@ -1,20 +1,14 @@
-// src/workflow/workflowService.js
+
 const db = require('../db');
 const NotificationService = require('../services/notificationService');
 let logger;
-try { logger = require(global.__root + 'logger'); } catch (e) { try { logger = require('../logger'); } catch (e2) { logger = console; } }
-
-// Promisified db.query
+try { logger = require(global.__root + 'logger'); } catch (e) { try { logger = require('../logger'); } catch (e2) { logger = console; } }
 const q = (sql, params = [], connection = db) => new Promise((resolve, reject) => {
     connection.query(sql, params, (err, results) => {
         if (err) return reject(err);
         resolve(results);
     });
-});
-
-// =========================================
-// DATABASE TRANSACTION HELPERS
-// =========================================
+});
 const beginTransaction = () => new Promise((resolve, reject) => {
     db.getConnection((err, connection) => {
         if (err) return reject(err);
@@ -41,9 +35,7 @@ const rollbackTransaction = (connection) => new Promise((resolve, reject) => {
         connection.release();
         resolve(); // Resolve even on rollback to not throw another error
     });
-});
-
-// Simple cached column existence checker
+});
 const _columnCache = {};
 const hasColumn = async (table, column) => {
     const key = `${table}::${column}`;
@@ -61,16 +53,8 @@ const hasColumn = async (table, column) => {
     }
 };
 
-/**
- * Finds the correct approver role for a given transition.
- * @param {number} tenantId - The tenant ID.
- * @param {string} entityType - e.g., 'TASK' or 'PROJECT'.
- * @param {string} fromState - The starting state.
- * @param {string} toState - The target state.
- * @returns {string} The role required for approval (e.g., 'MANAGER', 'ADMIN').
- */
-const getApproverRole = async (tenantId, entityType, fromState, toState) => {
-    // fall back to sensible defaults: TASK reviews need MANAGER, PROJECT closures need ADMIN.
+
+const getApproverRole = async (tenantId, entityType, fromState, toState) => {
     try {
         const sql = `
             SELECT approver_role 
@@ -81,27 +65,19 @@ const getApproverRole = async (tenantId, entityType, fromState, toState) => {
         if (results && results.length && results[0].approver_role) {
             return results[0].approver_role;
         }
-    } catch (err) {
-        // If the column doesn't exist or query fails, we'll fallback to defaults below
+    } catch (err) {
         logger.warn('[WARN] getApproverRole: fallback due to error querying workflow_definitions:', err && err.message);
-    }
-
-    // Fallback defaults
+    }
     if (entityType === 'TASK' && fromState === 'IN_PROGRESS' && (toState === 'REVIEW' || toState === 'COMPLETED')) {
         return 'Manager';
     }
     if (entityType === 'PROJECT' && fromState === 'ACTIVE' && toState === 'CLOSED') {
         return 'Admin';
-    }
-
-    // Last resort
+    }
     return 'Manager';
 };
 
-/**
- * Handles an employee's request to transition a task or other entity.
- * For a task moving from IN_PROGRESS to COMPLETED, this creates a PENDING manager approval.
- */
+
 const requestTransition = async ({ tenantId, entityType, entityId, toState, userId, role, projectId, meta }) => {
     if (entityType === 'TASK' && toState === 'COMPLETED') {
         const fromState = 'IN_PROGRESS';
@@ -110,31 +86,55 @@ const requestTransition = async ({ tenantId, entityType, entityId, toState, user
         const connection = await beginTransaction();
         try {
             let internalId = entityId;
+            let taskProjectId = null;
+            let assignedManagerId = null;
+            
             if (entityType === 'TASK') {
-                const rows = await q('SELECT id FROM tasks WHERE id = ? OR public_id = ? LIMIT 1', [entityId, entityId]);
+                const rows = await q('SELECT id, project_id FROM tasks WHERE id = ? OR public_id = ? LIMIT 1', [entityId, entityId]);
                 if (rows && rows.length > 0) {
                     internalId = rows[0].id;
+                    taskProjectId = rows[0].project_id;
                 }
-            }
-
-            // 1. Update task status to 'REVIEW'
+            }
+            if (taskProjectId) {
+                const projectRows = await q('SELECT project_manager_id FROM projects WHERE id = ? LIMIT 1', [taskProjectId]);
+                if (projectRows && projectRows.length > 0 && projectRows[0].project_manager_id) {
+                    assignedManagerId = projectRows[0].project_manager_id;
+                }
+            }
             if (await hasColumn('tasks', 'tenant_id')) {
                 const updateSql = 'UPDATE tasks SET status = ? WHERE id = ? AND tenant_id = ?';
                 await q(updateSql, ['REVIEW', internalId, tenantId], connection);
             } else {
                 const updateSql = 'UPDATE tasks SET status = ? WHERE id = ?';
                 await q(updateSql, ['REVIEW', internalId], connection);
+            }
+            const hasApproverId = await hasColumn('workflow_requests', 'approver_id');
+            if (!hasApproverId) {
+                try {
+                    await q('ALTER TABLE workflow_requests ADD COLUMN approver_id INT NULL AFTER approver_role', [], connection);
+                    logger.info('Added approver_id column to workflow_requests table');
+                } catch (e) {
+                    logger.warn('Failed to add approver_id column (may already exist): ' + e.message);
+                }
             }
 
-            const insertRequestSql = `
+            const insertRequestSql = assignedManagerId && hasApproverId ? `
+                INSERT INTO workflow_requests 
+                (tenant_id, entity_type, entity_id, requested_by_id, approver_role, approver_id, status, from_state, to_state) 
+                VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
+            ` : `
                 INSERT INTO workflow_requests 
                 (tenant_id, entity_type, entity_id, requested_by_id, approver_role, status, from_state, to_state) 
                 VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?)
             `;
-            const requestResult = await q(insertRequestSql, [tenantId, entityType, internalId, userId, approverRole, fromState, toState], connection);
-            const requestId = requestResult.insertId;
-
-            // 3. Log the initial request event (store details as JSON in `details`)
+            
+            const params = assignedManagerId && hasApproverId ? 
+                [tenantId, entityType, internalId, userId, approverRole, assignedManagerId, fromState, toState] :
+                [tenantId, entityType, internalId, userId, approverRole, fromState, toState];
+                
+            const requestResult = await q(insertRequestSql, params, connection);
+            const requestId = requestResult.insertId;
             const logSql = `
                 INSERT INTO workflow_logs (request_id, tenant_id, entity_type, entity_id, action, from_state, to_state, user_id, details) 
                 VALUES (?, ?, ?, ?, 'REQUEST', ?, ?, ?, ?)
@@ -150,9 +150,23 @@ const requestTransition = async ({ tenantId, entityType, entityId, toState, user
                 JSON.stringify({ reason: meta?.reason || 'Task submitted for review' })
             ], connection);
 
-            await commitTransaction(connection);
-            
-            // TODO: Notify manager via NotificationService
+            await commitTransaction(connection);
+            if (assignedManagerId) {
+                try {
+                    if (NotificationService && typeof NotificationService.createAndSend === 'function') {
+                        await NotificationService.createAndSend(
+                            [assignedManagerId],
+                            'Task Review Required',
+                            `Task #${internalId} has been submitted for your review.`,
+                            'TASK_REVIEW_REQUEST',
+                            'task',
+                            entityId
+                        );
+                    }
+                } catch (nerr) {
+                    logger.warn('[WARN] notify assigned manager failed:', nerr && nerr.message);
+                }
+            }
             
             return {
                 message: "Task submitted for review. Awaiting manager approval.",
@@ -168,20 +182,14 @@ const requestTransition = async ({ tenantId, entityType, entityId, toState, user
     throw new Error("This transition is not supported or requires a different flow.");
 };
 
-/**
- * Manager requests a project closure. Verifies all tasks are completed and creates a workflow request for ADMIN.
- */
-const requestProjectClosure = async ({ tenantId, projectId, reason, userId }) => {
-    if (!projectId) throw new Error('projectId is required');
 
-    // 1. Verify project exists and is ACTIVE. Resolve from ID or public_id.
+const requestProjectClosure = async ({ tenantId, projectId, reason, userId }) => {
+    if (!projectId) throw new Error('projectId is required');
     const prow = await q('SELECT id, status FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [projectId, projectId]);
     if (!prow || prow.length === 0) throw new Error('Project not found');
     const p = prow[0];
     const internalProjectId = p.id;
-    if (!p.status || String(p.status).toUpperCase() !== 'ACTIVE') throw new Error('Project must be ACTIVE to request closure');
-
-    // 2. Verify all tasks under project are COMPLETED
+    if (!p.status || String(p.status).toUpperCase() !== 'ACTIVE') throw new Error('Project must be ACTIVE to request closure');
     let results;
     if (await hasColumn('tasks', 'tenant_id')) {
         results = await q(`SELECT COUNT(*) as total, SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) as completed FROM tasks WHERE project_id = ? AND tenant_id = ?`, [internalProjectId, tenantId]);
@@ -190,20 +198,14 @@ const requestProjectClosure = async ({ tenantId, projectId, reason, userId }) =>
     }
     const { total, completed } = results[0] || { total: 0, completed: 0 };
     if (total === 0) throw new Error('Project has no tasks');
-    if (total !== completed) throw new Error('All tasks must be COMPLETED before requesting project closure');
-
-    // 3. Create workflow request and set project status to PENDING_FINAL_APPROVAL
+    if (total !== completed) throw new Error('All tasks must be COMPLETED before requesting project closure');
     const connection = await beginTransaction();
-    try {
-        // update project status
+    try {
         if (await hasColumn('projects', 'tenant_id')) {
             await q('UPDATE projects SET status = ? WHERE id = ? AND tenant_id = ?', ['PENDING_FINAL_APPROVAL', internalProjectId, tenantId], connection);
         } else {
             await q('UPDATE projects SET status = ? WHERE id = ?', ['PENDING_FINAL_APPROVAL', internalProjectId], connection);
-        }
-
-        // When a project closure is requested, lock the project (and its tasks) so no further edits happen
-        // while final approval is pending.
+        }
         if (await hasColumn('projects', 'is_locked')) {
             if (await hasColumn('projects', 'tenant_id')) {
                 await q('UPDATE projects SET is_locked = 1 WHERE id = ? AND tenant_id = ?', [internalProjectId, tenantId], connection);
@@ -233,9 +235,7 @@ const requestProjectClosure = async ({ tenantId, projectId, reason, userId }) =>
         `;
         await q(logSql, [requestId, tenantId, internalProjectId, userId, JSON.stringify({ reason: reason || 'Manager requested project closure' })], connection);
 
-        await commitTransaction(connection);
-
-        // Notify Admins (best-effort)
+        await commitTransaction(connection);
         try {
             if (NotificationService && typeof NotificationService.createAndSendToRoles === 'function') {
                 await NotificationService.createAndSendToRoles(['Admin'], 'Project Closure Requested', `Project ${internalProjectId} submitted for final approval.`, 'PROJECT_CLOSE_REQUEST', 'project', internalProjectId, tenantId);
@@ -249,35 +249,37 @@ const requestProjectClosure = async ({ tenantId, projectId, reason, userId }) =>
     }
 };
 
-/**
- * Processes an approval or rejection action from a Manager or Admin.
- * This is a transactional operation that updates the entity, the request, and logs the event.
- */
+
 const processApproval = async ({ tenantId, requestId, action, reason, userId, userRole }) => {
     const connection = await beginTransaction();
-    try {
-        // 1. Get the original request
+    try {
         const getRequestSql = 'SELECT * FROM workflow_requests WHERE id = ? AND tenant_id = ?';
         const requests = await q(getRequestSql, [requestId, tenantId], connection);
         if (requests.length === 0) throw new Error("Workflow request not found.");
         
         const req = requests[0];
-        if (req.status !== 'PENDING') throw new Error(`Request is already ${req.status}.`);
-        const approverRole = (req.approver_role || '').toUpperCase();
-        const actingRole = (userRole || '').toUpperCase();
-        if (approverRole) {
-            if (approverRole !== actingRole && actingRole !== 'ADMIN') {
-                throw new Error(`You do not have permission to ${action.toLowerCase()} this request. Expected role: ${approverRole}`);
+        if (req.status !== 'PENDING') throw new Error(`Request is already ${req.status}.`);
+        const hasApproverId = await hasColumn('workflow_requests', 'approver_id');
+        if (hasApproverId && req.approver_id) {
+            const actingRole = (userRole || '').toUpperCase();
+            if (userId !== req.approver_id && actingRole !== 'ADMIN') {
+                throw new Error(`Only the assigned manager can ${action.toLowerCase()} this request.`);
             }
-        } else {
-            // If approver_role was not set in the request row, allow Manager/MANAGER or Admin/ADMIN to act.
-            if (actingRole !== 'MANAGER' && actingRole !== 'ADMIN') {
-                throw new Error(`You do not have permission to ${action.toLowerCase()} this request.`);
+        } else {
+            const approverRole = (req.approver_role || '').toUpperCase();
+            const actingRole = (userRole || '').toUpperCase();
+            if (approverRole) {
+                if (approverRole !== actingRole && actingRole !== 'ADMIN') {
+                    throw new Error(`You do not have permission to ${action.toLowerCase()} this request. Expected role: ${approverRole}`);
+                }
+            } else {
+                if (actingRole !== 'MANAGER' && actingRole !== 'ADMIN') {
+                    throw new Error(`You do not have permission to ${action.toLowerCase()} this request.`);
+                }
             }
         }
 
-        const { entity_type, entity_id, from_state, to_state } = req;
-        // Resolve project_id dynamically when needed (workflow_requests table may not store it)
+        const { entity_type, entity_id, from_state, to_state } = req;
         let project_id = null;
         if (entity_type === 'TASK') {
             const trows = await q('SELECT project_id FROM tasks WHERE id = ? LIMIT 1', [entity_id], connection);
@@ -286,9 +288,7 @@ const processApproval = async ({ tenantId, requestId, action, reason, userId, us
             project_id = entity_id;
         }
         const newStatus = action === 'APPROVE' ? to_state : from_state;
-        const requestStatus = action === 'APPROVE' ? 'APPROVED' : 'REJECTED';
-
-        // 2. Update the entity's status (task or project)
+        const requestStatus = action === 'APPROVE' ? 'APPROVED' : 'REJECTED';
         const table = entity_type.toLowerCase() + 's'; // tasks or projects
         if (await hasColumn(table, 'tenant_id')) {
             const updateEntitySql = `UPDATE ${table} SET status = ? WHERE id = ? AND tenant_id = ?`;
@@ -340,9 +340,7 @@ const processApproval = async ({ tenantId, requestId, action, reason, userId, us
                     await q('UPDATE tasks SET is_locked = 0 WHERE project_id = ?', [entity_id], connection);
                 }
             }
-        }
-
-        // 3. Update the workflow request itself
+        }
         let processedColumn = null;
         if (await hasColumn('workflow_requests', 'processed_by_id')) processedColumn = 'processed_by_id';
         else if (await hasColumn('workflow_requests', 'approved_by')) processedColumn = 'approved_by';
@@ -354,9 +352,7 @@ const processApproval = async ({ tenantId, requestId, action, reason, userId, us
         } else {
             const updateRequestSql = `UPDATE workflow_requests SET status = ? WHERE id = ?`;
             await q(updateRequestSql, [requestStatus, requestId], connection);
-        }
-
-        // 4. Log the approval/rejection event (store details as JSON in `details`)
+        }
         const logSql = `
             INSERT INTO workflow_logs (request_id, tenant_id, entity_type, entity_id, action, from_state, to_state, user_id, details) 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -373,14 +369,7 @@ const processApproval = async ({ tenantId, requestId, action, reason, userId, us
             JSON.stringify({ reason: reason || `${action}D` })
         ], connection);
 
-        await commitTransaction(connection);
-
-        // Removed automatic project closure triggering - manager must explicitly request closure
-        // if (entity_type === 'TASK' && action === 'APPROVE') {
-        //     await checkAndTriggerProjectApproval(tenantId, project_id, userId);
-        // }
-        
-        // TODO: Notify original requestor
+        await commitTransaction(connection);
         const actionVerb = action === 'APPROVE' ? 'approved' : 'rejected';
         return {
             message: `${entity_type} request #${requestId} has been ${actionVerb}.`,
@@ -393,9 +382,7 @@ const processApproval = async ({ tenantId, requestId, action, reason, userId, us
     }
 };
 
-/**
- * Checks if all tasks in a project are COMPLETED. If so, triggers a final approval request for the Admin.
- */
+
 const checkAndTriggerProjectApproval = async (tenantId, projectId, systemUserId) => {
     if (!projectId) return;
 
@@ -419,11 +406,8 @@ const checkAndTriggerProjectApproval = async (tenantId, projectId, systemUserId)
 
     if (total > 0 && total === completed) {
         const connection = await beginTransaction();
-        try {
-            // 1. Update project status
-            await q('UPDATE projects SET status = ? WHERE id = ?', ['PENDING_FINAL_APPROVAL', projectId], connection);
-
-            // Lock project/tasks while pending final approval
+        try {
+            await q('UPDATE projects SET status = ? WHERE id = ?', ['PENDING_FINAL_APPROVAL', projectId], connection);
             if (await hasColumn('projects', 'is_locked')) {
                 await q('UPDATE projects SET is_locked = 1 WHERE id = ?', [projectId], connection);
             }
@@ -438,9 +422,7 @@ const checkAndTriggerProjectApproval = async (tenantId, projectId, systemUserId)
                 VALUES (?, 'PROJECT', ?, ?, ?, 'PENDING', 'ACTIVE', 'CLOSED')
             `;
             const requestResult = await q(insertRequestSql, [tenantId, projectId, systemUserId, approverRole], connection);
-            const requestId = requestResult.insertId;
-
-            // 3. Log the system event
+            const requestId = requestResult.insertId;
             const logSql = `
                 INSERT INTO workflow_logs (request_id, tenant_id, entity_type, entity_id, action, from_state, to_state, user_id, details) 
                 VALUES (?, ?, 'PROJECT', ?, 'REQUEST', 'ACTIVE', 'CLOSED', ?, ?)
@@ -454,8 +436,7 @@ const checkAndTriggerProjectApproval = async (tenantId, projectId, systemUserId)
             ], connection);
 
             await commitTransaction(connection);
-            logger.info(`[INFO] Project ${projectId} submitted for final admin approval.`);
-            // TODO: Notify Admin
+            logger.info(`[INFO] Project ${projectId} submitted for final admin approval.`);
             } catch (error) {
             await rollbackTransaction(connection);
             logger.error(`[ERROR] Failed to trigger project approval for project ${projectId}:`, error);
@@ -463,12 +444,8 @@ const checkAndTriggerProjectApproval = async (tenantId, projectId, systemUserId)
     }
 };
 
-/**
- * Retrieves a list of workflow requests based on role and status.
- * Enrich with deep productivity data for project closure requests.
- */
-const getRequests = async ({ tenantId, role, status }) => {
-    // workflow_requests may store the processor in different columns across schemas
+
+const getRequests = async ({ tenantId, role, status, userId }) => {
     let processedColumn = null;
     if (await hasColumn('workflow_requests', 'processed_by_id')) processedColumn = 'processed_by_id';
     else if (await hasColumn('workflow_requests', 'approved_by_id')) processedColumn = 'approved_by_id';
@@ -479,6 +456,10 @@ const getRequests = async ({ tenantId, role, status }) => {
         : `, NULL as processed_by_id, NULL as processed_by_name, NULL as processed_by_email, NULL as processed_by_role`;
 
     const processedJoin = processedColumn ? `LEFT JOIN users u2 ON wr.${processedColumn} = u2._id` : '';
+
+    const hasApproverId = await hasColumn('workflow_requests', 'approver_id');
+    const approverSelect = hasApproverId ? `, u_approver._id as approver_user_id, u_approver.name as approver_name, u_approver.email as approver_email` : '';
+    const approverJoin = hasApproverId ? `LEFT JOIN users u_approver ON wr.approver_id = u_approver._id` : '';
 
     let sql = `
         SELECT wr.*, 
@@ -496,15 +477,53 @@ const getRequests = async ({ tenantId, role, status }) => {
                c.company as client_company,
                c.email as client_email
                ${processedSelect}
+               ${approverSelect}
         FROM workflow_requests wr
         LEFT JOIN users u ON wr.requested_by_id = u._id
         ${processedJoin}
+        ${approverJoin}
         LEFT JOIN tasks t ON wr.entity_type = 'TASK' AND wr.entity_id = t.id
         LEFT JOIN projects p ON (wr.entity_type = 'PROJECT' AND wr.entity_id = p.id) OR (wr.entity_type = 'TASK' AND t.project_id = p.id)
         LEFT JOIN clientss c ON p.client_id = c.id
-        WHERE wr.tenant_id = ? AND wr.approver_role = ?
+        WHERE wr.tenant_id = ?
     `;
-    const params = [tenantId, role];
+    const params = [tenantId];
+    if (userId && role && role.toUpperCase() === 'MANAGER') {
+        if (status && status.toUpperCase() === 'PENDING') {
+            if (hasApproverId) {
+                sql += ' AND (wr.approver_id = ? OR p.project_manager_id = ?) AND wr.approver_role = ?';
+                params.push(userId, userId, role);
+            } else {
+                sql += ' AND p.project_manager_id = ? AND wr.approver_role = ?';
+                params.push(userId, role);
+            }
+        } else if (status && (status.toUpperCase() === 'APPROVED' || status.toUpperCase() === 'REJECTED')) {
+            if (processedColumn) {
+                sql += ` AND wr.${processedColumn} = ? AND wr.approver_role = ?`;
+                params.push(userId, role);
+            } else {
+                sql += ' AND p.project_manager_id = ? AND wr.approver_role = ?';
+                params.push(userId, role);
+            }
+        } else {
+            if (processedColumn && hasApproverId) {
+                sql += ` AND ((wr.approver_id = ? OR p.project_manager_id = ? OR wr.${processedColumn} = ?) AND wr.approver_role = ?)`;
+                params.push(userId, userId, userId, role);
+            } else if (processedColumn) {
+                sql += ` AND ((p.project_manager_id = ? OR wr.${processedColumn} = ?) AND wr.approver_role = ?)`;
+                params.push(userId, userId, role);
+            } else if (hasApproverId) {
+                sql += ' AND (wr.approver_id = ? OR p.project_manager_id = ?) AND wr.approver_role = ?';
+                params.push(userId, userId, role);
+            } else {
+                sql += ' AND p.project_manager_id = ? AND wr.approver_role = ?';
+                params.push(userId, role);
+            }
+        }
+    } else {
+        sql += ' AND wr.approver_role = ?';
+        params.push(role);
+    }
 
     if (status && status.toLowerCase() !== 'all') {
         sql += ' AND wr.status = ?';
@@ -515,57 +534,33 @@ const getRequests = async ({ tenantId, role, status }) => {
 
     const requests = await q(sql, params);
 
-    for (const req of requests) {
-        // 1. Status acknowledgement message
+    for (const req of requests) {
         const actionVerb = req.status === 'APPROVED' ? 'approved' : (req.status === 'REJECTED' ? 'rejected' : 'pending approval');
         req.message = `${req.entity_type} request #${req.id} is ${actionVerb}.`;
         
         if (req.status !== 'PENDING') {
             req.newStatus = req.status === 'APPROVED' ? req.to_state : req.from_state;
-        }
-
-        // 2. Determine project context
-        const projectId = req.entity_type === 'PROJECT' ? req.entity_id : (req.project_id || (req.entity_type === 'TASK' ? (await q('SELECT project_id FROM tasks WHERE id = ?', [req.entity_id]))[0]?.project_id : null));
-        
-        // 3. Add Lock & Restriction Info
+        }
+        const projectId = req.entity_type === 'PROJECT' ? req.entity_id : (req.project_id || (req.entity_type === 'TASK' ? (await q('SELECT project_id FROM tasks WHERE id = ?', [req.entity_id]))[0]?.project_id : null));
         const toStateUpper = String(req.to_state || '').toUpperCase();
-        const projectStatusUpper = String(req.project_status || '').toUpperCase();
-
-        // ========================================
-        // PROJECT STATUS STANDARDIZATION
-        // ========================================
-        // The project_status field should ALWAYS reflect the ACTUAL current state from the database.
-        // For PENDING closure requests, the DB holds "PENDING_FINAL_APPROVAL" but we need a clear UI status.
+        const projectStatusUpper = String(req.project_status || '').toUpperCase();
         
         const isPendingClosure = (toStateUpper === 'CLOSED') && projectStatusUpper === 'PENDING_FINAL_APPROVAL';
-        const isProjectClosed = projectStatusUpper === 'CLOSED' || req.project_is_locked === 1;
-        
-        // NEW: Standardized status object for frontend consumption
-        req.project_status_info = {
-            // The raw database value (what's actually in projects.status)
-            raw: req.project_status,
-            
-            // The display-friendly status for UI (ACTIVE, PENDING_CLOSURE, CLOSED)
-            display: isPendingClosure ? 'PENDING_CLOSURE' : (isProjectClosed ? 'CLOSED' : req.project_status || 'ACTIVE'),
-            
-            // Boolean flags for easy conditional logic
+        const isProjectClosed = projectStatusUpper === 'CLOSED' || req.project_is_locked === 1;
+        req.project_status_info = {
+            raw: req.project_status,
+            display: isPendingClosure ? 'PENDING_CLOSURE' : (isProjectClosed ? 'CLOSED' : req.project_status || 'ACTIVE'),
             is_closed: isProjectClosed,
             is_pending_closure: isPendingClosure,
-            is_locked: req.project_is_locked === 1,
-            
-            // Permissions derived from status
+            is_locked: req.project_is_locked === 1,
             can_create_tasks: !isProjectClosed && !isPendingClosure,
             can_edit_project: !isProjectClosed && !isPendingClosure,
             can_request_closure: !isProjectClosed && !isPendingClosure
-        };
-
-        // DEPRECATED: Keep old fields for backward compatibility, but mark them
+        };
         req.project_effective_status = req.project_status_info.display;
         req.can_create_tasks = req.project_status_info.can_create_tasks;
         req.can_send_request = !isProjectClosed && !isPendingClosure && (req.entity_type !== 'TASK' || req.task_is_locked !== 1);
-        req.project_closed = isProjectClosed;
-
-        // Normalize requested/processed user objects (avoid nulls in UI)
+        req.project_closed = isProjectClosed;
         if (req.requested_by_id) {
             req.requested_by = {
                 id: req.requested_by_id,
@@ -588,9 +583,7 @@ const getRequests = async ({ tenantId, role, status }) => {
                 name: req.client_name,
                 company: req.client_company,
                 email: req.client_email
-            };
-
-            // 4. Fetch Tasks with Productivity and Assignees
+            };
             const tasksSql = `
                 SELECT t.id, t.title, t.status, t.total_duration, t.priority, t.public_id
                 FROM tasks t
@@ -600,26 +593,20 @@ const getRequests = async ({ tenantId, role, status }) => {
 
             let totalProjectSeconds = 0;
             for (const task of tasks) {
-                totalProjectSeconds += (task.total_duration || 0);
-
-                // Fetch Assignees
+                totalProjectSeconds += (task.total_duration || 0);
                 const assigneesSql = `
                     SELECT u.name, u.email, u.role
                     FROM taskassignments ta
                     JOIN users u ON ta.user_Id = u._id
                     WHERE ta.task_Id = ?
                 `;
-                task.assignees = await q(assigneesSql, [task.id]);
-
-                // Fetch Checklists (Subtasks)
+                task.assignees = await q(assigneesSql, [task.id]);
                 const subtasksSql = `
                     SELECT title, status, due_date
                     FROM subtasks
                     WHERE task_Id = ?
                 `;
-                task.checklists = await q(subtasksSql, [task.id]);
-
-                // Fetch Task Attachments
+                task.checklists = await q(subtasksSql, [task.id]);
                 const docSql = `
                     SELECT fileName, filePath, mimeType, fileSize
                     FROM documents
@@ -632,9 +619,7 @@ const getRequests = async ({ tenantId, role, status }) => {
             req.total_project_hours = (totalProjectSeconds / 3600).toFixed(2);
             req.productivity_score = tasks.length > 0
                 ? (tasks.filter(t => String(t.status || '').toUpperCase() === 'COMPLETED').length / tasks.length * 100).toFixed(0) + '%'
-                : '0%';
-
-            // 5. Project Level Attachments
+                : '0%';
             const projectDocSql = `
                 SELECT fileName, filePath, mimeType, fileSize
                 FROM documents
@@ -647,9 +632,7 @@ const getRequests = async ({ tenantId, role, status }) => {
     return requests;
 };
 
-/**
- * Retrieves the full history for a given entity (task or project).
- */
+
 const getHistory = async (tenantId, entityType, entityId) => {
     const sql = `
         SELECT wl.*, u.name as actor_name

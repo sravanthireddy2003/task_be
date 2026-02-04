@@ -88,8 +88,8 @@ async function clientHasPublicId() {
 }
 
 async function clientFieldSelects(alias = 'c') {
-  const selects = [`MIN(${alias}.name) AS client_name`];
-  if (await clientHasPublicId()) selects.push(`MIN(${alias}.public_id) AS client_public_id`);
+  const selects = [`${alias}.name AS client_name`];
+  if (await clientHasPublicId()) selects.push(`${alias}.public_id AS client_public_id`);
   return selects;
 }
 
@@ -344,25 +344,84 @@ module.exports = {
   getAssignedClients: async (req, res) => {
     try {
       const resources = await requireFeatureAccess(req, 'Assigned Clients');
-      let assignedClientIds = Array.isArray(resources.assignedClientIds)
-        ? resources.assignedClientIds.filter(Boolean)
-        : [];
+      
+      // Derive accessible projects and clients from manager's assigned projects
+      const managerProjects = await gatherManagerProjects(req);
+      const projectIds = dedupe(managerProjects.map((p) => p.id)).filter(Boolean);
+      const projectPublicIds = dedupe(managerProjects.map((p) => p.public_id)).filter(Boolean);
+      let assignedClientIds = dedupe(managerProjects.map((p) => p.client_id)).filter(Boolean);
 
-      // 1) clients where clientss.manager_id matches user's internal id or public id
-      // 2) clients linked to projects where the user is manager/project_manager
+      // map client_id -> projects for UI to display associated projects
+      const clientProjectsMap = {};
+      (managerProjects || []).forEach((p) => {
+        if (!p || !p.client_id) return;
+        const key = String(p.client_id);
+        clientProjectsMap[key] = clientProjectsMap[key] || [];
+        clientProjectsMap[key].push({ id: p.public_id || String(p.id), name: p.name || null });
+      });
+
+      // Support querying client for a particular task (task_id or task_public_id)
+      const taskCandidates = [
+        req.query?.task_id,
+        req.query?.taskId,
+        req.query?.task_public_id,
+        req.query?.taskPublicId,
+        req.body?.task_id,
+        req.body?.taskId,
+        req.body?.task_public_id,
+        req.body?.taskPublicId
+      ];
+      const rawTask = taskCandidates.find((v) => v !== undefined && v !== null && String(v).trim() !== '');
+      if (rawTask) {
+        const taskVal = String(rawTask).trim();
+        const isNumeric = /^\d+$/.test(taskVal);
+        const taskSql = isNumeric
+          ? 'SELECT id, public_id, project_id, project_public_id, client_id FROM tasks WHERE id = ? LIMIT 1'
+          : 'SELECT id, public_id, project_id, project_public_id, client_id FROM tasks WHERE public_id = ? LIMIT 1';
+        const taskRow = (await queryAsync(taskSql, [isNumeric ? Number(taskVal) : taskVal]))[0];
+        if (!taskRow) {
+          return res.status(404).json({ success: false, error: 'Task not found' });
+        }
+
+        // determine client id for the task
+        let clientForTask = taskRow.client_id || null;
+        if (!clientForTask && (taskRow.project_id || taskRow.project_public_id)) {
+          const projSql = taskRow.project_id
+            ? 'SELECT client_id FROM projects WHERE id = ? LIMIT 1'
+            : 'SELECT client_id FROM projects WHERE public_id = ? LIMIT 1';
+          const projRow = (await queryAsync(projSql, [taskRow.project_id || taskRow.project_public_id]))[0];
+          clientForTask = projRow ? projRow.client_id : null;
+        }
+
+        if (!clientForTask) {
+          return res.status(404).json({ success: false, error: 'Client not found for the specified task' });
+        }
+
+        // ensure manager has access to this task/client: either client is part of manager's projects or project belongs to manager
+        const hasAccessByClient = Array.isArray(assignedClientIds) && assignedClientIds.includes(clientForTask);
+        const taskProjectId = taskRow.project_id || null;
+        const taskProjectPublicId = taskRow.project_public_id || null;
+        const hasAccessByProject = (taskProjectId && projectIds.includes(taskProjectId)) || (taskProjectPublicId && projectPublicIds.includes(taskProjectPublicId));
+
+        if (!hasAccessByClient && !hasAccessByProject) {
+          return res.status(403).json({ success: false, error: 'Access denied to the requested task/client' });
+        }
+
+        // limit the response to this single client
+        assignedClientIds = [clientForTask];
+      }
+
       if (!assignedClientIds.length) {
         try {
           const uid = req.user && req.user._id;
           const pub = req.user && req.user.id;
 
-          // Direct client manager mapping
           const direct = await queryAsync(
             'SELECT id FROM clientss WHERE manager_id = ? OR manager_id = ? LIMIT 1000',
             [uid, pub || -1]
           );
           assignedClientIds = (direct || []).map(r => r.id).filter(Boolean);
 
-          // Fallback via projects managed by this user
           if (!assignedClientIds.length) {
             const viaProjects = await queryAsync(
               `SELECT DISTINCT c.id AS id
@@ -486,7 +545,6 @@ module.exports = {
           }
           : null,
 
-        // ✅ Added project manager info
         manager: project.project_manager_id
           ? {
             id:
@@ -496,7 +554,6 @@ module.exports = {
           }
           : null,
       }));
-      logger.debug('Assigned Projects Payload:', payload); // Debug log
       return res.json({ success: true, data: payload });
     } catch (error) {
       return res
@@ -543,10 +600,9 @@ getTaskTimeline: async (req, res) => {
     const tasks = await fetchTaskTimeline(filteredProjectIds, filteredProjectPublicIds);
     const taskInternalIds = dedupe(tasks.map((task) => task.task_internal_id || task.id)).filter(Boolean);
 
-    // 🔒 COMPLETE LOCK QUERY with requester (MANAGER VIEW)
     const lockStatuses = {};
     if (taskInternalIds.length > 0) {
-      // FIXED: Use actual taskInternalIds instead of hardcoded values
+
       const lockResult = await queryAsync(`
         SELECT 
           r.task_id,
@@ -591,7 +647,7 @@ getTaskTimeline: async (req, res) => {
     let taskActivities = [];
     
     if (taskInternalIds.length) {
-      // FIXED: Use actual taskInternalIds instead of placeholder
+
       taskChecklists = await queryAsync(
         `SELECT s.id, s.task_Id AS task_id, s.title, s.description, s.due_date, s.tag, s.created_at, s.updated_at, s.status, s.estimated_hours, s.completed_at, s.created_by,
                 u.public_id AS creator_public_id, u.name AS creator_name
@@ -600,8 +656,7 @@ getTaskTimeline: async (req, res) => {
          WHERE s.task_Id IN (?)`,
         [taskInternalIds]
       );
-      
-      // FIXED: Use actual taskInternalIds instead of placeholder
+
       taskActivities = await queryAsync(
         `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt, u._id AS user_id, u.name AS user_name
          FROM task_activities ta
@@ -668,7 +723,6 @@ getTaskTimeline: async (req, res) => {
         name: assignedNames[idx] || null
       }));
 
-      // 🔒 FULL LOCK INFO with requester
       const taskId = task.task_internal_id || task.id;
       const lockInfo = lockStatuses[taskId] || {};
       const isLocked = Boolean(lockInfo.is_locked);
@@ -676,21 +730,18 @@ getTaskTimeline: async (req, res) => {
       const internalKey = task.task_internal_id ? String(task.task_internal_id) : null;
       const publicKey = task.task_id ? String(task.task_id) : null;
       
-      logger.debug(`Task ID: ${task.task_id}, Internal ID: ${task.task_internal_id}`);
-      logger.debug(`Checklist for internal key: ${checklistMap[internalKey]?.length || 0} items`);
-      logger.debug(`Activities for internal key: ${activityMap[internalKey]?.length || 0} items`);
 
       return {
         id: task.task_id ? String(task.task_id) : String(task.task_internal_id),
         title: task.title,
-        // ADD description field which is missing in your response
+
         description: task.description || null,
         stage: task.stage,
         taskDate: task.taskDate ? new Date(task.taskDate).toISOString() : null,
         priority: task.priority,
         status: task.status,
         timeAlloted: task.time_alloted != null ? Number(task.time_alloted) : null,
-        // Add these additional fields from your response
+
         day: task.day || null,
         dayName: task.dayName || null,
         estimatedHours: task.estimated_hours != null ? Number(task.estimated_hours) : null,
@@ -715,9 +766,9 @@ getTaskTimeline: async (req, res) => {
         },
         
         assignedUsers,
-        // FIXED: Make sure checklist is included
+
         checklist: (internalKey && checklistMap[internalKey]) || (publicKey && checklistMap[publicKey]) || [],
-        // FIXED: Make sure activityTimeline is included
+
         activityTimeline: (internalKey && activityMap[internalKey]) || (publicKey && activityMap[publicKey]) || [],
         
         started_at: task.started_at ? toIsoDate(task.started_at) : null,
@@ -731,8 +782,7 @@ getTaskTimeline: async (req, res) => {
           const ss = String(secs % 60).padStart(2, '0');
           return `${hh}:${mm}:${ss}`;
         })(),
-        
-        // 🔒 FULL MANAGER VIEW with requester
+
         is_locked: isLocked,
         lock_info: lockInfo,
         task_status: {
@@ -831,14 +881,12 @@ getTaskTimeline: async (req, res) => {
     try {
       await requireFeatureAccess(req, 'Dashboard');
 
-      // metrics
       const projects = await gatherManagerProjects(req);
       const projectIds = dedupe(projects.map(p => p.id)).filter(Boolean);
       const projectPublicIds = dedupe(projects.map(p => p.public_id)).filter(Boolean);
       const projectCount = projects.length;
       const taskCount = await countRelatedTasks(projectIds, projectPublicIds);
 
-      // clients (assigned to manager via RoleBasedLoginResponse or fallback)
       const resources = await RoleBasedLoginResponse.getAccessibleResources(req.user._id, req.user.role, req.user.tenant_id, req.user.id);
       let assignedClientIds = Array.isArray(resources.assignedClientIds) ? resources.assignedClientIds.filter(Boolean) : [];
       if (!assignedClientIds.length) {
@@ -863,7 +911,6 @@ getTaskTimeline: async (req, res) => {
         ? (await queryAsync(`SELECT ${clientSelect} FROM clientss WHERE id IN (?) AND (isDeleted IS NULL OR isDeleted != 1) ORDER BY id DESC`, [assignedClientIds]))
         : [];
 
-      // employees in manager's department
       const deptPub = await fetchManagerDepartment(req.user._id);
       const hasUserPublic = await cachedHasColumn('users', 'public_id');
       const userSelect = hasUserPublic ? '_id, public_id, name, email, phone, title' : '_id, name, email, phone, title';

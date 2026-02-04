@@ -63,9 +63,7 @@ async function sendOtp(email, userId) {
 
     const subject = process.env.OTP_SUBJECT || 'Your one-time verification code';
     const text = `Your one-time verification code is: ${code}. It expires in ${Math.floor(ttlSeconds / 60)} minute(s).`;
-    const html = `<p>Your one-time verification code is: <strong>${code}</strong>.</p><p>It expires in ${Math.floor(ttlSeconds / 60)} minute(s).</p>`;
-
-    // send via centralized emailService
+    const html = `<p>Your one-time verification code is: <strong>${code}</strong>.</p><p>It expires in ${Math.floor(ttlSeconds / 60)} minute(s).</p>`;
     const tpl = emailService.otpTemplate(code, Math.floor(ttlSeconds / 60));
     const sentRes = await emailService.sendEmail({ to: email, subject: tpl.subject, text: tpl.text, html: tpl.html });
     try {
@@ -76,8 +74,7 @@ async function sendOtp(email, userId) {
     const resp = { code, expiresAt: Date.now() + ttlSeconds * 1000, sent: !!sentRes.sent };
     if (process.env.DEV_INCLUDE_OTP === 'true') resp.code = code;
     return resp;
-  } catch (e) {
-    // Never throw from OTP sending; callers should treat as "not sent".
+  } catch (e) {
     logger.error('otpService: sendOtp failed', e && e.message ? e.message : String(e));
     const resp = { code, expiresAt: Date.now() + ttlSeconds * 1000, sent: false };
     if (process.env.DEV_INCLUDE_OTP === 'true') resp.code = code;
@@ -102,13 +99,9 @@ async function sendNotification({ to, subject, text, html }) {
 }
 
 async function resendOtp(email, userId) {
-  logger.info(`Resending OTP for userId: ${userId}`);
-
-  // generate new code
+  logger.info(`Resending OTP for userId: ${userId}`);
   const code = generateCode();
-  const ttlSeconds = parseInt(process.env.OTP_TTL_SECONDS || String(5 * 60), 10);
-
-  // store again (overwrite)
+  const ttlSeconds = parseInt(process.env.OTP_TTL_SECONDS || String(5 * 60), 10);
   await _storeOtp(userId, code, ttlSeconds);
 
   const subject = process.env.OTP_SUBJECT || 'Your verification code (Resent)';

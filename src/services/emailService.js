@@ -32,10 +32,7 @@ if (smtpConfigured) {
 }
 
 
-// EMAIL TEMPLATES
-// =================
 
-// OTP TEMPLATE
 function otpTemplate(code, minutes = 5, purpose = "Verification") {
   return {
     subject: `${purpose} Code - ${COMPANY_NAME}`,
@@ -76,7 +73,6 @@ ${COMPANY_NAME}
   };
 }
 
-// PASSWORD RESET TEMPLATE
 function passwordResetTemplate({ email = "User", code, minutes = 10 }) {
   return {
     subject: `Your ${COMPANY_NAME} Password Reset OTP`,
@@ -113,7 +109,6 @@ ${COMPANY_NAME}
   };
 }
 
-// ACCOUNT CREATION TEMPLATE
 function welcomeTemplate({
   name = "User",
   email = "",
@@ -170,7 +165,6 @@ Setup Link: ${setupLink}
   };
 }
 
-// TASK ASSIGNED TEMPLATE
 function taskAssignedTemplate({ taskTitle, assignedBy, link, assignedTo }) {
   return {
     subject: `New Task Assigned: ${taskTitle}`,
@@ -190,7 +184,6 @@ View Task: ${link}
   };
 }
 
-// TASK STATUS UPDATE TEMPLATE
 function taskStatusTemplate({ taskId, stage, userNames = [] }) {
   return {
     subject: `Task #${taskId} Status Updated: ${stage}`,
@@ -209,10 +202,8 @@ Notified: ${userNames.join(', ')}
   };
 }
 
-// TASK REASSIGNMENT TEMPLATES
-// ===========================
 
-// Task Reassignment Request (to Manager)
+
 function taskReassignmentRequestTemplate({ taskTitle, requesterName, reason, taskLink }) {
   return {
     subject: `Task Reassignment Requested: ${taskTitle}`,
@@ -231,7 +222,6 @@ function taskReassignmentRequestTemplate({ taskTitle, requesterName, reason, tas
   };
 }
 
-// Task Reassignment Approved (to New Assignee)
 function taskReassignmentApprovedTemplate({ taskTitle, oldAssignee, newAssignee, taskLink }) {
   return {
     subject: `Task Reassigned: ${taskTitle}`,
@@ -250,7 +240,6 @@ function taskReassignmentApprovedTemplate({ taskTitle, oldAssignee, newAssignee,
   };
 }
 
-// Task Reassignment Approved (to Old Assignee - Read-Only)
 function taskReassignmentOldAssigneeTemplate({ taskTitle, newAssignee, taskLink }) {
   return {
     subject: `Task Reassigned (Read-Only): ${taskTitle}`,
@@ -269,7 +258,6 @@ function taskReassignmentOldAssigneeTemplate({ taskTitle, newAssignee, taskLink 
   };
 }
 
-// Task Reassignment Approved (to Managers/Admins)
 function taskReassignmentManagerTemplate({ taskTitle, oldAssignee, newAssignee, taskLink }) {
   return {
     subject: `Task Reassignment Completed: ${taskTitle}`,
@@ -288,7 +276,6 @@ function taskReassignmentManagerTemplate({ taskTitle, oldAssignee, newAssignee, 
   };
 }
 
-// Task Reassignment Rejected (to Old Assignee)
 function taskReassignmentRejectedTemplate({ taskTitle, taskLink }) {
   return {
     subject: `Task Reassignment Rejected: ${taskTitle}`,
@@ -307,7 +294,6 @@ function taskReassignmentRejectedTemplate({ taskTitle, taskLink }) {
   };
 }
 
-// Task Reassignment Rejected (to Managers/Admins)
 function taskReassignmentRejectedManagerTemplate({ taskTitle, oldAssignee, taskLink }) {
   return {
     subject: `Task Reassignment Rejected: ${taskTitle}`,
@@ -325,10 +311,8 @@ function taskReassignmentRejectedManagerTemplate({ taskTitle, oldAssignee, taskL
   };
 }
 
-// PROJECT TEMPLATES
-// =================
 
-// Project Manager Assignment Template
+
 function projectManagerAssignmentTemplate({
   projectName,
   clientName,
@@ -407,7 +391,6 @@ ${COMPANY_NAME}
   };
 }
 
-// Client Project Creation Template
 function clientProjectCreationTemplate({
   projectName,
   managerName,
@@ -485,7 +468,6 @@ ${COMPANY_NAME}
   };
 }
 
-// SEND EMAIL
 async function sendEmail({ to, subject, text, html }) {
   if (transporter) {
     try {
@@ -521,8 +503,7 @@ async function sendProjectNotifications({
   creatorName
 }) {
   const results = {};
- 
-  // Send to Project Manager
+
   if (projectManagerInfo?.email) {
     const pmTemplate = projectManagerAssignmentTemplate({
       projectName,
@@ -543,8 +524,7 @@ async function sendProjectNotifications({
       ...pmTemplate
     });
   }
- 
-  // Send to Client
+
   if (clientInfo?.email) {
     const clientTemplate = clientProjectCreationTemplate({
       projectName,
@@ -678,7 +658,7 @@ async function sendTaskAssignmentEmails({
   const results = {};
 
   try {
-    // Basic validation
+
     if (!connection) {
       logger.warn('⚠️ Database connection not provided');
       return results;
@@ -689,8 +669,6 @@ async function sendTaskAssignmentEmails({
       return results;
     }
 
-
-    // Accept mixed identifiers: numeric internal ids or string public_ids
     const publicIds = [];
     const internalIds = [];
     finalAssigned.forEach((id) => {
@@ -706,7 +684,6 @@ async function sendTaskAssignmentEmails({
       return results;
     }
 
-    // Build SQL to fetch users by public_id OR _id
     const users = await new Promise((resolve, reject) => {
       const clauses = [];
       const params = [];
@@ -732,9 +709,7 @@ async function sendTaskAssignmentEmails({
 
     logger.info(`📧 Preparing to send ${users.length} task assignment emails`);
 
-    /**
-     * Send emails
-     */
+    
     for (const user of users) {
       if (!user.email) continue;
 
@@ -800,8 +775,7 @@ module.exports = {
   ,taskReassignmentRejectedTemplate
   ,taskReassignmentRejectedManagerTemplate
 };
- 
-// Convenience: send credentials/welcome email to newly created users
+
 async function sendCredentials(to, name, publicId, tempPassword, setupLink) {
   try {
     const link = setupLink || `${env.BASE_URL || env.FRONTEND_URL}/auth/setup?uid=${encodeURIComponent(publicId)}`;

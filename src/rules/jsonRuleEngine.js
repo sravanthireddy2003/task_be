@@ -1,4 +1,4 @@
-// src/rules/jsonRuleEngine.js
+
 
 const { Engine } = require('json-rules-engine');
 const db = require('../config/db');
@@ -48,21 +48,19 @@ class JsonRuleEngine {
     return res;
   }
 
-  // Convert our JSON condition shape into json-rules-engine 'all'/'any' array
   convertConditionToClauses(condition) {
-    // returns { all: [...] } or { any: [...] }
+
     const clauses = [];
 
     for (const [key, value] of Object.entries(condition)) {
       if (key === '$or' && Array.isArray(value)) {
-        // any
+
         const anyClauses = value.map(sub => this.convertConditionToClauses(sub));
         return { any: anyClauses.map(c => c.all || c.any).flat() };
       }
 
-      // If nested object contains operator descriptors ($eq, $in, $gt, ...)
       if (value && typeof value === 'object' && !Array.isArray(value)) {
-        // operators
+
         if (value.$or) {
           const any = value.$or.map(sub => this.convertConditionToClauses(sub));
           return { any: any.map(c => c.all || c.any).flat() };
@@ -101,18 +99,17 @@ class JsonRuleEngine {
           continue;
         }
 
-        // If no operator recognized, try nested conversion (e.g., payload: { leaveDays: { $gt: 5 } })
         const nested = this.convertConditionToClauses(value);
-        // nested may be { all: [...] }
+
         if (nested && nested.all) {
-          // rename nested facts to include parent key prefix
+
           nested.all.forEach(c => {
             clauses.push({ fact: `${key}.${c.fact}`, operator: c.operator, value: c.value });
           });
           continue;
         }
       } else {
-        // simple equality
+
         clauses.push({ fact: key, operator: 'equal', value });
       }
     }
@@ -120,7 +117,6 @@ class JsonRuleEngine {
     return { all: clauses };
   }
 
-  // Create engine with custom operators and run
   async runEngineForRule(rule, facts) {
     const engine = new Engine();
 
@@ -143,9 +139,9 @@ class JsonRuleEngine {
           if (typeof v === 'string' && typeof jsonVal === 'string') {
             const vl = v.toLowerCase();
             const jl = jsonVal.toLowerCase();
-            // direct equality or simple contains/endsWith
+
             if (vl === jl || vl.includes(jl) || jl.includes(vl) || vl.endsWith(jl) || jl.endsWith(vl)) return true;
-            // also consider core action name (strip method prefix and extra underscores)
+
             const stripPrefix = s => s.replace(/^post_+|^get_+|^put_+|^patch_+|^delete_+/i, '').replace(/^_+/, '');
             const coreV = stripPrefix(vl);
             const coreJ = stripPrefix(jl);
@@ -171,7 +167,6 @@ class JsonRuleEngine {
       return jsonVal === exists;
     });
 
-    // Convert condition into engine rule
     const converted = this.convertConditionToClauses(rule.conditions || {});
     const ruleDef = {
       conditions: converted,
@@ -185,12 +180,10 @@ class JsonRuleEngine {
     return results.events && results.events.length > 0;
   }
 
-  // Evaluate a set of rules (array of rule objects) against context
   async evaluateFromRules(rulesArray, context) {
-    // flatten facts
+
     const facts = this.flattenContext(context);
 
-    // sort by priority ascending (lower number = higher priority)
     const sorted = (rulesArray || []).filter(r => r.active).sort((a, b) => (a.priority || 100) - (b.priority || 100));
 
     for (const rule of sorted) {
@@ -205,10 +198,8 @@ class JsonRuleEngine {
             nextAction: rule.action === 'REQUIRE_APPROVAL' ? 'MANAGER_APPROVAL' : null
           };
 
-          // audit log (non-blocking)
           setImmediate(() => logger.info('RuleAudit', { ruleCode: rule.ruleCode, version: rule.version, decision: decision.allowed ? 'ALLOWED' : 'DENIED', userId: context.userId, timestamp: new Date().toISOString() }));
 
-          // stop on DENY or REQUIRE_APPROVAL or ALLOW
           if (rule.action === 'DENY' || rule.action === 'REQUIRE_APPROVAL' || rule.action === 'ALLOW') {
             return decision;
           }
@@ -218,7 +209,6 @@ class JsonRuleEngine {
       }
     }
 
-    // default deny
     return { allowed: false, ruleCode: 'NO_RULE_MATCH', reason: 'No matching rule found', nextAction: null };
   }
 
@@ -227,7 +217,6 @@ class JsonRuleEngine {
 
     const context = buildRuleContext(req, user, resource);
 
-    // Filter rules
     let rulesToEvaluate = this.rules;
     if (ruleCode) {
       const byCode = this.rules.filter(r => r.ruleCode === ruleCode);

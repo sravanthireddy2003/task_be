@@ -14,13 +14,9 @@ async function runMigrations() {
         if (err) reject(err);
         else resolve(results);
       });
-    });
-
-    // Read the schema.sql file
+    });
     const schemaPath = path.join(__dirname, 'src', 'workflow', 'schema.sql');
-    const schemaSQL = fs.readFileSync(schemaPath, 'utf8');
-
-    // Split the SQL into individual statements
+    const schemaSQL = fs.readFileSync(schemaPath, 'utf8');
     const statements = schemaSQL.split(';').map(stmt => stmt.trim()).filter(stmt => stmt.length > 0);
 
     for (const statement of statements) {

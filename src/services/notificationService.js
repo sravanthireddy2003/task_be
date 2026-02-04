@@ -3,7 +3,7 @@ let logger;
 try { logger = require(__root + 'logger'); } catch (e) { logger = require('../../logger'); }
  
 class NotificationService {
-  // HELPER: Validate user exists before creating notification
+
   static async validateUsers(userIds) {
     if (!Array.isArray(userIds) || userIds.length === 0) return [];
    
@@ -19,12 +19,10 @@ class NotificationService {
    
     return validUsers;
   }
- 
-  // Create and send notification to specific users
+
   static async createAndSend(userIds, title, message, type, entityType = null, entityId = null) {
     if (!Array.isArray(userIds) || userIds.length === 0) return;
- 
-    // ✅ Validate users exist FIRST
+
     const validUserIds = await this.validateUsers(userIds);
     if (validUserIds.length === 0) {
       logger.warn('No valid users found for notification');
@@ -39,8 +37,7 @@ class NotificationService {
       entity_type: entityType,
       entity_id: entityId
     }));
- 
-    // Insert into DB
+
     const values = notifications.map(n => [n.user_id, n.title, n.message, n.type, n.entity_type, n.entity_id]);
     const sql = 'INSERT INTO notifications (user_id, title, message, type, entity_type, entity_id) VALUES ?';
    
@@ -54,8 +51,7 @@ class NotificationService {
         }
       });
     });
- 
-    // Emit to sockets
+
     const payload = {
       title,
       message,
@@ -70,8 +66,7 @@ class NotificationService {
       }
     });
   }
- 
-  // Create and send to roles
+
   static async createAndSendToRoles(roles, title, message, type, entityType = null, entityId = null, tenantId = null) {
     if (!Array.isArray(roles) || roles.length === 0) return;
  
@@ -111,8 +106,7 @@ class NotificationService {
       });
     });
   }
- 
-  // ✅ ADDED: Get single notification by ID and user (MISSING METHOD)
+
   static async getById(notificationId, userId) {
     const sql = 'SELECT * FROM notifications WHERE id = ? AND user_id = ?';
     return new Promise((resolve, reject) => {
@@ -122,8 +116,7 @@ class NotificationService {
       });
     });
   }
- 
-  // Mark as read
+
   static async markAsRead(notificationId, userId) {
     const sql = 'UPDATE notifications SET is_read = TRUE WHERE id = ? AND user_id = ?';
     return new Promise((resolve, reject) => {
@@ -133,8 +126,7 @@ class NotificationService {
       });
     });
   }
- 
-  // Mark all as read
+
   static async markAllAsRead(userId) {
     const sql = 'UPDATE notifications SET is_read = TRUE WHERE user_id = ? AND is_read = FALSE';
     return new Promise((resolve, reject) => {
@@ -144,8 +136,7 @@ class NotificationService {
       });
     });
   }
- 
-  // Delete notification
+
   static async delete(notificationId, userId) {
     const sql = 'DELETE FROM notifications WHERE id = ? AND user_id = ?';
     return new Promise((resolve, reject) => {
@@ -165,8 +156,7 @@ class NotificationService {
       });
     });
   }
- 
-  // ✅ BONUS: Get unread count
+
   static async getUnreadCount(userId) {
     const sql = 'SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = FALSE';
     return new Promise((resolve, reject) => {

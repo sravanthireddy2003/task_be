@@ -19,8 +19,7 @@ router.get('/:projectId/chat/messages', ruleEngine(RULES.PROJECT_VIEW), requireR
   try {
     const { projectId } = req.params;
     const { limit = 50, offset = 0 } = req.query;
- 
-    // Validate user has access to this project
+
     const hasAccess = await ChatService.validateProjectAccess(req.user._id, projectId);
     if (!hasAccess) {
       return res.status(403).json({
@@ -28,8 +27,7 @@ router.get('/:projectId/chat/messages', ruleEngine(RULES.PROJECT_VIEW), requireR
         error: 'You do not have access to this project chat'
       });
     }
- 
-    // Get messages
+
     const messages = await ChatService.getProjectMessages(projectId, parseInt(limit), parseInt(offset));
  
     res.json({
@@ -49,13 +47,11 @@ router.get('/:projectId/chat/messages', ruleEngine(RULES.PROJECT_VIEW), requireR
     });
   }
 });
- 
-// GET /api/projects/:projectId/chat/participants - Get all project members
+
 router.get('/:projectId/chat/participants', ruleEngine(RULES.PROJECT_VIEW), requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const { projectId } = req.params;
- 
-    // Validate user has access to this project
+
     const hasAccess = await ChatService.validateProjectAccess(req.user._id, projectId);
     if (!hasAccess) {
       return res.status(403).json({
@@ -63,8 +59,7 @@ router.get('/:projectId/chat/participants', ruleEngine(RULES.PROJECT_VIEW), requ
         error: 'You do not have access to this project chat'
       });
     }
- 
-    // Get all project members
+
     const participants = await ChatService.getAllProjectMembers(projectId);
  
     res.json({
@@ -80,8 +75,7 @@ router.get('/:projectId/chat/participants', ruleEngine(RULES.PROJECT_VIEW), requ
     });
   }
 });
- 
-// POST /api/projects/:projectId/chat/messages - Send a message (alternative to Socket.IO)
+
 router.post('/:projectId/chat/messages', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const { projectId } = req.params;
@@ -93,8 +87,7 @@ router.post('/:projectId/chat/messages', ruleEngine(RULES.PROJECT_UPDATE), requi
         error: 'Message cannot be empty'
       });
     }
- 
-    // Validate user has access to this project
+
     const hasAccess = await ChatService.validateProjectAccess(req.user._id, projectId);
     if (!hasAccess) {
       return res.status(403).json({
@@ -107,11 +100,10 @@ router.post('/:projectId/chat/messages', ruleEngine(RULES.PROJECT_UPDATE), requi
     let responseMessage = message;
  
     if (message.startsWith('/')) {
-      // Handle bot command - send response as a separate bot message
+
       const userId = req.user._id || req.user.id; // Fallback to public_id if _id is not available
       const botResponse = await ChatService.handleChatbotCommand(projectId, message, req.user.name, userId);
- 
-      // Save the bot response message
+
       const botMessage = await ChatService.saveMessage(
         projectId,
         0, // System user ID for bot
@@ -127,8 +119,7 @@ router.post('/:projectId/chat/messages', ruleEngine(RULES.PROJECT_UPDATE), requi
         message,
         'text'
       );
- 
-      // Emit both messages to project room via Socket.IO
+
       const roomName = `project_${projectId}`;
       if (global.io) {
         global.io.to(roomName).emit('chat_message', userMessage);
@@ -144,8 +135,7 @@ router.post('/:projectId/chat/messages', ruleEngine(RULES.PROJECT_UPDATE), requi
       });
       return;
     }
- 
-    // Save regular message to database
+
     const savedMessage = await ChatService.saveMessage(
       projectId,
       req.user._id,
@@ -153,8 +143,7 @@ router.post('/:projectId/chat/messages', ruleEngine(RULES.PROJECT_UPDATE), requi
       responseMessage,
       messageType
     );
- 
-    // Emit to project room via Socket.IO
+
     const roomName = `project_${projectId}`;
     if (global.io) {
       global.io.to(roomName).emit('chat_message', savedMessage);
@@ -173,13 +162,11 @@ router.post('/:projectId/chat/messages', ruleEngine(RULES.PROJECT_UPDATE), requi
     });
   }
 });
- 
-// GET /api/projects/:projectId/chat/stats - Get chat statistics
+
 router.get('/:projectId/chat/stats', ruleEngine(RULES.PROJECT_VIEW), requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const { projectId } = req.params;
- 
-    // Validate user has access to this project
+
     const hasAccess = await ChatService.validateProjectAccess(req.user._id, projectId);
     if (!hasAccess) {
       return res.status(403).json({
@@ -187,8 +174,7 @@ router.get('/:projectId/chat/stats', ruleEngine(RULES.PROJECT_VIEW), requireRole
         error: 'You do not have access to this project chat'
       });
     }
- 
-    // Get chat statistics using ChatService
+
     const stats = await ChatService.getChatStats(projectId);
  
     res.json({
@@ -204,13 +190,11 @@ router.get('/:projectId/chat/stats', ruleEngine(RULES.PROJECT_VIEW), requireRole
     });
   }
 });
- 
-// DELETE /api/projects/:projectId/chat/messages/:messageId - Delete a message (Admin only)
+
 router.delete('/:projectId/chat/messages/:messageId', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin']), async (req, res) => {
   try {
     const { projectId, messageId } = req.params;
- 
-    // Verify message belongs to project and user can delete it
+
     const [message] = await q(`
       SELECT * FROM chat_messages
       WHERE id = ? AND project_id = ?
@@ -222,19 +206,16 @@ router.delete('/:projectId/chat/messages/:messageId', ruleEngine(RULES.PROJECT_U
         error: 'Message not found'
       });
     }
- 
-    // Only allow deletion by message sender or admin
+
     if (message.sender_id !== req.user._id && req.user.role !== 'Admin') {
       return res.status(403).json({
         success: false,
         error: 'You can only delete your own messages'
       });
     }
- 
-    // Delete the message
+
     await q('DELETE FROM chat_messages WHERE id = ?', [messageId]);
- 
-    // Emit deletion event to project room
+
     const roomName = `project_${projectId}`;
     if (global.io) {
       global.io.to(roomName).emit('message_deleted', {

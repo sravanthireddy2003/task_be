@@ -27,19 +27,16 @@ const fs = require('fs');
 
 global.__root = __dirname + '/';
 
-// Security middlewares
 app.disable('x-powered-by');
 app.use(helmet());
 app.use(xss());
 app.use(hpp());
 
-// Rate limiting configuration
 const isDevelopment = process.env.NODE_ENV !== 'production';
 const globalRateLimitConfig = isDevelopment
   ? { windowMs: 15 * 60 * 1000, max: 1000 } // More permissive for development
   : { windowMs: 15 * 60 * 1000, max: 200 }; // Stricter for production
 
-// More permissive rate limiting for auth routes
 const authRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: isDevelopment ? 50 : 10, // Allow more login attempts
@@ -55,10 +52,8 @@ const authRateLimit = rateLimit({
 app.use('/api/auth', authRateLimit);
 app.use(rateLimit(globalRateLimitConfig));
 
-// Request logging: morgan -> winston
 app.use(morgan('combined', { stream: { write: msg => logger.info(msg.trim()) } }));
 
-// Socket.IO authentication and room joining
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
@@ -75,7 +70,7 @@ io.use((socket, next) => {
 
 io.on('connection', async (socket) => {
   try {
-    // Get internal user ID from public_id
+
     const userResult = await new Promise((resolve, reject) => {
       db.query('SELECT _id, name, role FROM users WHERE public_id = ? LIMIT 1', [socket.user.id], (err, rows) => {
         if (err) reject(err);
@@ -97,10 +92,9 @@ io.on('connection', async (socket) => {
 
   socket.join(`user_${userId}`);
 
-  // Handle joining project chat room
   socket.on('join_project_chat', async (projectId) => {
     try {
-      // Validate user has access to this project
+
       const hasAccess = await ChatService.validateProjectAccess(userId, projectId);
 
       if (!hasAccess) {
@@ -108,17 +102,13 @@ io.on('connection', async (socket) => {
         return;
       }
 
-      // Create/get project chat room
       const chatRoom = await ChatService.getOrCreateProjectChat(projectId);
       const roomName = chatRoom.room_name;
 
-      // Join the project room
       socket.join(roomName);
 
-      // Add user to participants
       await ChatService.addParticipant(projectId, userId, userName, userRole);
 
-      // Notify others in the room
       socket.to(roomName).emit('user_joined', {
         userId,
         userName,
@@ -126,10 +116,8 @@ io.on('connection', async (socket) => {
         timestamp: new Date()
       });
 
-      // Send system message
       await ChatService.emitUserPresence(projectId, userName, 'joined');
 
-      // Send online participants list
       const onlineParticipants = await ChatService.getOnlineParticipants(projectId);
       socket.emit('online_participants', onlineParticipants);
 
@@ -141,25 +129,20 @@ io.on('connection', async (socket) => {
     }
   });
 
-  // Handle leaving project chat room
   socket.on('leave_project_chat', async (projectId) => {
     try {
       const roomName = `project_${projectId}`;
 
-      // Leave the room
       socket.leave(roomName);
 
-      // Update participant status
       await ChatService.removeParticipant(projectId, userId);
 
-      // Notify others
       socket.to(roomName).emit('user_left', {
         userId,
         userName,
         timestamp: new Date()
       });
 
-      // Send system message
       await ChatService.emitUserPresence(projectId, userName, 'left');
 
       logger.info(`User ${userName} left project chat: ${roomName}`);
@@ -169,12 +152,10 @@ io.on('connection', async (socket) => {
     }
   });
 
-  // Handle chat messages
   socket.on('send_message', async (data) => {
     try {
       const { projectId, message } = data;
 
-      // Validate access
       const hasAccess = await ChatService.validateProjectAccess(userId, projectId);
       if (!hasAccess) {
         socket.emit('error', { message: 'You do not have access to send messages in this project' });
@@ -185,10 +166,9 @@ io.on('connection', async (socket) => {
       let responseMessage = message;
 
       if (message.startsWith('/')) {
-        // Handle bot command - send response as a separate bot message
+
         const botResponse = await ChatService.handleChatbotCommand(projectId, message, userName, userId);
 
-        // Save the bot response message
         const botMessage = await ChatService.saveMessage(
           projectId,
           0, // System user ID for bot
@@ -205,7 +185,6 @@ io.on('connection', async (socket) => {
           'text'
         );
 
-        // Emit both messages
         const roomName = `project_${projectId}`;
         io.to(roomName).emit('chat_message', userMessage);
         io.to(roomName).emit('chat_message', botMessage);
@@ -214,7 +193,6 @@ io.on('connection', async (socket) => {
         return; // Don't send the original message
       }
 
-      // Save regular message to database
       const savedMessage = await ChatService.saveMessage(
         projectId,
         userId,
@@ -223,7 +201,6 @@ io.on('connection', async (socket) => {
         messageType
       );
 
-      // Emit to project room
       const roomName = `project_${projectId}`;
       io.to(roomName).emit('chat_message', savedMessage);
 
@@ -235,7 +212,6 @@ io.on('connection', async (socket) => {
     }
   });
 
-  // Handle typing indicators
   socket.on('typing_start', (projectId) => {
     const roomName = `project_${projectId}`;
     socket.to(roomName).emit('user_typing', {
@@ -254,11 +230,9 @@ io.on('connection', async (socket) => {
     });
   });
 
-  // Handle disconnect
   socket.on('disconnect', async () => {
     logger.info(`User ${userName} disconnected`);
 
-    // Find all project rooms this user was in and update their status
     const rooms = Array.from(socket.rooms).filter(room => room.startsWith('project_'));
 
     for (const roomName of rooms) {
@@ -267,7 +241,6 @@ io.on('connection', async (socket) => {
       try {
         await ChatService.removeParticipant(projectId, userId);
 
-        // Notify others in the room
         socket.to(roomName).emit('user_left', {
           userId,
           userName,
@@ -287,42 +260,63 @@ io.on('connection', async (socket) => {
   }
 });
 
-// Make io available globally
 global.io = io;
-
-// Start workflow SLA worker (non-blocking) - commented out as not implemented in new workflow module
-// try {
-// } catch (e) {
-//   logger.error('Failed to start workflow SLA worker:', e && e.message);
-// }
 
 app.use(bodyParser.urlencoded({ extended: false }))
 app.use(bodyParser.json())
-// Accept Vite dev-server pings (Content-Type: text/x-vite-ping)
+
 app.use((req, res, next) => {
   try {
     const ct = req.headers['content-type'] || '';
     if (ct.indexOf('text/x-vite-ping') === 0) {
       return res.status(200).send('pong');
     }
-  } catch (e) { /* ignore and continue */ }
+  } catch (e) {  }
   return next();
 });
 app.use(cors());
-// Note: rule engine is applied per-route where needed to avoid protecting public endpoints like /api/auth/login
-// Serve uploads from project root `uploads` directory (not src/uploads)
-// Normalize double-encoded percent sequences (e.g. "%2520") so legacy/incorrect
-// links like /uploads/Full%2520Name.pdf resolve to the actual file.
-app.use('/uploads', (req, res, next) => {
+
+
+
+
+app.use('/uploads', async (req, res, next) => {
   try {
+    // normalize double-encoded percent sequences
     if (req.url && req.url.indexOf('%25') !== -1) {
       let u = req.url;
-      // Replace repeated %25 -> % until none remain (handles multiple encodings)
       while (u.indexOf('%25') !== -1) u = u.replace(/%25/g, '%');
       req.url = u;
     }
+
+    // Try to serve file directly by decoded path
+    const candidateUploads = path.join(__dirname, '..', 'uploads');
+    const decoded = decodeURIComponent(req.path || req.url || '');
+    const rel = decoded.replace(/^\/+/, '');
+    const physical = path.join(candidateUploads, rel);
+    if (fs.existsSync(physical)) {
+      return res.sendFile(physical);
+    }
+
+    // If file not present at that path, attempt to find a document record
+    // matching either the original fileName or a filePath that ends with the requested name.
+    try {
+      const basename = path.basename(rel);
+      const q = (sql, params = []) => new Promise((resolve, reject) => db.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows))));
+      // search by exact fileName
+      let rows = await q('SELECT filePath FROM documents WHERE fileName = ? OR filePath LIKE ? LIMIT 1', [basename, '%'+basename]);
+      if (rows && rows.length) {
+        let p = rows[0].filePath || '';
+        if (String(p).startsWith('/uploads/')) {
+          const rel2 = p.replace(/^\/+uploads\/+/, '');
+          const physical2 = path.join(candidateUploads, rel2);
+          if (fs.existsSync(physical2)) return res.sendFile(physical2);
+        }
+      }
+    } catch (e) {
+      // ignore DB errors and fallthrough to static
+    }
   } catch (e) {
-    // ignore normalization failures and proceed to static handler
+    // swallow and let static handler try
   }
   return next();
 }, express.static(path.join(__dirname, '..', 'uploads')));
@@ -369,7 +363,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// Centralized error handler (standardized)
 const errorHandler = require(__root + 'middleware/errorHandler');
 app.use(errorHandler);
 
@@ -380,13 +373,11 @@ app.get('/api', function (req, res) {
 const AuthController = require(__root + 'controllers/AuthController');
 app.use('/api/auth', AuthController);
 
-// Audit log routes (admin/manager/employee)
 const auditRoutes = require(__root + 'routes/auditRoutes');
 app.use('/api/admin', auditRoutes.admin);
 app.use('/api/manager', auditRoutes.manager);
 app.use('/api/employee', auditRoutes.employee);
 
-// Client-Viewer Access Control Middleware
 const clientViewerAccessControl = require(__root + 'middleware/clientViewerAccess');
 
 const StaffUser = require(__root + 'controllers/User');
@@ -402,11 +393,9 @@ app.use('/api/uploads',uploadCRUD);
 const clientRoutes = require(__root + 'routes/clientRoutes');
 app.use('/api/clients', clientRoutes);
 
-// Admin routes (modules, departments, projects, tasks overview)
 const adminRoutes = require(__root + 'routes/adminRoutes');
 app.use('/api/admin', adminRoutes);
 
-// Project Management Routes (department-wise projects, tasks, subtasks)
 const projectRoutes = require(__root + 'routes/projectRoutes');
 app.use('/api/projects', projectRoutes);
 
@@ -425,22 +414,18 @@ app.use('/api/projects', chatRoutes);
 const documentRoutes = require(__root + 'routes/documentRoutes');
 app.use('/api/documents', documentRoutes);
 
-// Workflow routes
 const workflowRoutes = require(__root + 'workflow/workflowRoutes');
 app.use('/api/workflow', workflowRoutes);
 
-// Reports routes
 const reportRoutes = require(__root + 'routes/reportRoutes');
 app.use('/api/reports', reportRoutes);
 
-// Backwards-compatible redirect: support callers hitting /projects (legacy)
-// Redirect to /api/projects preserving method and query string (307 Temporary Redirect)
+
 app.use('/projects', (req, res) => {
   return res.redirect(307, '/api/projects' + req.url);
 });
 
-// Backwards-compatible redirect: support callers hitting /documents (legacy)
-// Redirect to /api/documents preserving method and query string (307 Temporary Redirect)
+
 app.use('/documents', (req, res) => {
   return res.redirect(307, '/api/documents' + req.url);
 });
@@ -448,7 +433,6 @@ app.use('/documents', (req, res) => {
 
 module.exports = server;
 
-// Graceful shutdown: close HTTP server and DB pool
 function shutdown(signal) {
   logger.info(`Received ${signal}. Shutting down gracefully...`);
   try {
@@ -469,7 +453,7 @@ function shutdown(signal) {
         process.exit(1);
       }
     });
-    // Force exit after 10s
+
     setTimeout(() => {
       logger.warn('Forcing shutdown after timeout.');
       process.exit(1);

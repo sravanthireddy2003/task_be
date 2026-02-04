@@ -19,10 +19,7 @@ router.use((req, res, next) => {
   }
   req.normalizedTenantId = tid;
   next();
-});
-
-// POST /api/workflow/request
-// Employee requests task completion, which moves it to REVIEW
+});
 router.post('/request', requireAuth, async (req, res) => {
   try {
     const { entityType, entityId, toState, projectId, meta } = req.body;
@@ -45,10 +42,7 @@ router.post('/request', requireAuth, async (req, res) => {
     logger.error("[ERROR] /workflow/request:", e);
     res.status(400).json({ success: false, error: e.message });
   }
-});
-
-// POST /api/workflow/project/close-request
-// Manager requests project closure when all tasks are completed
+});
 router.post('/project/close-request', requireAuth, requireRole(['MANAGER']), async (req, res) => {
   try {
     const { projectId, reason } = req.body;
@@ -63,10 +57,7 @@ router.post('/project/close-request', requireAuth, requireRole(['MANAGER']), asy
     logger.error('[ERROR] /workflow/project/close-request:', e);
     return res.status(400).json({ success: false, error: e.message });
   }
-});
-
-// POST /api/workflow/approve
-// Manager/Admin approves or rejects a request
+});
 router.post('/approve', requireAuth, requireRole(['MANAGER', 'ADMIN']), async (req, res) => {
   try {
     const { requestId, action, reason } = req.body;
@@ -96,12 +87,7 @@ router.post('/approve', requireAuth, requireRole(['MANAGER', 'ADMIN']), async (r
     logger.error("[ERROR] /workflow/approve:", e);
     res.status(400).json({ success: false, error: e.message });
   }
-});
-
-// GET /api/workflow/pending
-// Returns workflow requests with enriched project/task data
-// ⚠️ IMPORTANT: Frontend developers, see docs/WORKFLOW_STATUS_GUIDE.md for status field usage
-// Always use `project_status_info.display` for UI, NOT `project_status`
+});
 router.get('/pending', requireAuth, async (req, res) => {
   try {
     let role = req.query.role || req.user.role;
@@ -111,24 +97,14 @@ router.get('/pending', requireAuth, async (req, res) => {
     const requestedStatus = req.query.status || (['Manager', 'Admin'].includes(role) ? 'all' : 'PENDING');
     
     const tenantId = req.normalizedTenantId;
-    
-    logger.debug(`[DEBUG] Fetching workflow requests: tenantId=${tenantId}, role=${role}, requestedStatus=${requestedStatus}`);
-
-    // Always fetch PENDING requests (ready to approve)
-    const pendingRequests = await workflowService.getRequests({ tenantId, role, status: 'PENDING' });
-    
-    // Always fetch APPROVED requests (already approved)
-    const approvedRequests = await workflowService.getRequests({ tenantId, role, status: 'APPROVED' });
-
-    // Filter out requests where project is already CLOSED (shouldn't be in workflow) - only for PENDING
+    const userId = req.user._id; // Get the logged-in user's ID
+    const pendingRequests = await workflowService.getRequests({ tenantId, role, status: 'PENDING', userId });
+    const approvedRequests = await workflowService.getRequests({ tenantId, role, status: 'APPROVED', userId });
     const filterClosedProjects = (requests) => 
       requests.filter(r => String(r.project_status).toUpperCase() !== 'CLOSED');
 
-    const filteredPendingRequests = filterClosedProjects(pendingRequests);
-    // For approved requests, we want to show them even if project is now closed (historical record)
-    const filteredApprovedRequests = approvedRequests;
-
-    // Prepare response data
+    const filteredPendingRequests = filterClosedProjects(pendingRequests);
+    const filteredApprovedRequests = approvedRequests;
     const responseData = {
       ready_to_approve: filteredPendingRequests.map(r => ({
         ...r,
@@ -156,9 +132,7 @@ router.get('/pending', requireAuth, async (req, res) => {
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
-});
-
-// GET /api/workflow/history/:entityType/:entityId
+});
 router.get('/history/:entityType/:entityId', requireAuth, async (req, res) => {
   try {
     const { entityType, entityId } = req.params;

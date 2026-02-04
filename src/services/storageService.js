@@ -20,8 +20,7 @@ class StorageService {
     }
   }
 
-  // Uploads a local file (from multer) to selected provider.
-  // Returns an object { storagePath }
+
   async upload(file, key) {
     if (!file) throw new Error('No file provided to upload');
 
@@ -37,12 +36,10 @@ class StorageService {
       return { storagePath: `s3://${this.bucket}/${key}`, provider: 's3', key };
     }
 
-    // default: local — accept multer memory buffers or disk paths
     try {
       const uploadsDir = path.resolve(path.join(__dirname, '..', '..', 'uploads'));
       fs.mkdirSync(uploadsDir, { recursive: true });
 
-      // prefer provided key as filename, otherwise fall back to timestamp+originalname
       const originalName = file.originalname || (file.name || 'upload');
       const filename = key || `${Date.now()}_${originalName.replace(/[^a-zA-Z0-9._()-]/g, '_')}`;
       const destPath = path.join(uploadsDir, filename);
@@ -50,11 +47,11 @@ class StorageService {
       if (file.buffer && Buffer.isBuffer(file.buffer)) {
         fs.writeFileSync(destPath, file.buffer);
       } else if (file.path) {
-        // multer.diskStorage already wrote file.path — copy to our uploads dir using the desired filename
+
         try {
           fs.copyFileSync(file.path, destPath);
         } catch (e) {
-          // fallback: attempt to move
+
           fs.renameSync(file.path, destPath);
         }
       } else {
@@ -79,7 +76,6 @@ class StorageService {
       return { redirectUrl: url, expiresInSeconds: expiresIn };
     }
 
-    // If storagePath encodes an s3://bucket/key value, parse it and generate signed URL
     if (STORAGE_PROVIDER === 's3' && storageInfo.storagePath && typeof storageInfo.storagePath === 'string' && storageInfo.storagePath.startsWith('s3://')) {
       try {
         const withoutPrefix = storageInfo.storagePath.replace('s3://', '');
@@ -97,10 +93,8 @@ class StorageService {
       }
     }
 
-    // local path
     let p = storageInfo.storagePath;
 
-    // If storagePath is a public uploads path (e.g. '/uploads/...'), resolve to absolute file path
     const candidateUploads = path.resolve(path.join(__dirname, '..', '..', 'uploads'));
       if (typeof p === 'string' && p.startsWith('/uploads/')) {
       const rel = p.replace(/^[\\/]+uploads[\\/]+/, '');
@@ -119,7 +113,7 @@ class StorageService {
       let publicPath = null;
       if (resolvedP.startsWith(candidateUploads)) {
         const rel = path.relative(candidateUploads, resolvedP).replace(/\\/g, '/');
-        // encode URI but preserve slashes
+
          publicPath = '/uploads/' + rel;
       } else if (resolvedP.includes('/uploads/')) {
         const idx = resolvedP.indexOf('/uploads/');

@@ -3,15 +3,14 @@ const env = require('../config/env');
 
 function errorHandler(err, req, res, next) {
   if (!err) return next();
-  // Normalize non-HttpError
+
   if (!(err instanceof HttpError)) {
-    // If it's a plain object or Error, wrap as 500
+
     const wrapped = new HttpError(err.status || 500, err.message || 'Internal Server Error', err.code || 'INTERNAL_ERROR');
     if (env.NODE_ENV !== 'production') wrapped.details = err.stack || err;
     err = wrapped;
   }
 
-  // Log the error (avoid leaking secrets)
   try {
     const logObj = { status: err.status, code: err.code, message: err.message };
     if (env.NODE_ENV !== 'production' && err.details) logObj.details = err.details;

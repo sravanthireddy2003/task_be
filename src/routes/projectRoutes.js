@@ -1,26 +1,12 @@
 const express = require('express');
 const router = express.Router();
-const { requireAuth } = require(__root + 'middleware/roles');
- 
-// Import all routers (they export complete routers, not individual functions)
+const { requireAuth } = require(__root + 'middleware/roles');
 const ProjectsRouter = require(__root + 'controllers/Projects');
 const TasksRouter = require(__root + 'controllers/Tasks');
-const SubtasksRouter = require(__root + 'controllers/Subtasks');
- 
-// Ensure authentication on all routes
-router.use(requireAuth);
- 
-// Mount more specific sub-routers first so they are not captured by Projects' dynamic routes
-// ==================== TASK ROUTES ====================
-// Mount Tasks router at /tasks
-router.use('/tasks', TasksRouter);
-
-// ==================== SUBTASK ROUTES ====================
-// Mount Subtasks router at /subtasks
-router.use('/subtasks', SubtasksRouter);
-
-// ==================== PROJECT ROUTES ====================
-// Mount Projects router at root
+const SubtasksRouter = require(__root + 'controllers/Subtasks');
+router.use(requireAuth);
+router.use('/tasks', TasksRouter);
+router.use('/subtasks', SubtasksRouter);
 router.use('/', ProjectsRouter);
  
 module.exports = router;

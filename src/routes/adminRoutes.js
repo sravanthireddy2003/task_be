@@ -18,23 +18,16 @@ router.post('/departments', Admin.createDepartment);
 router.put('/departments/:id', Admin.updateDepartment);
 router.delete('/departments/:id', Admin.deleteDepartment);
 router.get('/projects', Admin.manageProjects);
-router.get('/tasks', Admin.manageTasks);
-
-// Settings
+router.get('/tasks', Admin.manageTasks);
 router.get('/settings', Admin.getSettings);
-router.put('/settings', Admin.putSettings);
-
-// Modules CRUD
+router.put('/settings', Admin.putSettings);
 router.get('/modules', Admin.getModules);
 router.get('/modules/:id', Admin.getModuleById);
 router.post('/modules', Admin.createModule);
 router.put('/modules/:id', Admin.updateModule);
-router.delete('/modules/:id', Admin.deleteModule);
-
-// Admin: reload business rules at runtime (secured by auth+allowRoles('Admin'))
+router.delete('/modules/:id', Admin.deleteModule);
 router.post('/rules/reload', async (req, res) => {
-	try {
-		// force reload
+	try {
 		if (ruleEngine && typeof ruleEngine.loadRules === 'function') {
 			ruleEngine.loaded = false;
 			await ruleEngine.loadRules();

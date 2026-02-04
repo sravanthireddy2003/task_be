@@ -8,20 +8,15 @@ const fs = require('fs');
 
 let logger;
 try { logger = require(global.__root + 'logger'); } catch (e) { try { logger = require('../../logger'); } catch (e2) { logger = console; } }
-// tenantMiddleware intentionally not applied here (only Tasks/Projects are tenant-scoped)
+
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const ruleEngine = require(__root + 'middleware/ruleEngine');
 const RULES = require(__root + 'rules/ruleCodes');
-/*
-  Rule codes used in this router:
-  - UPLOAD_CREATE, UPLOAD_VIEW, UPLOAD_DELETE
-*/
+
 require('dotenv').config();
 
-// Apply auth to uploads (tenant scoping removed — only Projects & Tasks will enforce tenant)
 router.use(requireAuth);
 
-// AWS S3 Client Setup
 const s3 = new S3Client({
   region: process.env.AWS_REGION,
   credentials: {
@@ -56,7 +51,7 @@ router.post('/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin','Ma
       fileUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${uniqueName}`;
       storedPath = `s3://${process.env.AWS_S3_BUCKET_NAME}/${uniqueName}`;
     } else {
-      // persist to local uploads folder
+
       const uploadsDir = path.join(process.cwd(), 'uploads');
       try { fs.mkdirSync(uploadsDir, { recursive: true }); } catch (e) {}
       const dest = path.join(uploadsDir, uniqueName);
@@ -78,7 +73,7 @@ router.post('/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin','Ma
     };
 
     if (!/^\d+$/.test(String(userId))) {
-      // resolve public_id -> _id
+
       db.query('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [userId], (uErr, uRows) => {
         if (uErr) {
           logger.error('User lookup error:', uErr);

@@ -11,7 +11,7 @@ function makeDocumentId() {
 }
 
 module.exports = {
-  // handles multer file object and persists metadata
+
   async uploadDocument({ file, body = {}, user = {} }) {
     if (!file) {
       const err = new Error('No file uploaded');
@@ -23,21 +23,20 @@ module.exports = {
     const entityId = body.entityId || body.entity_id || body.entity || null;
     const documentId = makeDocumentId();
 
-    // upload to configured storage provider
     const storageInfo = await storageService.upload(file, documentId + path.extname(file.originalname));
-    // persist metadata into DB using the project's schema (documentId primary key)
+
     if (storageInfo && storageInfo.provider === 'local' && typeof storageInfo.storagePath === 'string') {
       try {
         const candidateUploads = path.resolve(path.join(__dirname, '..', '..', 'uploads'));
         const resolvedP = path.resolve(storageInfo.storagePath);
         if (resolvedP.startsWith(candidateUploads)) {
           const rel = path.relative(candidateUploads, resolvedP).replace(/\\/g, '/');
-          // encode URI components but preserve slashes
+
           storageInfo.publicPath = '/uploads/' + rel;
-          // Store publicPath in DB filePath (unencoded); controllers will encode when building URLs
+
           storageInfo.storagePath = storageInfo.publicPath;
         } else {
-          // fallback: keep absolute path but also expose publicPath as empty
+
           storageInfo.publicPath = '';
         }
       } catch (e) {
@@ -45,7 +44,6 @@ module.exports = {
       }
     }
 
-    // persist metadata into DB using the project's schema (documentId primary key)
     const createdAt = new Date();
     await q(
       'INSERT INTO documents (documentId, fileName, filePath, storageProvider, entityType, entityId, mimeType, uploadedBy, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -55,14 +53,13 @@ module.exports = {
     return { id: documentId, documentId, fileName: file.originalname, storagePath: storageInfo.storagePath, entityType, entityId, mimeType: file.mimetype };
   },
 
-  // list documents by filters (project/client or entity)
   async listDocuments({ filter = {}, user = {} }) {
     try {
       const params = [];
       let sql = 'SELECT documentId AS id, documentId, fileName, filePath AS storagePath, storageProvider, entityType, entityId, mimeType, uploadedBy, createdAt FROM documents WHERE 1=1';
       if (filter.projectId || filter.projectPublicId) {
         const projectParam = filter.projectId || filter.projectPublicId;
-        // try to resolve public_id to internal id in projects table
+
         try {
           const projRows = await q('SELECT id FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [projectParam, projectParam]);
           if (projRows && projRows.length > 0) {
@@ -74,7 +71,7 @@ module.exports = {
             params.push('PROJECT', projectParam);
           }
         } catch (e) {
-          // on DB resolution error, fall back to direct match
+
           sql += ' AND entityType = ? AND entityId = ?';
           params.push('PROJECT', projectParam);
         }
@@ -104,7 +101,7 @@ module.exports = {
 
   async getDocumentPreview({ id, user = {} }) {
     const doc = await this.getDocumentById(id);
-    // storageService will accept storagePath (which may encode provider info)
+
     const storageInfo = { storagePath: doc.storagePath };
     const handle = await storageService.getDownloadHandle(storageInfo);
     return { ...handle, fileName: doc.fileName, headers: { 'Content-Type': doc.mimeType } };

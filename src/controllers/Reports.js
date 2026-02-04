@@ -11,7 +11,6 @@ function q(sql, params = []) {
 
 router.use(requireAuth);
 
-// POST /api/reports/project
 router.post('/project', async (req, res) => {
   try {
     const { projectId, startDate, endDate } = req.body || {};
@@ -38,7 +37,6 @@ router.post('/project', async (req, res) => {
   }
 });
 
-// Returns which lookup strategies succeeded/failed. Restricted to Admin/Manager.
 router.get('/debug-project', requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const projectId = req.query.projectId || req.query.project_id;
@@ -53,7 +51,6 @@ router.get('/debug-project', requireRole(['Admin', 'Manager']), async (req, res)
 
 module.exports = router;
 
-// GET /api/reports/overview
 router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const startDate = req.query.startDate || req.query.start_date;
@@ -69,12 +66,10 @@ router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (re
     const isEmployee = userRole === 'employee';
     const employeeId = req.user && req.user._id;
 
-    // Employees can only see reports scoped to tasks/projects assigned to them.
     const taskJoin = isEmployee ? 'JOIN taskassignments ta ON ta.task_Id = t.id' : '';
     const taskScopeWhere = isEmployee ? 'AND ta.user_Id = ?' : '';
     const taskScopeParams = isEmployee ? [employeeId] : [];
 
-    // Tasks Created
     let tasksCreated = 0;
     const createdVariants = [
       { sql: `SELECT COUNT(*) as c FROM tasks t ${taskJoin} WHERE DATE(t.taskDate) BETWEEN DATE(?) AND DATE(?) ${taskScopeWhere}`, params: [startStr, endStr, ...taskScopeParams] },
@@ -84,7 +79,6 @@ router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (re
       try { const r = await q(v.sql, v.params); tasksCreated = Number(r[0].c) || 0; break; } catch (e) { continue; }
     }
 
-    // Tasks Completed
     let tasksCompleted = 0;
     const completedVariants = [
       { sql: `SELECT COUNT(*) as c FROM tasks t ${taskJoin} WHERE LOWER(t.status) = 'completed' AND (DATE(t.taskDate) BETWEEN DATE(?) AND DATE(?)) ${taskScopeWhere}`, params: [startStr, endStr, ...taskScopeParams] },
@@ -94,7 +88,6 @@ router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (re
       try { const r = await q(v.sql, v.params); tasksCompleted = Number(r[0].c) || 0; break; } catch (e) { continue; }
     }
 
-    // Hours Logged (timelogs -> fallback tasks.total_duration)
     let hoursLogged = 0;
     const hoursVariants = [
       {
@@ -110,7 +103,6 @@ router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (re
       try { const r = await q(v.sql, v.params); hoursLogged = Number(r[0].h) || 0; break; } catch (e) { continue; }
     }
 
-    // Active Projects (projects with tasks in date range)
     let activeProjects = 0;
     const projectsVariants = [
       { sql: `SELECT COUNT(DISTINCT t.project_id) as c FROM tasks t ${taskJoin} WHERE DATE(t.taskDate) BETWEEN DATE(?) AND DATE(?) ${taskScopeWhere}`, params: [startStr, endStr, ...taskScopeParams] },
@@ -120,7 +112,6 @@ router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (re
       try { const r = await q(v.sql, v.params); activeProjects = Number(r[0].c) || 0; break; } catch (e) { continue; }
     }
 
-    // Task Status Distribution
     let statusRows = [];
     const statusVariants = [
       { sql: `SELECT LOWER(t.status) as s, COUNT(*) as c FROM tasks t ${taskJoin} WHERE DATE(t.taskDate) BETWEEN DATE(?) AND DATE(?) ${taskScopeWhere} GROUP BY t.status`, params: [startStr, endStr, ...taskScopeParams] },
@@ -136,16 +127,15 @@ router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (re
       else if (s === 'in progress' || s === 'doing' || s === 'inprogress') taskStatus.inProgress += Number(r.c) || 0;
       else taskStatus.notStarted += Number(r.c) || 0;
     }
-    // Overdue: tasks with past taskDate (used as due date) not completed
+
     try {
       const odRows = await q(
         `SELECT COUNT(*) as c FROM tasks t ${taskJoin} WHERE t.taskDate < ? AND LOWER(t.status) <> 'completed' ${taskScopeWhere}`,
         [endStr, ...taskScopeParams]
       );
       taskStatus.overdue = Number(odRows[0].c) || 0;
-    } catch (_) { /* ignore if taskDate missing */ }
+    } catch (_) {  }
 
-    // User Productivity: aggregate by user across assignments
     let userRows = [];
     const userScopeWhere = isEmployee ? ' AND ta.user_Id = ?' : '';
     const userVariants = [
@@ -187,7 +177,6 @@ router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (re
       return { userId: u.userId, userName: u.userName, role: u.role, totalTasks: total, completed, inProgress, hoursLogged: hours, completionRate };
     });
 
-    // Client Summary: aggregate tasks by client via projects
     let clientRows = [];
     const clientJoin = isEmployee ? 'LEFT JOIN taskassignments ta ON ta.task_Id = t.id' : '';
     const clientScopeWhere = isEmployee ? 'AND ta.user_Id = ?' : '';
@@ -236,7 +225,7 @@ router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (re
          ${isEmployee ? 'AND ta.user_Id = ?' : ''}`,
         isEmployee ? [startStr, endStr, startStr, endStr, employeeId] : [startStr, endStr, startStr, endStr]
       );
-    } catch (e) { /* ignore if fails */ }
+    } catch (e) {  }
 
     const clientSummary = (clientRows || []).map(c => {
       const clientTasks = allTasks.filter(t => String(t.clientId) === String(c.clientId)).map(t => ({

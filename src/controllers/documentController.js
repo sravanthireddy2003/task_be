@@ -1,4 +1,4 @@
-// Enhanced document controller with RBAC, ownership checks, secure streaming and audit logging
+
 const upload = require('../multer');
 const storageService = require('../services/storageService');
 const db = require('../db');
@@ -33,12 +33,11 @@ async function userHasAccess(documentId, user, required = ['view']) {
   if (!documentId || !user) return false;
   if (isAdmin(user)) return true;
   try {
-    // Load document
+
     const rows = await q('SELECT documentId, filePath, uploadedBy, entityType, entityId FROM documents WHERE documentId = ? LIMIT 1', [documentId]);
     if (!rows || rows.length === 0) return false;
     const doc = rows[0];
 
-    // Manager override based on project ownership
     if (isManager(user)) {
       const et = doc.entityType && String(doc.entityType).toUpperCase();
       if (et === 'PROJECT' && doc.entityId && await managerOwnsProject(doc.entityId, user)) return true;
@@ -50,7 +49,6 @@ async function userHasAccess(documentId, user, required = ['view']) {
       }
     }
 
-    // Explicit access check
     const accRows = await q('SELECT accessType FROM document_access WHERE documentId = ? AND userId = ? LIMIT 1', [documentId, user._id || user.id]);
     if (!accRows || accRows.length === 0) return false;
     const level = String(accRows[0].accessType || '').toLowerCase();
@@ -76,23 +74,22 @@ async function userHasAccess(documentId, user, required = ['view']) {
   } catch (e) { return false; }
 }
 
-// Ensure audit logging convenience
 async function writeAudit(user, action, entity, entityId, details = {}) {
   try {
     await q('INSERT INTO audit_logs (actor_id, action, entity, entity_id, details, createdAt) VALUES (?, ?, ?, ?, ?, ?)', [user && (user._id || user.id) || null, action, entity, entityId, JSON.stringify(details || {}), new Date()]);
   } catch (e) {
-    // swallow to avoid impacting user flow
+
     logger.warn('audit write failed', e && e.message);
   }
 }
 
 module.exports = {
-  // POST /api/documents/upload
+
   uploadDocument: [
     upload.single('document'),
     async (req, res, next) => {
       try {
-        // Role check: Admin and Manager allowed
+
         if (!isAdmin(req.user) && !isManager(req.user)) {
           return res.status(403).json({ success: false, error: 'Insufficient permissions to upload documents' });
         }
@@ -100,7 +97,6 @@ module.exports = {
         const file = req.file;
         if (!file) return res.status(400).json({ success: false, error: 'No file uploaded' });
 
-        // Accept either entityType/entityId or legacy projectId/clientId/taskId
         let entityType = (req.body.entityType || req.body.entity_type || null);
         let entityId = (req.body.entityId || req.body.entity_id || null);
         if (!entityType) {
@@ -118,17 +114,16 @@ module.exports = {
         const storageResult = await storageService.upload(file, filename);
 
         const now = new Date();
-        // Persist using existing schema: entityType/entityId, mimeType, filePath, storageProvider
+
         const insertSql = `INSERT INTO documents (documentId, fileName, filePath, storageProvider, entityType, entityId, mimeType, uploadedBy, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
         await q(insertSql, [docId, file.originalname, storageResult.storagePath || storageResult.publicPath || '', storageResult.provider || 'local', entityType ? String(entityType).toUpperCase() : null, entityId || null, file.mimetype || null, req.user && (req.user._id || req.user.id) || null, now]);
 
-        // Automatic access assignment based on role
         const uploaderRole = req.user.role.toLowerCase();
         if (uploaderRole === 'admin' || uploaderRole === 'manager') {
-          // Assign OWNER to ADMIN/MANAGER
+
           await q('INSERT INTO document_access (documentId, userId, accessType) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE accessType = VALUES(accessType)', [docId, req.user._id || req.user.id, 'OWNER']);
         } else {
-          // Assign OWNER to uploader (USER)
+
           await q('INSERT INTO document_access (documentId, userId, accessType) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE accessType = VALUES(accessType)', [docId, req.user._id || req.user.id, 'OWNER']);
         }
 
@@ -138,7 +133,6 @@ module.exports = {
           publicUrl = baseUrl + storageResult.storagePath.split('/').map(encodeURIComponent).join('/').replace('%2F', '/');
         } else if (storageResult && storageResult.storagePath) publicUrl = storageResult.storagePath;
 
-        // If upload is marked sensitive, trigger approval workflow (best-effort)
         try {
           const sensitiveFlag = (req.body && (req.body.sensitive === '1' || String(req.body.sensitive).toLowerCase() === 'true' || String(req.body.sensitivity).toLowerCase() === 'high'));
           if (sensitiveFlag) {
@@ -162,7 +156,6 @@ module.exports = {
     }
   ],
 
-  // GET /api/documents
   listDocuments: async (req, res, next) => {
     try {
       const page = parseInt(req.query.page) || 1;
@@ -171,7 +164,6 @@ module.exports = {
       const projectParam = req.query.projectId || req.query.project_id || req.headers['project-id'];
       const clientParam = req.query.clientId || req.query.client_id || req.headers['client-id'];
 
-      // Resolve projectParam to possible stored identifiers (internal id and public_id)
       let projectFilterIds = null;
       let projectClientIds = null; // client ids inferred from project
       let projectTaskIds = null; // task ids under project (internal/public)
@@ -183,9 +175,9 @@ module.exports = {
             projectFilterIds = [];
             if (p.id !== undefined && p.id !== null) projectFilterIds.push(p.id);
             if (p.public_id !== undefined && p.public_id !== null && !projectFilterIds.includes(p.public_id)) projectFilterIds.push(p.public_id);
-            // capture client id from project to include client-scoped docs
+
             if (p.client_id !== undefined && p.client_id !== null) projectClientIds = [String(p.client_id)];
-            // gather tasks belonging to this project (internal id and public_id)
+
             try {
               const trows = await q('SELECT id, public_id FROM tasks WHERE project_id = ? OR project_public_id = ?', [p.id, p.public_id]).catch(() => []);
               if (trows && trows.length) {
@@ -204,7 +196,6 @@ module.exports = {
         }
       }
 
-      // Resolve clientParam similarly
       let clientFilterIds = null;
       if (clientParam) {
         try {
@@ -222,25 +213,24 @@ module.exports = {
         }
       }
 
-      // Admin: list all, Manager: list all (same as admin)
       let rows = [];
       if (isAdmin(req.user)) {
-        // Admin: optionally filter by project/client/task using entityType/entityId
+
         const params = [];
         const orParts = [];
         if (projectFilterIds && projectFilterIds.length) {
           orParts.push("(entityType = 'PROJECT' AND entityId IN (?))"); params.push(projectFilterIds);
-          // include task documents under the project
+
           if (projectTaskIds && projectTaskIds.length) { orParts.push("(entityType = 'TASK' AND entityId IN (?))"); params.push(projectTaskIds); }
         }
-        // include client docs only when client param explicitly provided
+
         if (clientFilterIds && clientFilterIds.length) { orParts.push("(entityType = 'CLIENT' AND entityId IN (?))"); params.push(clientFilterIds); }
         let sql = 'SELECT * FROM documents';
         if (orParts.length) sql += ' WHERE ' + orParts.join(' OR ');
         sql += ' ORDER BY createdAt DESC LIMIT 500';
         rows = await q(sql, params);
       } else if (isManager(req.user)) {
-        // otherwise, default to only documents explicitly assigned to the manager.
+
         const uid = req.user && (req.user._id || req.user.id);
         const projectParam = req.query.projectId || req.query.project_id || req.headers['project-id'];
         const ownsProject = projectParam ? await managerOwnsProject(projectParam, req.user) : false;
@@ -250,7 +240,7 @@ module.exports = {
           const orParts = [];
           if (projectFilterIds && projectFilterIds.length) { orParts.push("(d.entityType = 'PROJECT' AND d.entityId IN (?))"); params.push(projectFilterIds); }
           if (projectTaskIds && projectTaskIds.length) { orParts.push("(d.entityType = 'TASK' AND d.entityId IN (?))"); params.push(projectTaskIds); }
-          // include client docs inferred from owned project
+
           if (projectClientIds && projectClientIds.length) { orParts.push("(d.entityType = 'CLIENT' AND d.entityId IN (?))"); params.push(projectClientIds); }
           if (clientFilterIds && clientFilterIds.length) { orParts.push("(d.entityType = 'CLIENT' AND d.entityId IN (?))"); params.push(clientFilterIds); }
           let sql = `SELECT d.*, self.accessType AS permissionLevel FROM documents d
@@ -259,7 +249,7 @@ module.exports = {
           sql += ' ORDER BY d.createdAt DESC LIMIT 500';
           rows = await q(sql, params);
         } else {
-          // default: only assigned to manager
+
           const params = [uid];
           const entityOr = [];
           if (projectFilterIds && projectFilterIds.length) { entityOr.push("(d.entityType = 'PROJECT' AND d.entityId IN (?))"); params.push(projectFilterIds); }
@@ -279,9 +269,9 @@ module.exports = {
         const entityParams = [];
         if (projectFilterIds && projectFilterIds.length) { entityOr.push("(d.entityType = 'PROJECT' AND d.entityId IN (?))"); entityParams.push(projectFilterIds); }
         if (projectFilterIds && projectFilterIds.length && projectTaskIds && projectTaskIds.length) { entityOr.push("(d.entityType = 'TASK' AND d.entityId IN (?))"); entityParams.push(projectTaskIds); }
-        // include client docs inferred from the project
+
         if (projectClientIds && projectClientIds.length) { entityOr.push("(d.entityType = 'CLIENT' AND d.entityId IN (?))"); entityParams.push(projectClientIds); }
-        // include client docs only when client param explicitly provided
+
         if (clientFilterIds && clientFilterIds.length) { entityOr.push("(d.entityType = 'CLIENT' AND d.entityId IN (?))"); entityParams.push(clientFilterIds); }
         let sql;
         const base = `SELECT d.*, da.accessType AS permissionLevel FROM documents d INNER JOIN document_access da ON da.documentId = d.documentId`;
@@ -296,7 +286,6 @@ module.exports = {
         rows = await q(sql, params);
       }
 
-      // include client-scoped documents (respecting role/access).
       if ((rows == null || rows.length === 0) && projectClientIds && projectClientIds.length) {
         try {
           if (isAdmin(req.user)) {
@@ -312,14 +301,14 @@ module.exports = {
               rows = await q("SELECT * FROM documents WHERE entityType = 'CLIENT' AND entityId IN (?) ORDER BY createdAt DESC LIMIT 500", [projectClientIds]);
             }
           } else {
-            // employee: include client docs explicitly granted via document_access (no uploader role restriction when project filter present)
+
             const uid = req.user && (req.user._id || req.user.id);
             if (uid) {
               rows = await q("SELECT d.*, da.accessType AS permissionLevel FROM documents d INNER JOIN document_access da ON da.documentId = d.documentId WHERE da.userId = ? AND d.entityType = ? AND d.entityId IN (?) ORDER BY d.createdAt DESC LIMIT 500", [uid, 'CLIENT', projectClientIds]);
             }
           }
         } catch (e) {
-          // ignore fallback errors
+
         }
       }
 
@@ -361,13 +350,12 @@ module.exports = {
     }
   },
 
-  // GET /api/documents/:id/preview
   getDocumentPreview: async (req, res, next) => {
     try {
       const id = req.params.id;
       const allowed = await userHasAccess(id, req.user, ['view']);
       if (!allowed) {
-        // allow preview when the document belongs to that project (PROJECT/TASK) or its client (CLIENT)
+
         try {
           const docRows = await q('SELECT documentId, fileName, filePath, entityType, entityId FROM documents WHERE documentId = ? LIMIT 1', [id]);
           if (!docRows || !docRows.length) return res.status(404).json({ success: false, error: 'Document not found' });
@@ -398,8 +386,8 @@ module.exports = {
                   belongs = prow[0].client_id != null && String(prow[0].client_id) === String(doc.entityId);
                 }
                 if (belongs) {
-                  // grant preview in this scoped context
-                  // continue to file serving below
+
+
                 } else {
                   return res.status(403).json({ success: false, error: 'Access denied' });
                 }
@@ -434,18 +422,17 @@ module.exports = {
           return handle.stream.pipe(res);
         }
       } catch (e) {
-        // fallthrough
+
       }
 
       return res.status(404).json({ success: false, error: 'Preview not available' });
     } catch (err) { return next(err); }
   },
 
-  // GET /api/documents/:id/download
   downloadDocument: async (req, res, next) => {
     try {
       const id = req.params.id;
-      // check download permission
+
       const allowed = await userHasAccess(id, req.user, ['download']);
       if (!allowed) return res.status(403).json({ success: false, error: 'Insufficient permission to download' });
 
@@ -474,7 +461,6 @@ module.exports = {
     } catch (err) { return next(err); }
   },
 
-  // POST /api/documents/:documentId/assign-access
   assignDocumentAccess: async (req, res, next) => {
     try {
       const documentId = req.params.documentId || req.params.id || req.body.documentId;
@@ -487,7 +473,6 @@ module.exports = {
       const requesterId = req.user._id || req.user.id;
       const requesterRole = req.user.role.toLowerCase();
 
-      // Fetch document
       const drows = await q('SELECT documentId, fileName, entityType, entityId FROM documents WHERE documentId = ? LIMIT 1', [documentId]);
       if (!drows || drows.length === 0) return res.status(404).json({ success: false, error: 'Document not found' });
       const doc = drows[0];
@@ -500,37 +485,35 @@ module.exports = {
           projectId = doc.entityId;
         } else if (et === 'TASK') {
           try {
-            // Try resolving project via tasks table by id or public_id
+
             let trow = null;
             try {
               const rows = await q('SELECT project_id FROM tasks WHERE id = ? OR public_id = ? LIMIT 1', [doc.entityId, doc.entityId]);
               if (rows && rows.length) trow = rows[0];
             } catch (e1) {
-              // Fallback to id-only schema
+
               const rows2 = await q('SELECT project_id FROM tasks WHERE id = ? LIMIT 1', [doc.entityId]).catch(() => []);
               if (rows2 && rows2.length) trow = rows2[0];
             }
             if (trow && trow.project_id) projectId = trow.project_id;
           } catch (e) {
-            // ignore and continue
+
           }
         }
       }
 
-      // Normalize projectId to internal numeric id when possible
       let projectInternalId = null;
       if (projectId) {
         try {
           const prow = await q('SELECT id FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [projectId, projectId]).catch(() => []);
           if (prow && prow.length) projectInternalId = prow[0].id;
-        } catch (e) { /* ignore */ }
+        } catch (e) {  }
       }
 
       if (!projectId && !projectInternalId) {
         return res.status(400).json({ success: false, error: 'Document must be linked to a project or provide projectId' });
       }
 
-      // Prepare requested permission
       const requestedLevelKey = String(bodyAccess).toLowerCase();
       const aliasMap = {
         view: 'VIEW', read: 'VIEW', preview: 'VIEW', download: 'VIEW',
@@ -549,10 +532,9 @@ module.exports = {
         return res.status(403).json({ success: false, error: 'Only document OWNER or Admin can assign access' });
       }
 
-      // Validate and upsert per assignee
       const assignments = [];
       for (const aid of assigneeIds) {
-        // Validate membership in project
+
         const memberCheck = await q(
           `SELECT _id FROM users WHERE _id = ? AND (
              _id = (SELECT project_manager_id FROM projects WHERE id = ? OR public_id = ?) OR
@@ -568,7 +550,6 @@ module.exports = {
           return res.status(403).json({ success: false, error: `Assignee ${aid} is not a member of the project` });
         }
 
-        // Fetch assignee role
         const assignee = await q('SELECT role FROM users WHERE _id = ? LIMIT 1', [aid]);
         if (!assignee || assignee.length === 0) return res.status(404).json({ success: false, error: `Assignee ${aid} not found` });
         const assigneeRole = (assignee[0].role || '').toLowerCase();
@@ -587,10 +568,8 @@ module.exports = {
         assignments.push({ userId: aid, accessType: permissionLevel });
       }
 
-      // Audit log
       await writeAudit({ _id: requesterId }, 'DOCUMENT_SHARED', 'Document', documentId, { targetUserIds: assigneeIds, requestedLevel });
 
-      // Notification
       const project = await q('SELECT name FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [projectId, projectId]);
       const projectName = project && project.length ? project[0].name : 'Unknown Project';
       const allSame = assignments.every(a => a.accessType === assignments[0].accessType);
@@ -608,7 +587,6 @@ module.exports = {
     } catch (err) { return next(err); }
   },
 
-  // GET /api/documents/my
   getMyDocuments: async (req, res, next) => {
     try {
       const userId = req.user._id || req.user.id;
@@ -616,7 +594,7 @@ module.exports = {
 
       let documents = [];
       if (userRole === 'admin' || userRole === 'manager') {
-        // Show all documents they have access to
+
         documents = await q(`
           SELECT d.*, da.permissionLevel, da.assignedAt
           FROM documents d
@@ -625,7 +603,7 @@ module.exports = {
           ORDER BY d.createdAt DESC
         `, [userId]);
       } else {
-        // Employee: only documents they have access to
+
         documents = await q(`
           SELECT d.*, da.permissionLevel, da.assignedAt
           FROM documents d
@@ -644,13 +622,11 @@ module.exports = {
     } catch (err) { return next(err); }
   },
 
-  // GET /api/documents/project/:projectId/members
   getProjectMembers: async (req, res, next) => {
     try {
       const projectId = req.params.projectId;
       if (!projectId) return res.status(400).json({ success: false, error: 'projectId is required' });
 
-      // Resolve project (supports internal id or public_id)
       const projRows = await q('SELECT id, public_id, project_manager_id FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [projectId, projectId]);
       if (!projRows || projRows.length === 0) return res.status(404).json({ success: false, error: 'Project not found' });
       const project = projRows[0];
@@ -667,7 +643,6 @@ module.exports = {
         managers = (mgrRows || []).map(u => ({ id: u._id, publicId: u.public_id, name: u.name, role: 'Manager' }));
       }
 
-      // Collect employees assigned to any task in this project via taskassignments
       const empRows = await q(`
         SELECT DISTINCT u._id, u.public_id, u.name, u.role
         FROM tasks t
@@ -678,7 +653,6 @@ module.exports = {
       `, [pid, ppub]).catch(() => []);
       const employees = (empRows || []).map(u => ({ id: u._id, publicId: u.public_id, name: u.name, role: 'Employee' }));
 
-      // Combine and de-duplicate by id
       const seen = new Set();
       const members = [];
       for (const m of [...managers, ...employees]) {

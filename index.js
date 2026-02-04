@@ -16,8 +16,7 @@ async function start() {
     }
 
     try {
-      redis = new Redis(env.REDIS_URL);
-      // Attach an error handler to prevent unhandled exceptions
+      redis = new Redis(env.REDIS_URL);
       redis.on('error', (err) => {
         logger.warn('Redis error (index):', err && err.message);
       });
@@ -35,9 +34,7 @@ async function start() {
   const server = app.listen(port, () => {
     const message = `Server is running on ${env.BASE_URL}`;
     logger.info(message);
-  });
-
-  // keep process alive with redis client open
+  });
   process.on('SIGINT', async () => {
     try { if (redis) await redis.quit(); } catch (e) {}
     server.close(() => process.exit(0));

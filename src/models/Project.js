@@ -1,2 +1,2 @@
-// Project model
+
 module.exports = {};

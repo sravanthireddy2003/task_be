@@ -1,9 +1,9 @@
-// src/rules/rules.js
-// Business rules definitions
-// Rules are evaluated in priority order (lower number = higher priority)
+
+
+
 
 const rules = [
-  // Access Control Rules
+
   {
     ruleCode: 'ACCESS_OWN_RECORDS_ONLY',
     description: 'Users can only access their own records unless role is ADMIN',
@@ -28,7 +28,6 @@ const rules = [
     version: '1.0'
   },
 
-  // Approval Rules
   {
     ruleCode: 'EMPLOYEE_CANNOT_APPROVE_OWN_REQUEST',
     description: 'Employees cannot approve their own requests',
@@ -43,7 +42,6 @@ const rules = [
     version: '1.0'
   },
 
-  // Leave Rules
   {
     ruleCode: 'LEAVE_DAYS_REQUIRE_APPROVAL',
     description: 'Leave days exceeding limit require manager approval',
@@ -57,7 +55,6 @@ const rules = [
     version: '1.0'
   },
 
-  // Record State Rules
   {
     ruleCode: 'APPROVED_RECORDS_IMMUTABLE',
     description: 'Approved or locked records cannot be modified',
@@ -71,7 +68,6 @@ const rules = [
     version: '1.0'
   },
 
-  // Financial Rules
   {
     ruleCode: 'SALARY_NON_NEGATIVE',
     description: 'Salary and financial fields must not be negative',
@@ -91,7 +87,6 @@ const rules = [
     version: '1.0'
   },
 
-  // Rate Limiting
   {
     ruleCode: 'OTP_RATE_LIMIT',
     description: 'Rate limit OTP requests',
@@ -105,7 +100,6 @@ const rules = [
     version: '1.0'
   },
 
-  // Task Management Rules
   {
     ruleCode: 'task_creation',
     description: 'Validate task creation permissions and data',
@@ -171,7 +165,6 @@ const rules = [
     version: '1.0'
   },
 
-  // Project Management Rules
   {
     ruleCode: 'project_creation',
     description: 'Validate project creation permissions and data',
@@ -237,7 +230,6 @@ const rules = [
     version: '1.0'
   },
 
-  // Client Management Rules
   {
     ruleCode: 'client_creation',
     description: 'Validate client creation permissions',
@@ -350,7 +342,6 @@ const rules = [
     version: '1.0'
   },
 
-  // User Management Rules
   {
     ruleCode: 'user_creation',
     description: 'Validate user creation permissions',
@@ -412,7 +403,6 @@ const rules = [
     version: '1.0'
   },
 
-  // Subtask Management Rules
   {
     ruleCode: 'subtask_creation',
     description: 'Validate subtask creation permissions',
@@ -450,7 +440,6 @@ const rules = [
     version: '1.0'
   },
 
-  // Upload Management Rules
   {
     ruleCode: 'upload_file',
     description: 'Validate file upload permissions',

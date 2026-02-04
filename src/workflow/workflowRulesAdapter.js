@@ -1,5 +1,5 @@
-// src/workflow/workflowRulesAdapter.js
-// Load tenant-specific workflow rules from database
+
+
 
 const db = require('../db');
 

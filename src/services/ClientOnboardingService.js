@@ -1,11 +1,7 @@
 const db = require(__root + 'db');
 const logger = require('../logger');
 
-/**
- * ClientOnboardingService
- * Auto-generates onboarding tasks when a client is created
- * Tasks are assigned to the manager if provided
- */
+
 
 const DEFAULT_ONBOARDING_TASKS = [
   { title: 'KYC Verification', description: 'Verify client KYC documents and identity', daysFromNow: 3 },
@@ -20,20 +16,14 @@ function q(sql, params = []) {
   });
 }
 
-/**
- * Generate onboarding tasks for a new client
- * @param {number} clientId - Client ID
- * @param {number} managerId - Manager ID (optional)
- * @param {number} actorId - User ID creating the tasks (for logging)
- * @returns {Promise<Array>} - Array of created task records
- */
+
 async function generateOnboardingTasks(clientId, managerId, actorId) {
   try {
     const createdTasks = [];
 
     for (const taskTemplate of DEFAULT_ONBOARDING_TASKS) {
       try {
-        // Calculate due date
+
         const dueDate = new Date();
         dueDate.setDate(dueDate.getDate() + taskTemplate.daysFromNow);
 
@@ -86,7 +76,6 @@ async function generateOnboardingTasks(clientId, managerId, actorId) {
       }
     }
 
-    // Log activity
     if (await tableExists('client_activity_logs')) {
       try {
         await q(

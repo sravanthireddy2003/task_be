@@ -1,4 +1,4 @@
-// Canonical RoleBasedLoginResponse util
+
 const db = require(__root + 'db');
 
 function q(sql, params = []) {
@@ -8,14 +8,7 @@ function q(sql, params = []) {
 }
 
 module.exports = {
-  /**
-   * Returns dashboard metrics for the user/tenant.
-   * @param {number|string} userId
-   * @param {string} role
-   * @param {number|string} tenantId
-   * @param {string|null} publicId
-   * @returns {Promise<object>}
-   */
+  
   async getDashboardMetrics(userId, role, tenantId, publicId) {
     return {
       projects: 0,
@@ -25,16 +18,9 @@ module.exports = {
     };
   },
 
-  /**
-   * Returns accessible resources for the user based on role.
-   * @param {number|string} userId
-   * @param {string} role
-   * @param {number|string} tenantId
-   * @param {string|null} publicId
-   * @returns {Promise<object>}
-   */
+  
   async getAccessibleResources(userId, role, tenantId, publicId) {
-    // Minimal feature mapping to satisfy access checks across controllers
+
     const base = { projects: [], tasks: [], modules: [] };
     const featuresByRole = {
       'Admin': ['Dashboard', 'Assigned Clients', 'Projects', 'Tasks', 'Assigned Tasks'],
@@ -45,18 +31,16 @@ module.exports = {
     const features = featuresByRole[role] || ['Assigned Tasks'];
     const resources = { ...base, features };
 
-    // Populate manager-specific resource mappings
     if (role === 'Manager') {
       let assignedClientIds = [];
       try {
-        // Prefer direct manager assignment on clientss.manager_id
+
         const clientsByManager = await q(
           'SELECT id FROM clientss WHERE manager_id = ? OR manager_id = ? ORDER BY id DESC',
           [userId, publicId || -1]
         );
         assignedClientIds = (clientsByManager || []).map(r => r.id).filter(Boolean);
 
-        // Fallback: derive from projects the manager owns
         if (!assignedClientIds.length) {
           const viaProjects = await q(
             `SELECT DISTINCT c.id
@@ -68,7 +52,7 @@ module.exports = {
           assignedClientIds = (viaProjects || []).map(r => r.id).filter(Boolean);
         }
       } catch (e) {
-        // Keep silent but ensure a deterministic structure
+
         assignedClientIds = [];
       }
 

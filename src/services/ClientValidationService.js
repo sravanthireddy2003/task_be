@@ -1,8 +1,4 @@
-/**
- * ClientValidationService
- * Validates client data before create/update operations
- * Provides DTOs and validation rules
- */
+
 
 class ClientValidationError extends Error {
   constructor(message, details = {}) {
@@ -12,38 +8,29 @@ class ClientValidationError extends Error {
   }
 }
 
-/**
- * Validate email format
- */
+
 function validateEmail(email) {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email);
 }
 
-/**
- * Validate phone format (basic international format)
- */
+
 function validatePhone(phone) {
   const phoneRegex = /^[\d\s\-\+\(\)]+$|^$/;
   return phoneRegex.test(phone) && (phone.length === 0 || phone.replace(/\D/g, '').length >= 10);
 }
 
-/**
- * Validate GST number (Indian format: 15 alphanumeric)
- */
+
 function validateGST(gst) {
   if (!gst) return true; // Optional field
   const gstRegex = /^[0-9A-Z]{15}$/;
   return gstRegex.test(gst);
 }
 
-/**
- * Validate create client DTO
- */
+
 function validateCreateClientDTO(data) {
   const errors = {};
 
-  // Required fields
   if (!data.name || typeof data.name !== 'string' || data.name.trim().length === 0) {
     errors.name = 'Client name is required and must be a non-empty string';
   }
@@ -52,7 +39,6 @@ function validateCreateClientDTO(data) {
     errors.company = 'Company name is required and must be a non-empty string';
   }
 
-  // Optional but validated fields
   if (data.email && !validateEmail(data.email)) {
     errors.email = 'Invalid email format';
   }
@@ -65,13 +51,11 @@ function validateCreateClientDTO(data) {
     errors.gstNumber = 'Invalid GST number format (should be 15 alphanumeric characters)';
   }
 
-  // Status validation
   const validStatuses = ['Active', 'Inactive', 'On Hold', 'Closed'];
   if (data.status && !validStatuses.includes(data.status)) {
     errors.status = `Status must be one of: ${validStatuses.join(', ')}`;
   }
 
-  // Contacts validation
   if (data.contacts && Array.isArray(data.contacts)) {
     const contactErrors = [];
     data.contacts.forEach((contact, idx) => {
@@ -95,9 +79,7 @@ function validateCreateClientDTO(data) {
   return true;
 }
 
-/**
- * Validate update client DTO
- */
+
 function validateUpdateClientDTO(data) {
   const errors = {};
   const allowedFields = [
@@ -138,9 +120,7 @@ function validateUpdateClientDTO(data) {
   return true;
 }
 
-/**
- * Validate contact DTO
- */
+
 function validateContactDTO(contact) {
   const errors = {};
 
@@ -163,12 +143,10 @@ function validateContactDTO(contact) {
   return true;
 }
 
-/**
- * Sanitize client data (remove sensitive/unwanted fields)
- */
+
 function sanitizeClientData(data) {
   const sanitized = { ...data };
-  // Remove fields that shouldn't be updated directly
+
   delete sanitized.id;
   delete sanitized.ref;
   delete sanitized.createdAt;

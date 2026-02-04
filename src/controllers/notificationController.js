@@ -1,8 +1,7 @@
 const NotificationService = require('../services/notificationService');
 const { requireAuth } = require('../middleware/roles');
 
-module.exports = {
-  // GET /api/notifications
+module.exports = {
   getNotifications: [
     requireAuth,
     async (req, res) => {
@@ -16,9 +15,7 @@ module.exports = {
         res.status(500).json({ success: false, error: error.message });
       }
     }
-  ],
-
-  // PATCH /api/notifications/:id/read
+  ],
   markAsRead: [
     requireAuth,
     async (req, res) => {
@@ -35,9 +32,7 @@ module.exports = {
         res.status(500).json({ success: false, error: error.message });
       }
     }
-  ],
-
-  // PATCH /api/notifications/read-all
+  ],
   markAllAsRead: [
     requireAuth,
     async (req, res) => {
@@ -49,9 +44,7 @@ module.exports = {
         res.status(500).json({ success: false, error: error.message });
       }
     }
-  ],
-
-  // DELETE /api/notifications/:id
+  ],
   deleteNotification: [
     requireAuth,
     async (req, res) => {

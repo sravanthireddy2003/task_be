@@ -1,5 +1,4 @@
-// Assumes JWT token is stored in localStorage as 'token'
-// Base URL should be set to your backend via BASE_URL environment variable
+
 
 class DocumentAPI {
   constructor(baseURL) {
@@ -12,9 +11,7 @@ class DocumentAPI {
       throw new Error('BASE_URL environment variable is required');
     }
     this.baseURL = baseURL || defaultBase;
-  }
-
-  // Helper: Get auth headers
+  }
   getHeaders(includeContentType = true) {
     const token = localStorage.getItem('token');
     const headers = {
@@ -24,18 +21,14 @@ class DocumentAPI {
       headers['Content-Type'] = 'application/json';
     }
     return headers;
-  }
-
-  // Helper: Handle API responses
+  }
   async handleResponse(response) {
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: 'Network error' }));
       throw new Error(error.error || `HTTP ${response.status}`);
     }
     return response.json();
-  }
-
-  // 1. Upload Document
+  }
   async uploadDocument(file, options = {}) {
     const formData = new FormData();
     formData.append('document', file);
@@ -51,9 +44,7 @@ class DocumentAPI {
       body: formData
     });
     return this.handleResponse(response);
-  }
-
-  // 2. List Documents
+  }
   async listDocuments(params = {}) {
     const query = new URLSearchParams();
     if (params.projectId) query.append('projectId', params.projectId);
@@ -66,18 +57,14 @@ class DocumentAPI {
       headers: this.getHeaders()
     });
     return this.handleResponse(response);
-  }
-
-  // 3. Preview Document
+  }
   async previewDocument(documentId) {
     const response = await fetch(`${this.baseURL}/documents/${documentId}/preview`, {
       method: 'GET',
       headers: this.getHeaders()
     });
     return this.handleResponse(response);
-  }
-
-  // 4. Download Document
+  }
   async downloadDocument(documentId) {
     const response = await fetch(`${this.baseURL}/documents/${documentId}/download`, {
       method: 'GET',
@@ -86,8 +73,7 @@ class DocumentAPI {
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: 'Download failed' }));
       throw new Error(error.error || `HTTP ${response.status}`);
-    }
-    // Trigger download
+    }
     const blob = await response.blob();
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -97,9 +83,7 @@ class DocumentAPI {
     a.click();
     window.URL.revokeObjectURL(url);
     document.body.removeChild(a);
-  }
-
-  // 5. Assign/Revoke Document Access (bulk)
+  }
   async assignAccess(documentId, assigneeIds, permissionLevel) {
     const payload = {
       documentId,
@@ -112,9 +96,7 @@ class DocumentAPI {
       body: JSON.stringify(payload)
     });
     return this.handleResponse(response);
-  }
-
-  // 5b. Assign Access to Single User
+  }
   async assignAccessSingle(documentId, assigneeId, accessType) {
     const payload = {
       assigneeId,
@@ -126,17 +108,14 @@ class DocumentAPI {
       body: JSON.stringify(payload)
     });
     return this.handleResponse(response);
-  }
-
-  // 6. Get My Documents (Inbox)
+  }
   async getMyDocuments() {
     const response = await fetch(`${this.baseURL}/documents/my`, {
       method: 'GET',
       headers: this.getHeaders()
     });
     return this.handleResponse(response);
-  }
-  // 7. Get Project Members
+  }
   async getProjectMembers(projectId) {
     const response = await fetch(`${this.baseURL}/documents/project/${projectId}/members`, {
       method: 'GET',
@@ -151,9 +130,7 @@ class DocumentAPI {
       headers: this.getHeaders()
     });
     return this.handleResponse(response);
-  }
-
-  // 9. Mark Notification as Read
+  }
   async markNotificationRead(notificationId) {
     const response = await fetch(`${this.baseURL}/notifications/${notificationId}/read`, {
       method: 'PATCH',
