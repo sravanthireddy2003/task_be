@@ -251,8 +251,8 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
           const publicId = crypto.randomBytes(8).toString('hex');
           const displayName = c.name || `${company} Contact`;
 
-          const insertSql = `INSERT INTO users (public_id, name, email, password, role, isActive, createdAt) VALUES (?, ?, ?, ?, ?, ?, NOW())`;
-          const r = await q(insertSql, [publicId, displayName, emailAddr, hashed, 'Client-Viewer', 1]);
+          const insertSql = `INSERT INTO users (public_id, name, email, password, role, title, isActive, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`;
+          const r = await q(insertSql, [publicId, displayName, emailAddr, hashed, 'Client-Viewer', 'Client Viewer', 1]);
           const newUserId = r && r.insertId ? r.insertId : null;
           if (newUserId) {
             try { await q('INSERT INTO client_viewers (client_id, user_id, created_at) VALUES (?, ?, NOW())', [clientId, newUserId]); } catch (e) {}
@@ -404,10 +404,10 @@ if ((createViewer || enableClientPortal) && (primaryContactEmail || email)) {
     const displayName = enableClientPortal ? (primaryContactName || name) : `${name} (Viewer)`;
 
     const insertUserSql = `
-      INSERT INTO users (public_id, name, email, password, role, isActive, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?, NOW())
+      INSERT INTO users (public_id, name, email, password, role, title, isActive, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
     `;
-    const userRes = await q(insertUserSql, [publicId, displayName, userEmail, hashed, roleToInsert, 1]);
+    const userRes = await q(insertUserSql, [publicId, displayName, userEmail, hashed, roleToInsert, 'Client Viewer', 1]);
     const newUserId = userRes.insertId;
 
     try {
@@ -459,7 +459,7 @@ if (primaryContactEmail || email) {
       const publicIdForClient = crypto.randomBytes(8).toString('hex');
       const displayNameForClient = primaryContactName || name || `Client ${ref}`;
 
-      const ins = await q(`INSERT INTO users (public_id, name, email, password, role, isActive, createdAt) VALUES (?, ?, ?, ?, ?, ?, NOW())`, [publicIdForClient, displayNameForClient, clientEmail, hashed, 'Client-Viewer', 1]).catch((e) => { throw e; });
+      const ins = await q(`INSERT INTO users (public_id, name, email, password, role, title, isActive, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`, [publicIdForClient, displayNameForClient, clientEmail, hashed, 'Client-Viewer', 'Client Viewer', 1]).catch((e) => { throw e; });
       const newUid = ins && ins.insertId ? ins.insertId : null;
       if (newUid) {
 
@@ -1153,9 +1153,9 @@ router.post('/:id/create-viewer', ruleEngine(RULES.CLIENT_CREATE), requireRole('
 
     const roleToInsert = 'Client-Viewer';
 
-    const insertUserSql = 'INSERT INTO users (public_id, name, email, password, role, isActive, createdAt) VALUES (?, ?, ?, ?, ?, ?, NOW())';
+    const insertUserSql = 'INSERT INTO users (public_id, name, email, password, role, title, isActive, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())';
 
-    const userRes = await q(insertUserSql, [publicId, name || `Viewer for ${id}`, email, hashed, roleToInsert, 1]);
+    const userRes = await q(insertUserSql, [publicId, name || `Viewer for ${id}`, email, hashed, roleToInsert, 'Client Viewer', 1]);
     const newUserId = userRes && userRes.insertId ? userRes.insertId : null;
     
     if (newUserId) {

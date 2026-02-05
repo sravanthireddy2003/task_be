@@ -927,11 +927,11 @@ router.put("/profile", requireAuth, upload.single("photo"), async (req, res) => 
       photoPath = `/uploads/profiles/${newFileName}`;
     }
 
-    const newEmail = email || user.email;
-    const newName = name || user.name;
-    const newPhone = phone ?? user.phone;
-    const newTitle = title ?? user.title;
-    const newDepartment = department ?? user.department;
+    const newEmail = email !== undefined ? email : user.email;
+    const newName = name !== undefined ? name : user.name;
+    const newPhone = phone !== undefined ? phone : user.phone;
+    const newTitle = title !== undefined ? title : user.title;
+    const newDepartment = department !== undefined ? department : user.department;
 
     const candidate = {
       name: newName,
@@ -956,8 +956,8 @@ router.put("/profile", requireAuth, upload.single("photo"), async (req, res) => 
         cols.forEach(r => { if (r && r.COLUMN_NAME) nullableMap[r.COLUMN_NAME] = (r.IS_NULLABLE === 'YES'); });
       }
 
-      // Only update columns that exist and either have a non-null value or are nullable in the DB
-      const toUpdate = colNames.filter(c => present.includes(c) && (candidate[c] !== null && candidate[c] !== undefined || nullableMap[c]));
+      // Only update columns that exist and have a non-null, non-undefined, non-empty value
+      const toUpdate = colNames.filter(c => present.includes(c) && candidate[c] !== null && candidate[c] !== undefined && candidate[c] !== '');
       if (toUpdate.length === 0) {
 
         return res.json({ message: 'Profile updated (no mutable columns present)', user: { id: user.public_id || user._id, email: newEmail, name: newName } });

@@ -143,8 +143,8 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), asyn
   try {
     const { name, email, phone, role, departmentId, departmentName, title, isActive, isGuest } = req.body;
 
-    if (!name || !email || !role) {
-      return res.status(400).json({ success: false, message: 'Name, email and role required' });
+    if (!name || !email || !role || !title) {
+      return res.status(400).json({ success: false, message: 'Name, email, role and title required' });
     }
 
     const exists = await new Promise((resolve, reject) => {
@@ -198,7 +198,7 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), asyn
     const placeholders = ['?', '?', '?', '?', '?', '?'];
     const params = [publicId, name, email, hashed, phone || null, role];
 
-    if (title) { fields.push('title'); placeholders.push('?'); params.push(title); }
+    fields.push('title'); placeholders.push('?'); params.push(title);
     if (departmentPublicId) { fields.push('department_public_id'); placeholders.push('?'); params.push(departmentPublicId); }
     fields.push('isActive'); placeholders.push('?'); params.push(typeof isActive === 'undefined' ? true : Boolean(isActive));
     if (isGuest !== undefined) { fields.push('isGuest'); placeholders.push('?'); params.push(Boolean(isGuest)); }
@@ -326,11 +326,26 @@ router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), a
     }
 
     const isNumeric = /^\d+$/.test(String(id));
-    const sql = isNumeric ?
-      `UPDATE users SET name=?, title=?, email=?, role=?, isActive=?, phone=?, department_public_id=? WHERE _id=?` :
-      `UPDATE users SET name=?, title=?, email=?, role=?, isActive=?, phone=?, department_public_id=? WHERE public_id=?`;
+    
+    // Build dynamic update
+    const updates = {};
+    if (name !== undefined) updates.name = name;
+    if (title !== undefined) updates.title = title;
+    if (email !== undefined) updates.email = email;
+    if (role !== undefined) updates.role = role;
+    if (isActive !== undefined) updates.isActive = Boolean(isActive);
+    if (phone !== undefined) updates.phone = phone;
+    if (departmentPublicId !== undefined) updates.department_public_id = departmentPublicId;
 
-    const values = [name, title || null, email, role, Boolean(isActive), phone || null, departmentPublicId, id];
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ success: false, message: "No fields to update" });
+    }
+
+    const setClause = Object.keys(updates).map(key => `${key} = ?`).join(', ');
+    const values = Object.values(updates);
+    values.push(id);
+
+    const sql = `UPDATE users SET ${setClause} WHERE ${isNumeric ? '_id' : 'public_id'} = ?`;
 
     db.query(sql, values, (err, result) => {
       if (err) {
