@@ -10,6 +10,20 @@ const DEFAULT_ONBOARDING_TASKS = [
   { title: 'Workspace Setup', description: 'Set up workspace, access, and initial project skeleton', daysFromNow: 2 }
 ];
 
+// Convert JS Date/ISO to MySQL DATETIME `YYYY-MM-DD HH:MM:SS`
+const toMySQLDate = (d) => {
+  if (d === null || d === undefined) return null;
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return null;
+  const yyyy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getDate()).padStart(2, '0');
+  const hh = String(dt.getHours()).padStart(2, '0');
+  const min = String(dt.getMinutes()).padStart(2, '0');
+  const ss = String(dt.getSeconds()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}:${ss}`;
+};
+
 function q(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
@@ -39,7 +53,7 @@ async function generateOnboardingTasks(clientId, managerId, actorId) {
           clientId,
           managerId || null,
           'Open',
-          dueDate.toISOString()
+          toMySQLDate(dueDate)
         ]).catch(e => {
           logger.debug('Skipping task insert (tasks table may not exist): ' + e.message);
           return { insertId: null };
@@ -61,7 +75,7 @@ async function generateOnboardingTasks(clientId, managerId, actorId) {
             taskTemplate.description,
             managerId || null,
             'Pending',
-            dueDate.toISOString()
+            toMySQLDate(dueDate)
           ]);
 
           createdTasks.push({

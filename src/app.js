@@ -10,7 +10,7 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: "*", // Adjust for production
+    origin: (env && env.NODE_ENV === 'production') ? (env.FRONTEND_URL || env.BASE_URL) : '*',
     methods: ["GET", "POST", "PUT", "DELETE"]
   }
 });
@@ -466,3 +466,14 @@ function shutdown(signal) {
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+// Log and attempt graceful shutdown on unhandled errors to avoid orphaned DB connections
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Rejection at:', (reason && reason.stack) || reason);
+  try { shutdown('UNHANDLED_REJECTION'); } catch (e) { process.exit(1); }
+});
+
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught Exception:', (err && err.stack) || err);
+  try { shutdown('UNCAUGHT_EXCEPTION'); } catch (e) { process.exit(1); }
+});

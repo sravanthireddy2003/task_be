@@ -10,12 +10,22 @@ const dbConfig = {
     database: env.DB_NAME,
     multipleStatements: false,
     connectionLimit: 10,
+    waitForConnections: true,
+    acquireTimeout: 10000, // ms
+    connectTimeout: 10000, // ms
+    queueLimit: 0,
+    charset: 'utf8mb4'
 };
  
 const pool = mysql.createPool(dbConfig);
  
+// Keep connection logs quiet in production; debug-level retained for troubleshooting.
 pool.on('connection', function (connection) {
-    logger.info(`DB connected (threadId=${connection.threadId})`);
+    if (env && env.NODE_ENV === 'production') {
+        if (logger && typeof logger.debug === 'function') logger.debug('DB connection established');
+    } else {
+        logger.info(`DB connected (threadId=${connection.threadId})`);
+    }
 });
  
 pool.on('error', function (err) {

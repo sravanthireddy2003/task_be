@@ -14,6 +14,19 @@ const upload = require("../multer");
 const multer = require("multer");
 const CryptoJS = require("crypto-js");
 const dayjs = require('dayjs');
+// Convert various JS Date/ISO inputs to MySQL DATETIME format `YYYY-MM-DD HH:MM:SS`
+const toMySQLDate = (d) => {
+  if (d === null || d === undefined) return null;
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return null;
+  const yyyy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getDate()).padStart(2, '0');
+  const hh = String(dt.getHours()).padStart(2, '0');
+  const min = String(dt.getMinutes()).padStart(2, '0');
+  const ss = String(dt.getSeconds()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}:${ss}`;
+};
 const NotificationService = require(__root + 'services/notificationService');
 const workflowService = require(__root + 'workflow/workflowService');
 const { check } = require('express-validator');
@@ -30,7 +43,8 @@ const hasColumn = (table, column) => new Promise((resolve) => {
       return resolve(Array.isArray(rows) && rows.length > 0);
     }
   );
-});
+});
+
 async function ensureProjectOpen(projectId) {
   if (!projectId) return;
   try {
@@ -55,13 +69,15 @@ async function assigneeHasActiveTask(userId) {
     [userId]
   );
   return (rows && rows[0] && Number(rows[0].cnt || 0) > 0);
-}
+}
+
 const q = (sql, params = []) => new Promise((resolve, reject) => {
   db.query(sql, params, (err, results) => {
     if (err) reject(err);
     else resolve(results);
   });
-});
+});
+
 async function ensureTaskTimeLogsTable() {
   try {
     const tableExists = await q(`
@@ -91,18 +107,21 @@ async function ensureTaskTimeLogsTable() {
   }
 }
 
-async function canEditTask(taskId, user) {
+async function canEditTask(taskId, user) {
+
   if (user.role === 'Admin' || user.role === 'Manager') return true;
 
   const hasReadOnlyColumn = await hasColumn('taskassignments', 'is_read_only');
   const selectColumns = hasReadOnlyColumn ? 'user_Id, is_read_only' : 'user_Id';
   const [assignment] = await q(`SELECT ${selectColumns} FROM taskassignments WHERE task_Id = ? AND user_Id = ?`, [taskId, user._id]);
-  if (!assignment) return false;
+  if (!assignment) return false;
+
   if (hasReadOnlyColumn && assignment.is_read_only) return false;
 
   const [task] = await q('SELECT is_locked FROM tasks WHERE id = ?', [taskId]);
   if (!task) return false;
-  if (!task.is_locked) return true;
+  if (!task.is_locked) return true;
+
   return assignment.user_id === user._id;
 }
 
@@ -111,7 +130,10 @@ const getLastAction = async (taskId, userId) => {
   return rows.length > 0 ? rows[0].action : null;
 };
 
-router.use(tenantMiddleware);
+router.use(tenantMiddleware);
+
+
+
 router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const taskIds = req.body.taskIds || req.body.task_ids || [];
@@ -129,7 +151,8 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
       internalIds = [...internalIds, ...publicToInternal.map(row => row.id)];
     }
     const whereClause = 'WHERE t.id IN (?)';
-    const queryParams = [internalIds];
+    const queryParams = [internalIds];
+
     let optionalSelect = '';
     try {
       const cols = [];
@@ -184,7 +207,8 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
       if (err) {
         logger.error('selected-details fetch error: ' + (err && err.message));
         return res.status(500).json({ success: false, error: err.message });
-      }
+      }
+
       const creatorSelect = subtaskCreatorColumnExists
         ? ', creator._id AS creator_internal_id, creator.public_id AS creator_public_id, creator.name AS creator_name'
         : '';
@@ -199,7 +223,8 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
       const subtasks = await new Promise((resolve, reject) => db.query(
         subtaskQuery,
         [internalIds], (e, r) => e ? reject(e) : resolve(r)
-      ));
+      ));
+
       const activities = await new Promise((resolve, reject) => db.query(
         `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt, u._id AS user_id, u.public_id AS user_public_id, u.name AS user_name
          FROM task_activities ta
@@ -207,7 +232,8 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
          WHERE ta.task_id IN (?)
          ORDER BY ta.createdAt DESC`,
         [internalIds], (e, r) => e ? reject(e) : resolve(r)
-      ));
+      ));
+
       const hours = await new Promise((resolve, reject) => db.query(
         'SELECT task_id, SUM(hours) AS total_hours FROM task_hours WHERE task_id IN (?) GROUP BY task_id',
         [internalIds], (e, r) => e ? reject(e) : resolve(r)
@@ -219,7 +245,8 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
           `SELECT id, task_id, file_url, file_name, file_type, uploaded_at FROM task_documents WHERE task_id IN (?) AND is_active = 1 ORDER BY uploaded_at DESC`,
           [internalIds], (e, r) => e ? reject(e) : resolve(r)
         ));
-      } catch (fileErr) {
+      } catch (fileErr) {
+
         files = [];
       }
 
@@ -371,7 +398,8 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
     logger.error('Error in selected-details endpoint: ' + (e && e.message));
     return res.status(500).json({ success: false, error: e && e.message });
   }
-});
+});
+
 async function createJsonHandler(req, res) {
   try {
     const {
@@ -388,7 +416,8 @@ async function createJsonHandler(req, res) {
       client_id,
       projectId,
       projectPublicId,
-    } = req.body;
+    } = req.body;
+
     let finalAssigned = assigned_to;
     if ((!Array.isArray(finalAssigned) || finalAssigned.length === 0) && assignedTo) {
       if (Array.isArray(assignedTo)) finalAssigned = assignedTo;
@@ -401,13 +430,16 @@ async function createJsonHandler(req, res) {
     let finalClientId = client_id || null;
 
     const createdAt = new Date(new Date().getTime() + 5.5 * 60 * 60 * 1000).toISOString();
-    const updatedAt = createdAt;
-    const normalizedStage = stage || 'TODO';
+    const updatedAt = createdAt;
+
+    const normalizedStage = stage || 'TODO';
+
     const priorityNorm = priority ? String(priority).toUpperCase() : 'MEDIUM';
 
     if (!title) {
       return res.status(400).send("Missing required field: title");
-    }
+    }
+
     if (!finalAssigned || (Array.isArray(finalAssigned) && finalAssigned.length !== 1) || (!Array.isArray(finalAssigned) && !finalAssigned)) {
       return res.status(400).send("assigned_to must contain exactly one user ID (single-user ownership required)");
     }
@@ -420,7 +452,8 @@ async function createJsonHandler(req, res) {
       if (err) {
         logger.error('Database connection error:', err);
         return res.status(500).send("Database connection error");
-      }
+      }
+
       let finalProjectId = null;
       let finalProjectPublicId = null;
       if (projectId) {
@@ -502,7 +535,8 @@ async function createJsonHandler(req, res) {
 
             logger.debug('High priority check:', { highPriorityCount, finalPriority, finalTaskDate });
 
-            if (priorityNorm === "HIGH" && highPriorityCount > 0) {
+            if (priorityNorm === "HIGH" && highPriorityCount > 0) {
+
               const getExistingQuery = `
                 SELECT priority as existingPriority, taskDate as existingTaskDate 
                 FROM tasks 
@@ -538,7 +572,7 @@ async function createJsonHandler(req, res) {
                     WHERE client_id = ? AND priority = 'HIGH'
                   `;
 
-                  connection.query(updateExistingTaskQuery, [updatedAt, adjustedTaskDate.toISOString(), finalClientId], (updateErr) => {
+                  connection.query(updateExistingTaskQuery, [toMySQLDate(updatedAt), toMySQLDate(adjustedTaskDate), finalClientId], (updateErr) => {
                     if (updateErr) {
                       logger.error('Error updating existing tasks:', updateErr);
                       return connection.rollback(() => {
@@ -609,12 +643,16 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
     });
   });
 
-  try {
+  try {
+
     const publicId = crypto.randomBytes(8).toString('hex');
 
     const cols = ['title', 'description', 'stage', 'taskDate', 'priority', 'createdAt', 'updatedAt', 'time_alloted', 'estimated_hours', 'status', 'client_id', 'public_id', 'project_id', 'project_public_id'];
     const placeholders = cols.map(() => '?');
-    const values = [title, description, stage, taskDate, finalPriority, createdAt, updatedAt, time_alloted, estimated_hours || time_alloted || null, 'Pending', client_id, publicId, projectId ? projectId : null, projectPublicId ? projectPublicId : null];
+    const mysqlTaskDate = toMySQLDate(taskDate);
+    const mysqlCreatedAt = toMySQLDate(createdAt);
+    const mysqlUpdatedAt = toMySQLDate(updatedAt);
+    const values = [title, description, stage, mysqlTaskDate, finalPriority, mysqlCreatedAt, mysqlUpdatedAt, time_alloted, estimated_hours || time_alloted || null, 'Pending', client_id, publicId, projectId ? projectId : null, projectPublicId ? projectPublicId : null];
 
     logger.debug('Final INSERT columns:', cols);
     logger.debug('Final INSERT values:', values);
@@ -679,9 +717,11 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
             connection.release();
             reject(new Error("No assigned users provided or invalid format"));
           });
-        }
+        }
+
         const runResolveQuery = async (idx) => {
-          if (idx >= resolveQueries.length) {
+          if (idx >= resolveQueries.length) {
+
             resolvedUserIds = Array.from(new Set(resolvedUserIds));
 
             logger.debug('Resolved user IDs:', resolvedUserIds);
@@ -691,7 +731,8 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
                 connection.release();
                 reject(new Error("Assigned users not found"));
               });
-            }
+            }
+
             for (const uId of resolvedUserIds) {
               const hasActive = await assigneeHasActiveTask(uId);
               if (hasActive) {
@@ -715,7 +756,8 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
                   connection.release();
                   reject(new Error("Error inserting task assignments: " + err.message));
                 });
-              }
+              }
+
               const assignedBy = (req.user && req.user.name) || 'System';
               const link = `${env.FRONTEND_URL || env.BASE_URL}/tasks/${taskId}`;
               const projectName = null;
@@ -725,7 +767,8 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
 
               logger.info('Preparing to send emails to users:', resolvedPublicIds);
 
-              const sendEmails = emailService.sendTaskAssignmentEmails;
+              const sendEmails = emailService.sendTaskAssignmentEmails;
+
               sendEmails({
                 finalAssigned: resolvedPublicIds,
                 taskTitle: title,
@@ -740,7 +783,8 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
                 connection
               }).catch(emailError => {
                 logger.error('Email sending failed:', emailError);
-              });
+              });
+
               connection.commit((err) => {
                 if (err) {
                   logger.error('Commit error:', err);
@@ -806,7 +850,8 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
       executeTaskCreation(resolve, reject);
     })
       .then(async (result) => {
-        logger.info('Task creation successful:', result);
+        logger.info('Task creation successful:', result);
+
         if (result.assignedUsers && result.assignedUsers.length > 0) {
           await NotificationService.createAndSend(
             result.assignedUsers.map(u => typeof u === 'object' ? u.internalId || u.id : u),
@@ -816,7 +861,8 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
             'task',
             result.publicId
           );
-        }
+        }
+
         await NotificationService.createAndSendToRoles(['Manager', 'Admin'], 
           'New Task Created', 
           `A new task "${body.title}" has been created`, 
@@ -824,9 +870,11 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
           'task', 
           result.publicId, 
           req.user.tenant_id
-        );
+        );
+
         if (projectId) {
-          try {
+          try {
+
             const updateProjectStatus = () => {
               return new Promise((resolve, reject) => {
                 const checkStatusQuery = 'SELECT status FROM projects WHERE id = ?';
@@ -855,9 +903,11 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
             
             await updateProjectStatus();
           } catch (e) {
-            logger.error('Failed to update project status:', e && e.message);
+            logger.error('Failed to update project status:', e && e.message);
+
           }
-        }
+        }
+
         let summary = {};
         try {
           const now = new Date();
@@ -865,7 +915,8 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
           let estHours = null;
           if (body.taskDate) estDate = new Date(body.taskDate);
           if (body.estimated_hours != null) estHours = Number(body.estimated_hours);
-          else if (body.time_alloted != null) estHours = Number(body.time_alloted);
+          else if (body.time_alloted != null) estHours = Number(body.time_alloted);
+
           if (estDate) {
             summary.dueStatus = estDate < now ? 'Overdue' : 'On Time';
             summary.dueDate = estDate.toISOString();
@@ -947,11 +998,13 @@ router.get('/', async (req, res) => {
   try {
     const user = req.user;
     const projectParam = req.query.project_id || req.query.projectId || req.query.projectPublicId || req.body && (req.body.project_id || req.body.project_public_id || req.body.projectPublicId);
-    if (!projectParam) return res.status(400).json({ success: false, error: 'project_id or projectPublicId query parameter required' });
+    if (!projectParam) return res.status(400).json({ success: false, error: 'project_id or projectPublicId query parameter required' });
+
     const tasksHasProjectId = await hasColumn('tasks', 'project_id');
     const tasksHasProjectPublicId = await hasColumn('tasks', 'project_public_id');
     const hasIsDeleted = await hasColumn('tasks', 'isDeleted');
-    const includeDeleted = req.query.includeDeleted === '1' || req.query.includeDeleted === 'true';
+    const includeDeleted = req.query.includeDeleted === '1' || req.query.includeDeleted === 'true';
+
     let optionalSelect = '';
     try {
       const cols = [];
@@ -970,7 +1023,8 @@ router.get('/', async (req, res) => {
     let resolvedProjectId = projectParam;
     let projectPublicIdToUse = null;
 
-    if (!/^\d+$/.test(String(projectParam))) {
+    if (!/^\d+$/.test(String(projectParam))) {
+
       projectPublicIdToUse = projectParam;
       try {
         const projRows = await new Promise((resolve, reject) => db.query('SELECT id, public_id FROM projects WHERE public_id = ? LIMIT 1', [projectParam], (err, r) => err ? reject(err) : resolve(r)));
@@ -982,16 +1036,19 @@ router.get('/', async (req, res) => {
       }
     } else {
       resolvedProjectId = Number(projectParam);
-    }
+    }
+
       try {
         await ensureProjectOpen(resolvedProjectId);
       } catch (err) {
         return res.status(err.status || 403).json({ success: false, message: err.message });
-      }
+      }
+
     let sql;
     let params = [];
 
-    if (tasksHasProjectId) {
+    if (tasksHasProjectId) {
+
       if (tasksHasProjectPublicId) {
         if (!projectPublicIdToUse) {
           try {
@@ -1118,7 +1175,8 @@ router.get('/', async (req, res) => {
         ORDER BY t.createdAt DESC
       `;
       params = [projectPublicIdToUse];
-    } else {
+    } else {
+
       return res.status(500).json({ success: false, error: 'Cannot filter tasks by project: tasks table has no project_id or project_public_id column' });
     }
 
@@ -1197,7 +1255,9 @@ router.get('/', async (req, res) => {
     logger.error('Error in project tasks endpoint: ' + (e && e.message));
     return res.status(500).json({ success: false, error: e.message });
   }
-});
+});
+
+
 router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
   const { id: taskId } = req.params;
   const {
@@ -1212,7 +1272,8 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
     if (taskRow.length === 0) {
       return res.status(404).json({ success: false, error: 'Task not found' });
     }
-    const internalTaskId = taskRow[0].id;
+    const internalTaskId = taskRow[0].id;
+
     try {
       const projRows = await q('SELECT project_id FROM tasks WHERE id = ? LIMIT 1', [internalTaskId]);
       const projId = projRows && projRows[0] ? projRows[0].project_id : null;
@@ -1225,14 +1286,16 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
       if (err) {
         logger.error(`DB connection error: ${err}`);
         return res.status(500).json({ success: false, error: 'Database connection error' });
-      }
+      }
+
       (async () => {
         try {
           let reassignmentRequest = null;
           let oldAssigneeEmail = null;
           let oldAssigneeName = 'Previous Assignee';
 
-          if (handleResignationRequestId) {
+          if (handleResignationRequestId) {
+
             const requestRows = await new Promise((resolve, reject) =>
               connection.query(
                 'SELECT requested_by FROM task_resign_requests WHERE id = ? AND status = "APPROVED"',
@@ -1242,7 +1305,8 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
             );
 
             if (requestRows.length > 0) {
-              const requestedById = requestRows[0].requested_by;
+              const requestedById = requestRows[0].requested_by;
+
               const userRows = await new Promise((resolve, reject) =>
                 connection.query(
                   'SELECT _id, name, email FROM users WHERE _id = ?',
@@ -1257,7 +1321,8 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
                 oldAssigneeName = userRows[0].name || 'Previous Assignee';
               }
             }
-          }
+          }
+
           const updates = [];
           const values = [];
 
@@ -1266,19 +1331,20 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
           if (priority !== undefined) { updates.push('priority = ?'); values.push(priority); }
           if (description !== undefined) { updates.push('description = ?'); values.push(description); }
           if (client_id !== undefined) { updates.push('client_id = ?'); values.push(client_id); }
-          if (taskDate !== undefined) { updates.push('taskDate = ?'); values.push(taskDate); }
+          if (taskDate !== undefined) { updates.push('taskDate = ?'); values.push(toMySQLDate(taskDate)); }
           if (time_alloted !== undefined) { updates.push('time_alloted = ?'); values.push(time_alloted); }
           if (projectId !== undefined) { updates.push('project_id = ?'); values.push(projectId); }
           if (projectPublicId !== undefined) { updates.push('project_public_id = ?'); values.push(projectPublicId); }
 
           updates.push('updatedAt = ?');
-          values.push(new Date().toISOString());
+          values.push(toMySQLDate(new Date()));
           values.push(internalTaskId);
 
           if (updates.length === 1) {
             connection.release();
             return res.status(400).json({ success: false, error: 'No fields to update' });
-          }
+          }
+
           const updateTaskQuery = `UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`;
           connection.query(updateTaskQuery, values, async (err, result) => {
             if (err) {
@@ -1297,7 +1363,8 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
             let emailStatus = null;
 
             try {
-              if (Array.isArray(assigned_to) && assigned_to.length > 0) {
+              if (Array.isArray(assigned_to) && assigned_to.length > 0) {
+
                 if (assigned_to.length !== 1) {
                   connection.release();
                   return res.status(400).json({ success: false, error: 'Tasks must have exactly one assignee (single-user ownership)' });
@@ -1332,16 +1399,19 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
                 if (hasActiveForNew) {
                   connection.release();
                   return res.status(400).json({ success: false, error: 'The selected assignee already has an active task and cannot be reassigned another until it is completed.' });
-                }
+                }
+
                 await new Promise((resolve, reject) =>
                   connection.query('DELETE FROM taskassignments WHERE task_Id = ?', [internalTaskId], (e) => e ? reject(e) : resolve())
-                );
+                );
+
                 await new Promise((resolve, reject) =>
                   connection.query(
                     'INSERT INTO taskassignments (task_Id, user_Id) VALUES (?, ?)',
                     [internalTaskId, newAssigneeId], (e) => e ? reject(e) : resolve()
                   )
-                );
+                );
+
                 const previousAssignees = currentUserIds.filter(id => id !== newAssigneeId);
                 if (previousAssignees.length > 0) {
                   for (const prevId of previousAssignees) {
@@ -1356,7 +1426,8 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
 
                 reassigned = true;
                 finalAssignedUserIds = [newAssigneeId];
-              }
+              }
+
               const fetchSql = `
                 SELECT t.*, c.name AS client_name,
                   GROUP_CONCAT(DISTINCT u._id) AS assigned_user_ids,
@@ -1403,7 +1474,8 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
                     await new Promise((res2, rej2) => connection.query('UPDATE tasks SET day = ? WHERE id = ?', [dayStr, internalTaskId], (e) => e ? rej2(e) : res2()));
                   }
                 }
-              } catch (e) { logger.warn('Failed to persist day column on update: ' + (e && e.message)); }
+              } catch (e) { logger.warn('Failed to persist day column on update: ' + (e && e.message)); }
+
               if (reassigned && Array.isArray(taskObj.assignedUsers)) {
                 try {
                   const baseUrl = env.FRONTEND_URL || env.BASE_URL;
@@ -1416,7 +1488,8 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
                   };
 
                   const requesterId = req.user?._id ? String(req.user._id) : null;
-                  const newAssignees = taskObj.assignedUsers.filter(u => u.internalId !== requesterId);
+                  const newAssignees = taskObj.assignedUsers.filter(u => u.internalId !== requesterId);
+
                   for (const user of newAssignees) {
                     if (isValidEmail(user.email)) {
                       await emailService.sendEmail({
@@ -1430,7 +1503,8 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
                         })
                       });
                     }
-                  }
+                  }
+
                   if (isValidEmail(oldAssigneeEmail)) {
                     await emailService.sendEmail({
                       to: oldAssigneeEmail,
@@ -1497,7 +1571,8 @@ router.patch('/:taskId/reassign/:userId', ruleEngine('task_reassign'), requireRo
       if (uRows.length) newAssigneeId = uRows[0]._id;
     }
 
-    if (approve) {
+    if (approve) {
+
       await q('UPDATE taskassignments SET is_read_only = 1 WHERE task_Id = ? AND user_Id = ?', [taskId, userId]);
       if (newAssigneeId) {
         const exists = await q('SELECT 1 FROM taskassignments WHERE task_Id = ? AND user_Id = ?', [taskId, newAssigneeId]);
@@ -1506,14 +1581,16 @@ router.patch('/:taskId/reassign/:userId', ruleEngine('task_reassign'), requireRo
           if (hasActive) return res.status(400).json({ success: false, error: 'The selected assignee already has an active task and cannot be assigned another until it is completed.' });
           await q('INSERT INTO taskassignments (task_Id, user_Id, is_read_only) VALUES (?, ?, 0)', [taskId, newAssigneeId]);
         }
-      }
+      }
+
       const [[oldUser], [newUser], [task]] = await Promise.all([
         q('SELECT name, email FROM users WHERE _id = ?', [userId]),
         newAssigneeId ? q('SELECT name, email FROM users WHERE _id = ?', [newAssigneeId]) : [{}],
         q('SELECT title FROM tasks WHERE id = ?', [taskId])
       ]);
       const baseUrl = env.FRONTEND_URL || env.BASE_URL;
-      const taskLink = `${baseUrl}/tasks/${taskId}`;
+      const taskLink = `${baseUrl}/tasks/${taskId}`;
+
       if (newUser && newUser.email) {
         await emailService.sendEmail({
           to: newUser.email,
@@ -1524,7 +1601,8 @@ router.patch('/:taskId/reassign/:userId', ruleEngine('task_reassign'), requireRo
             taskLink
           })
         });
-      }
+      }
+
       if (oldUser && oldUser.email) {
         await emailService.sendEmail({
           to: oldUser.email,
@@ -1536,8 +1614,10 @@ router.patch('/:taskId/reassign/:userId', ruleEngine('task_reassign'), requireRo
         });
       }
       return res.json({ success: true });
-    } else {
-      await q('UPDATE taskassignments SET status = ?, is_read_only = 0 WHERE task_id = ? AND user_id = ?', ['ACTIVE', taskId, userId]);
+    } else {
+
+      await q('UPDATE taskassignments SET status = ?, is_read_only = 0 WHERE task_id = ? AND user_id = ?', ['ACTIVE', taskId, userId]);
+
       const [[oldUser], [task]] = await Promise.all([
         q('SELECT name, email FROM users WHERE _id = ?', [userId]),
         q('SELECT title FROM tasks WHERE id = ?', [taskId])
@@ -1558,13 +1638,17 @@ router.patch('/:taskId/reassign/:userId', ruleEngine('task_reassign'), requireRo
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
-});
+});
+
+
+
 router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Employee']), async (req, res) => {
   try {
     await ensureTaskTimeLogsTable();
     
     const { id } = req.params;
-    const { status, projectId, taskId } = req.body;
+    const { status, projectId, taskId } = req.body;
+
     if (!status) {
       return res.status(400).json({ success: false, message: 'Status is required' });
     }
@@ -1575,14 +1659,16 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
 
     if (!taskId) {
       return res.status(400).json({ success: false, message: 'taskId is required' });
-    }
+    }
+
     const validStatuses = ['PENDING', 'To Do', 'In Progress', 'On Hold', 'Review', 'Completed'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
         message: `Invalid status. Must be one of: ${validStatuses.join(', ')}`
       });
-    }
+    }
+
     let resolvedTaskId = req.params.id;
     if (isNaN(id)) {
       const taskRows = await q('SELECT id FROM tasks WHERE public_id = ? LIMIT 1', [id]);
@@ -1590,15 +1676,18 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
         return res.status(404).json({ success: false, message: 'Task not found' });
       }
       resolvedTaskId = taskRows[0].id;
-    }
+    }
+
     let resolvedProjectId = req.body.projectId;
-    if (isNaN(projectId)) {
+    if (isNaN(projectId)) {
+
       const projectRows = await q('SELECT id FROM projects WHERE public_id = ? LIMIT 1', [projectId]);
       if (!projectRows || projectRows.length === 0) {
         return res.status(404).json({ success: false, message: 'Project not found' });
       }
       resolvedProjectId = projectRows[0].id;
-    }
+    }
+
     const hasReadOnlyColumn = await hasColumn('taskassignments', 'is_read_only');
     const selectColumns = hasReadOnlyColumn ? 't.*, ta.user_id, ta.is_read_only, p.public_id as project_public_id' : 't.*, ta.user_id, p.public_id as project_public_id';
     const readOnlyCondition = hasReadOnlyColumn ? ' AND (ta.is_read_only IS NULL OR ta.is_read_only != 1)' : '';
@@ -1614,7 +1703,8 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
 
     if (!tasks || tasks.length === 0) {
       return res.status(404).json({ success: false, message: 'Task not found, not assigned to you with full access, or does not belong to the specified project' });
-    }
+    }
+
     try {
       await ensureProjectOpen(resolvedProjectId);
     } catch (err) {
@@ -1625,7 +1715,9 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
     const currentStatusStr = task.status || task.stage || 'PENDING';
     
     const normalizedCurrent = currentStatusStr.toUpperCase();
-    const normalizedTarget = status.toUpperCase();
+    const normalizedTarget = status.toUpperCase();
+
+
     const allowedTransitions = {
       'PENDING': ['TO DO', 'IN PROGRESS'],
       'TO DO': ['IN PROGRESS'],
@@ -1658,7 +1750,8 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
         role: req.user.role,
         projectId: resolvedProjectId,
         meta: { reason: 'Employee requesting task completion' }
-      });
+      });
+
       if (transitionResult && transitionResult.requestId) {
         workflowMessage = 'Review requested — sent for manager approval';
         workflowData = { requestId: transitionResult.requestId };
@@ -1670,7 +1763,8 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
       }
     }
 
-    await q('UPDATE tasks SET status = ?, updatedAt = NOW() WHERE id = ?', [status, resolvedTaskId]);
+    await q('UPDATE tasks SET status = ?, updatedAt = NOW() WHERE id = ?', [status, resolvedTaskId]);
+
     const now = new Date();
     if ((normalizedTarget === 'REVIEW' || normalizedTarget === 'COMPLETED' || normalizedTarget === 'ON HOLD') && normalizedCurrent === 'IN PROGRESS') {
        const lastLog = await q('SELECT timestamp FROM task_time_logs WHERE task_id = ? AND (action = ? OR action = ?) ORDER BY timestamp DESC LIMIT 1', [resolvedTaskId, 'start', 'resume']);
@@ -1690,7 +1784,8 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
        
        await q(`UPDATE tasks SET ${timerUpdate} WHERE id = ?`, params);
     } 
-    else if (normalizedTarget === 'IN PROGRESS' && normalizedCurrent !== 'IN PROGRESS') {
+    else if (normalizedTarget === 'IN PROGRESS' && normalizedCurrent !== 'IN PROGRESS') {
+
       const action = (normalizedCurrent === 'ON HOLD') ? 'resume' : 'start';
       if (action === 'start') {
         await q('UPDATE tasks SET started_at = ?, live_timer = ? WHERE id = ?', [now, now, resolvedTaskId]);
@@ -1699,7 +1794,8 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
       }
       await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?)', 
         [resolvedTaskId, req.user._id, action, now]);
-    }
+    }
+
     const updatedTask = await q('SELECT * FROM tasks WHERE id = ? LIMIT 1', [resolvedTaskId]);
     const t = updatedTask[0] || {};
     const totalSeconds = Number(t.total_duration || 0);
@@ -1707,7 +1803,8 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
     const hh = String(Math.floor(totalSeconds / 3600)).padStart(2, '0');
     const mm = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, '0');
     const ss = String(totalSeconds % 60).padStart(2, '0');
-    const humanDuration = `${hh}:${mm}:${ss}`;
+    const humanDuration = `${hh}:${mm}:${ss}`;
+
     const projectIdForAgg = task.project_id || resolvedProjectId;
     let projectHours = 0;
     if (projectIdForAgg) {
@@ -1726,7 +1823,8 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
       } catch (persistErr) {
         logger.warn('Failed to persist project hours:', persistErr && persistErr.message);
       }
-    }
+    }
+
     await NotificationService.createAndSend(
       [req.user._id],
       'Task Status Changed',
@@ -1734,7 +1832,8 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
       'TASK_STATUS_CHANGED',
       'task',
       task.public_id
-    );
+    );
+
     await NotificationService.createAndSendToRoles(['Manager'], 
       'Task Status Updated', 
       `Task "${task.title}" status changed to ${status}`, 
@@ -1770,7 +1869,8 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
           taskDate: t.taskDate,
           day: t.taskDate ? (new Date(t.taskDate).toISOString().split('T')[0]) : null,
           dayName: t.taskDate ? dayjs(t.taskDate).format('ddd') : null,
-        },
+        },
+
         project_total_time_seconds: projectHours,
         project_total_time_hours: Number((projectHours / 3600).toFixed(2))
       }
@@ -1779,7 +1879,8 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
     logger.error('Update task status error:', e.message);
     res.status(500).json({ success: false, error: e.message });
   }
-});
+});
+
 router.delete('/:id', ruleEngine('task_delete'), requireRole(['Admin', 'Manager']), (req, res) => {
   const { id: taskId } = req.params;
 
@@ -1791,7 +1892,8 @@ router.delete('/:id', ruleEngine('task_delete'), requireRole(['Admin', 'Manager'
     }
 
     (async () => {
-      try {
+      try {
+
         const findTaskSql = 'SELECT id FROM tasks WHERE id = ? OR public_id = ?';
         const taskResult = await new Promise((resolve, reject) => {
           connection.query(findTaskSql, [taskId, taskId], (qErr, qRes) => {
@@ -1805,7 +1907,8 @@ router.delete('/:id', ruleEngine('task_delete'), requireRole(['Admin', 'Manager'
           return res.status(404).json({ success: false, error: 'Task not found' });
         }
 
-        const internalTaskId = taskResult[0].id;
+        const internalTaskId = taskResult[0].id;
+
         connection.beginTransaction((err) => {
           if (err) {
             connection.release();
@@ -1921,12 +2024,14 @@ router.get("/gettaskss", (req, res) => {
           clientss c ON t.client_id = c.id
       LEFT JOIN
           users rj ON t.rejected_by = rj._id
-    `;
+    `;
+
     if (role === 'Employee') {
       query += ` WHERE t.id IN (
           SELECT task_id FROM taskassignments WHERE user_id = ?
       )`;
-    }
+    }
+
     if (resolvedUserId && role !== 'Employee') {
       if (query.includes('WHERE')) {
         query = query.replace(/ORDER BY[\s\S]*$/m, '');
@@ -1974,7 +2079,8 @@ router.get("/gettaskss", (req, res) => {
         } else {
           query = query.replace(/ORDER BY[\s\S]*$/m, '');
           query += ` WHERE t.isDeleted != 1 `;
-        }
+        }
+
         query += ` ORDER BY 
       CASE t.priority
         WHEN 'HIGH' THEN 
@@ -2002,7 +2108,8 @@ router.get("/gettaskss", (req, res) => {
       END,
       t.createdAt ASC;`;
       }
-    } catch (err) {
+    } catch (err) {
+
     }
 
     const queryParams = role === 'Employee' ? [resolvedUserId] : (resolvedUserId ? [resolvedUserId] : []);
@@ -2045,7 +2152,8 @@ router.get("/gettaskss", (req, res) => {
             user_role: row.user_role,
           });
         }
-      });
+      });
+
       try {
         const userIds = new Set();
         Object.values(tasks).forEach(t => t.assigned_users.forEach(u => { if (u.user_id) userIds.add(u.user_id); }));
@@ -2058,7 +2166,8 @@ router.get("/gettaskss", (req, res) => {
               Object.values(tasks).forEach(t => {
                 t.assigned_users = t.assigned_users.map(u => ({ user_id: map[u.user_id] || u.user_id, user_name: u.user_name, user_role: u.user_role }));
               });
-            }
+            }
+
             const sortedTasks = Object.values(tasks).sort((a, b) => {
               const priorityOrder = { HIGH: 1, MEDIUM: 2, LOW: 3 };
               const stageOrder = { TODO: 1, IN_PROGRESS: 2, COMPLETED: 3 };
@@ -2078,8 +2187,10 @@ router.get("/gettaskss", (req, res) => {
           });
           return;
         }
-      } catch (e) {
-      }
+      } catch (e) {
+
+      }
+
       const sortedTasks = Object.values(tasks).sort((a, b) => {
         const priorityOrder = { HIGH: 1, MEDIUM: 2, LOW: 3 };
         const stageOrder = { TODO: 1, IN_PROGRESS: 2, COMPLETED: 3 };
@@ -2097,13 +2208,15 @@ router.get("/gettaskss", (req, res) => {
 
       res.status(200).json(sortedTasks);
     });
-  };
+  };
+
   if (filterUserParam) {
     const isNumeric = /^\d+$/.test(String(filterUserParam));
     if (isNumeric) {
       buildAndRun(filterUserParam);
       return;
-    }
+    }
+
     db.query('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [filterUserParam], (err, rows) => {
       if (err) return res.status(500).json({ message: 'DB error resolving userId', error: err.message });
       if (!rows || rows.length === 0) return res.status(404).json({ message: 'User not found for provided userId' });
@@ -2111,14 +2224,16 @@ router.get("/gettaskss", (req, res) => {
       buildAndRun(resolved);
     });
     return;
-  }
+  }
+
   const currentUserInternal = user && user._id;
   buildAndRun(currentUserInternal);
 });
 
 router.get("/gettasks", (req, res) => {
   const authUser = req.user;
-  const role = authUser && authUser.role;
+  const role = authUser && authUser.role;
+
   const filterUserParam = req.query.userId;
 
   const buildAndRun = async (resolvedUserId) => {
@@ -2150,7 +2265,8 @@ router.get("/gettasks", (req, res) => {
             clientss c ON t.client_id = c.id
           LEFT JOIN
             users rj ON t.rejected_by = rj._id
-    `;
+    `;
+
     if (role === 'Employee') {
       query = `
       SELECT 
@@ -2165,8 +2281,10 @@ router.get("/gettasks", (req, res) => {
       WHERE ta.user_id = ?
       ORDER BY t.createdAt
     `;
-    }
-    if (resolvedUserId && role !== 'Employee') {
+    }
+
+    if (resolvedUserId && role !== 'Employee') {
+
       query = query.replace(/ORDER BY[\s\S]*$/m, '');
       query += ` WHERE t.id IN (SELECT task_id FROM taskassignments WHERE user_id = ?)`;
       query += ` ORDER BY t.createdAt`;
@@ -2192,7 +2310,8 @@ router.get("/gettasks", (req, res) => {
     db.query(query, params, (err, results) => {
       if (err) {
         return res.status(500).send("Error fetching tasks");
-      }
+      }
+
       const tasks = {};
       results.forEach((row) => {
         if (!tasks[row.task_id]) {
@@ -2225,7 +2344,8 @@ router.get("/gettasks", (req, res) => {
             user_role: row.user_role,
           });
         }
-      });
+      });
+
       try {
         const userIds = new Set();
         Object.values(tasks).forEach(t => t.assigned_users.forEach(u => { if (u.user_id) userIds.add(u.user_id); }));
@@ -2243,7 +2363,8 @@ router.get("/gettasks", (req, res) => {
           });
           return;
         }
-      } catch (e) {
+      } catch (e) {
+
       }
 
       res.status(200).json(Object.values(tasks));
@@ -2313,7 +2434,8 @@ router.get("/gettaskbyId/:task_id", (req, res) => {
       const includeDeleted = req.query.includeDeleted === '1' || req.query.includeDeleted === 'true';
       const hasIsDeleted = await hasColumn('tasks', 'isDeleted');
       let finalQuery = query;
-      if (hasIsDeleted && !includeDeleted) {
+      if (hasIsDeleted && !includeDeleted) {
+
         finalQuery = finalQuery.replace('WHERE t.id = ?', 'WHERE t.id = ? AND t.isDeleted != 1');
       }
 
@@ -2324,7 +2446,8 @@ router.get("/gettaskbyId/:task_id", (req, res) => {
 
         if (results.length === 0) {
           return res.status(404).send("Task not found");
-        }
+        }
+
         const task = {
           task_id: results[0].task_id,
           title: results[0].title,
@@ -2361,7 +2484,8 @@ router.get("/gettaskbyId/:task_id", (req, res) => {
               user_role: row.user_role,
             });
           }
-        });
+        });
+
         if (role === 'Employee') {
           const assigned = task.assigned_users.some(u => String(u.user_id) === String(userId));
           if (!assigned) return res.status(403).json({ message: 'Forbidden' });
@@ -2434,7 +2558,7 @@ router.delete("/deltask/:task_id", requireRole(['Admin', 'Manager']), (req, res)
 router.post("/createsub/:task_id", requireRole(['Admin', 'Manager', 'Employee']), (req, res) => {
   const { task_id } = req.params;
   const { title, due_date, tag } = req.body;
-  const createdAt = new Date().toISOString();
+  const createdAt = new Date();
   const updatedAt = createdAt;
 
   if (!title || !due_date || !tag) {
@@ -2444,10 +2568,11 @@ router.post("/createsub/:task_id", requireRole(['Admin', 'Manager', 'Employee'])
 
   const insertSubTaskQuery = `
         INSERT INTO subtasks (task_id, title, due_date, tag, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)`;
+        VALUES (?, ?, ?, ?, ?, ?)`;
+
   db.query(
     insertSubTaskQuery,
-    [task_id, title, due_date, tag, createdAt, updatedAt],
+    [task_id, title, due_date, tag, toMySQLDate(createdAt), toMySQLDate(updatedAt)],
     (err, results) => {
       if (err) {
         logger.error(
@@ -2460,7 +2585,8 @@ router.post("/createsub/:task_id", requireRole(['Admin', 'Manager', 'Employee'])
             message: "Database error",
             error: err.message,
           });
-      }
+      }
+
       logger.info(
         `Subtask created successfully for task_id: ${task_id}, subtask_id: ${results.insertId}`
       );
@@ -2483,16 +2609,18 @@ router.post("/createsub/:task_id", requireRole(['Admin', 'Manager', 'Employee'])
 
 router.get("/getsubtasks/:task_id", (req, res) => {
   const { task_id } = req.params;
-  const getsubtasks = `SELECT title, due_date, tag FROM subtasks WHERE task_Id = "${task_id}" order by id ASC`;
+  const getsubtasks = `SELECT title, due_date, tag FROM subtasks WHERE task_Id = ? ORDER BY id ASC`;
   try {
-    db.query(getsubtasks, (err, results) => {
+    db.query(getsubtasks, [task_id], (err, results) => {
       if (err) {
-        return res.status(500).send({ auth: false, message: err.message });
+        logger.error('Error fetching subtasks: ' + (err && err.message));
+        return res.status(500).send({ auth: false, message: 'Database error' });
       }
       res.status(201).json(results);
     });
   } catch (err) {
-    res.status(500).json({ error: "Server error" });
+    logger.error('Unexpected error fetching subtasks: ' + (err && err.message));
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
@@ -2528,16 +2656,20 @@ router.get("/total-working-hours/:task_id", async (req, res) => {
 
 router.post("/working-hours", requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
-    const { task_id, date, start_time, end_time } = req.body;
+    const { task_id, date, start_time, end_time } = req.body;
+
     if (!task_id || !date || !start_time || !end_time) {
       return res.status(400).json({ error: "Missing required fields" });
-    }
-    const workingDate = new Date(date).toISOString().split("T")[0];
+    }
+
+    const workingDate = new Date(date).toISOString().split("T")[0];
+
     const query = `
       INSERT INTO WorkingHours (task_id, working_date, start_time, end_time, created_at, updated_at)
       VALUES (?, ?, ?, ?, NOW(), NOW())
     `;
-    const values = [task_id, workingDate, start_time, end_time];
+    const values = [task_id, workingDate, start_time, end_time];
+
     await db.query(query, values);
 
     res.status(201).json({ message: "Working hours added successfully" });
@@ -2603,7 +2735,8 @@ router.post("/taskhours", requireRole(['Admin', 'Manager', 'Employee']), async (
     const decryptedData = JSON.parse(bytes.toString(CryptoJS.enc.Utf8));
     if (!decryptedData) {
       return res.status(400).json({ error: "Decryption failed" });
-    }
+    }
+
     const { taskId, userId, date, hours } = decryptedData;
 
     if (!taskId || !userId || !date || !hours) {
@@ -2614,11 +2747,13 @@ router.post("/taskhours", requireRole(['Admin', 'Manager', 'Employee']), async (
       INSERT INTO task_hours (task_id, user_id, date, hours)
       VALUES (?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE hours = VALUES(hours), updated_at = CURRENT_TIMESTAMP
-    `;
+    `;
+
     db.query(query, [taskId, userId, date, hours], (err, results) => {
       if (err) {
         return res.status(500).json({ error: "Failed to save hours" });
-      }
+      }
+
       const response = { message: "Hours saved successfully" };
       res.status(200).json(response);
     });
@@ -2659,7 +2794,7 @@ router.put("/updatetask/:id", requireRole(['Admin', 'Manager']), async (req, res
 
     db.query(
       updateTaskQuery,
-      [stage, title, priority, description, client_id, taskDate, time_alloted, new Date(), taskId],
+      [stage, title, priority, description, client_id, toMySQLDate(taskDate), time_alloted, toMySQLDate(new Date()), taskId],
       async (err, result) => {
         if (err) {
           logger.error(`Error updating task: ${err.message}`);
@@ -2670,11 +2805,13 @@ router.put("/updatetask/:id", requireRole(['Admin', 'Manager']), async (req, res
           return res.status(404).json({ success: false, error: 'Task not found' });
         }
 
-        if (Array.isArray(assigned_to)) {
+        if (Array.isArray(assigned_to)) {
+
           if (assigned_to.length > 1) {
             return res.status(400).json({ success: false, error: 'Tasks must have exactly one assignee (single-user ownership)' });
           }
-          const deleteQuery = `DELETE FROM taskassignments WHERE task_Id = ?`;
+          const deleteQuery = `DELETE FROM taskassignments WHERE task_Id = ?`;
+
           await new Promise((resolve, reject) => db.query(deleteQuery, [taskId], (delErr) => delErr ? reject(delErr) : resolve()));
 
           if (assigned_to.length === 1) {
@@ -2845,19 +2982,22 @@ router.get("/taskdetail/getactivity/:id", async (req, res) => {
       INNER JOIN users u ON ta.user_id = u._id
       WHERE ta.task_id = ?
       ORDER BY ta.createdAt DESC
-    `;
+    `;
+
     db.query(sql, [id], (err, result) => {
       if (err) {
         return res
           .status(500)
           .json({ error: "Failed to fetch task activities." });
-      }
+      }
+
       res.status(200).json(result);
     });
   } catch (error) {
     res.status(500).json({ error: "An unexpected error occurred." });
   }
-});
+});
+
 
 router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, res) => {
   let taskId = req.params.id;
@@ -2875,7 +3015,8 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
     const [existingReq] = await new Promise((resolve, reject) =>
       db.query(`SELECT id FROM task_resign_requests WHERE task_id = ? AND status = 'PENDING'`, [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
     );
-    if (existingReq?.length > 0) return res.status(409).json({ success: false, error: 'Pending request exists' });
+    if (existingReq?.length > 0) return res.status(409).json({ success: false, error: 'Pending request exists' });
+
     const [taskRows] = await new Promise((resolve, reject) =>
       db.query(`
         SELECT t.*, p.name as project_name, p.project_manager_id, u_pm._id as pm_id, u_pm.public_id as pm_public_id, u_pm.name as pm_name, u_pm.email as pm_email
@@ -2886,12 +3027,14 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
       `, [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
     );
     if (!taskRows?.length) return res.status(404).json({ success: false, error: 'Task not found' });
-    const fullTask = taskRows[0];
+    const fullTask = taskRows[0];
+
     try {
       await ensureProjectOpen(fullTask.project_id);
     } catch (err) {
       return res.status(err.status || 403).json({ success: false, error: err.message });
-    }
+    }
+
     let manager = null;
     if (fullTask.pm_id) {
       manager = {
@@ -2900,7 +3043,8 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
         name: fullTask.pm_name,
         email: fullTask.pm_email
       };
-    }
+    }
+
     if (!manager) {
       const [mgrRows] = await new Promise((resolve, reject) =>
         db.query(`
@@ -2912,7 +3056,8 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
         `, [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
       );
       if (mgrRows?.length > 0) manager = mgrRows[0];
-    }
+    }
+
     if (!manager) {
       const [fallback] = await new Promise((resolve, reject) =>
         db.query(
@@ -2925,7 +3070,8 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
       );
       manager = fallback?.[0];
     }
-    if (!manager) return res.status(400).json({ success: false, error: 'No manager found' });
+    if (!manager) return res.status(400).json({ success: false, error: 'No manager found' });
+
     const [insertResult] = await new Promise((resolve, reject) =>
       db.query(
         'INSERT INTO task_resign_requests (task_id, requested_by, reason, status) VALUES (?, ?, ?, ?)', 
@@ -2935,7 +3081,8 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
     );
     await new Promise((resolve, reject) =>
       db.query(`UPDATE tasks SET status = 'On Hold', live_timer = NULL WHERE id = ?`, [taskId], (err) => err ? reject(err) : resolve())
-    );
+    );
+
     try {
       const taskLink = `${env.FRONTEND_URL || env.BASE_URL}/tasks/${fullTask.public_id}`;
       if (manager.email && !manager.email.includes('@example.com')) {
@@ -2959,7 +3106,8 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
-});
+});
+
 router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', requireRole(['Manager']), async (req, res) => {
   let { taskId, requestId, action } = req.params;
   
@@ -2985,21 +3133,24 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
     });
   });
 
-  try {
+  try {
+
     if (!/^\d+$/.test(taskId)) {
       const [rows] = await new Promise((resolve, reject) =>
         db.query('SELECT id FROM tasks WHERE public_id = ?', [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
       );
       if (!rows?.length) return res.status(404).json({ success: false, error: 'Task not found' });
       taskId = rows[0].id;
-    }
+    }
+
     try {
       const tRows = await q('SELECT project_id FROM tasks WHERE id = ? LIMIT 1', [taskId]);
       const projId = tRows && tRows[0] ? tRows[0].project_id : null;
       await ensureProjectOpen(projId);
     } catch (err) {
       return res.status(err.status || 403).json({ success: false, error: err.message });
-    }
+    }
+
     const [reqRows] = await new Promise((resolve, reject) =>
       db.query(
         `SELECT * FROM task_resign_requests 
@@ -3030,18 +3181,22 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
       if (!newUserRows?.length) {
         return res.status(400).json({ success: false, error: 'New assignee not found' });
       }
-      newAssigneeUser = newUserRows[0];
+      newAssigneeUser = newUserRows[0];
+
       const hasActiveForNew = await assigneeHasActiveTask(finalNewAssigneeId);
       if (hasActiveForNew) return res.status(400).json({ success: false, error: 'The selected new assignee already has an active task and cannot be assigned another until it is completed.' });
-    }
+    }
+
     const [oldUserRows] = await new Promise((resolve, reject) =>
       db.query('SELECT _id, name, email FROM users WHERE _id = ?', [resignRequest.requested_by], (err, rows) => err ? reject(err) : resolve([rows]))
     );
     const oldAssigneeUser = oldUserRows?.[0];
-    const managers = await q('SELECT name, email FROM users WHERE role IN ("Manager", "Admin") AND (tenant_id = ? OR tenant_id IS NULL)', [req.tenantId || 1]);
+    const managers = await q('SELECT name, email FROM users WHERE role IN ("Manager", "Admin") AND (tenant_id = ? OR tenant_id IS NULL)', [req.tenantId || 1]);
+
     const newStatus = action.toUpperCase();
     const managerId = req.user._id;
-    const managerName = req.user.name;
+    const managerName = req.user.name;
+
     const [taskRows] = await new Promise((resolve, reject) =>
       db.query('SELECT * FROM tasks WHERE id = ?', [taskId], (err, rows) => err ? reject(err) : resolve([rows]))
     );
@@ -3055,10 +3210,12 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
     const prevAssigneeUser = await new Promise((resolve, reject) =>
       db.query('SELECT name, email FROM users WHERE _id = ?', [resignRequest.requested_by], (err, rows) => err ? reject(err) : resolve(rows))
     );
-    const prevAssigneeName = prevAssigneeUser?.[0]?.name || 'Previous Assignee';
+    const prevAssigneeName = prevAssigneeUser?.[0]?.name || 'Previous Assignee';
+
     const connection = await dbTransaction();
     
-    try {
+    try {
+
       await new Promise((resolve, reject) => {
         connection.query(
           `UPDATE task_resign_requests 
@@ -3069,17 +3226,21 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
         );
       });
 
-      if (newStatus === 'APPROVE') {
+      if (newStatus === 'APPROVE') {
+
         await new Promise((resolve, reject) => {
           connection.query(
             `UPDATE tasks SET status = 'Request Approved', is_locked = 1 WHERE id = ?`,
             [taskId],
             (err) => err ? reject(err) : resolve()
           );
-        });
+        });
+
+
         await new Promise((resolve, reject) => {
           connection.query('DELETE FROM taskassignments WHERE task_Id = ?', [taskId], (err) => err ? reject(err) : resolve());
-        });
+        });
+
         if (finalNewAssigneeId) {
           await new Promise((resolve, reject) => {
             connection.query(
@@ -3098,10 +3259,12 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
           );
         });
 
-        await commitTransaction(connection);
+        await commitTransaction(connection);
+
         const taskLink = `${env.FRONTEND_URL || env.BASE_URL}/tasks/${task.public_id || task.id}`;
 
-        try {
+        try {
+
           if (oldAssigneeUser?.email) {
             const oldAssigneeTemplate = emailService.taskReassignmentOldAssigneeTemplate({
               taskTitle: task.title || 'Task',
@@ -3125,7 +3288,8 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
               to: newAssigneeUser.email,
               ...approvedTemplate
             }).catch(err => logger.error(err));
-          }
+          }
+
           const managerTemplate = emailService.taskReassignmentManagerTemplate({
             taskTitle: task.name || task.title || 'Task',
             oldAssignee: oldAssigneeUser?.name || 'Previous Assignee',
@@ -3164,7 +3328,8 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
           } : null
         });
 
-      } else if (newStatus === 'REJECT') {
+      } else if (newStatus === 'REJECT') {
+
         await new Promise((resolve, reject) => {
           connection.query(
             `UPDATE tasks SET status = 'In Progress', is_locked = 0 WHERE id = ?`,
@@ -3173,8 +3338,10 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
           );
         });
 
-        await commitTransaction(connection);
-        const taskLink = `${env.FRONTEND_URL || env.BASE_URL}/tasks/${task.public_id || task.id}`;
+        await commitTransaction(connection);
+
+        const taskLink = `${env.FRONTEND_URL || env.BASE_URL}/tasks/${task.public_id || task.id}`;
+
         if (oldAssigneeUser?.email) {
           const rejectedTemplate = emailService.taskReassignmentRejectedTemplate({
             taskTitle: task.name || task.title || 'Task',
@@ -3184,7 +3351,8 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
             to: oldAssigneeUser.email,
             ...rejectedTemplate
           }).catch(err => logger.error('Failed to send rejection email to old assignee', err && err.message ? err.message : err));
-        }
+        }
+
         const rejectedManagerTemplate = emailService.taskReassignmentRejectedManagerTemplate({
           taskTitle: task.name || task.title || 'Task',
           oldAssignee: oldAssigneeUser?.name || 'Previous Assignee',
@@ -3222,7 +3390,8 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
     logger.error('❌ Manager action error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
-});
+});
+
 router.get('/:id/reassign-requests', requireRole(['Employee', 'Manager']), async (req, res) => {
   let taskId = req.params.id;
   if (typeof taskId === 'string' && !/^\d+$/.test(taskId)) {
@@ -3290,7 +3459,8 @@ router.get('/reassign-requests', requireRole(['Manager']), async (req, res) => {
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
-});
+});
+
 router.post('/:id/start', requireRole(['Employee']), async (req, res) => {
   try {
     await ensureTaskTimeLogsTable();
@@ -3302,8 +3472,10 @@ router.post('/:id/start', requireRole(['Employee']), async (req, res) => {
     if (task.length === 0) return res.status(404).json({ success: false, error: 'Task not found' });
     const taskId = task[0].id;
     const publicId = task[0].public_id;
-    const currentStatus = task[0].status;
-    const normalizedStatus = currentStatus?.toUpperCase().trim();
+    const currentStatus = task[0].status;
+
+    const normalizedStatus = currentStatus?.toUpperCase().trim();
+
     if (normalizedStatus === 'IN PROGRESS') {
       return res.json({ success: true, message: 'Task already in progress' });
     }
@@ -3312,11 +3484,13 @@ router.post('/:id/start', requireRole(['Employee']), async (req, res) => {
         success: false, 
         error: `Cannot start task with status '${currentStatus}'. Only 'TO DO' or 'PENDING' tasks can be started.` 
       });
-    }
+    }
+
     const assignment = await q('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [taskId, userId]);
     if (assignment.length === 0) return res.status(403).json({ success: false, error: 'Not assigned' });
     const [taskRow] = await q('SELECT is_locked FROM tasks WHERE id = ?', [taskId]);
-    if (taskRow && taskRow.is_locked && req.user.role !== 'Admin' && req.user.role !== 'Manager') {
+    if (taskRow && taskRow.is_locked && req.user.role !== 'Admin' && req.user.role !== 'Manager') {
+
       const [assn] = await q('SELECT user_id FROM taskassignments WHERE task_id = ?', [taskId]);
       if (!assn || String(assn.user_id) !== String(userId)) {
         return res.status(403).json({ success: false, error: 'Task is read-only for you (reassigned).' });
@@ -3327,7 +3501,8 @@ router.post('/:id/start', requireRole(['Employee']), async (req, res) => {
 
     const now = new Date();
     await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?)', [taskId, userId, 'start', now]);
-    await q('UPDATE tasks SET status = "In Progress", started_at = ?, live_timer = ? WHERE id = ?', [now, now, taskId]);
+    await q('UPDATE tasks SET status = "In Progress", started_at = ?, live_timer = ? WHERE id = ?', [now, now, taskId]);
+
     await NotificationService.createAndSend(
       [userId],
       'Task Started',
@@ -3346,7 +3521,8 @@ router.post('/:id/start', requireRole(['Employee']), async (req, res) => {
     logger.error('Start error:', e.message);
     res.status(500).json({ success: false, error: e.message });
   }
-});
+});
+
 router.post('/:id/pause', requireRole(['Employee']), async (req, res) => {
   try {
     await ensureTaskTimeLogsTable();
@@ -3372,7 +3548,8 @@ router.post('/:id/pause', requireRole(['Employee']), async (req, res) => {
     let duration = lastLog.length > 0 ? Math.floor((now - new Date(lastLog[0].timestamp)) / 1000) : 0;
 
     await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp, duration) VALUES (?, ?, ?, ?, ?)', [taskId, userId, 'pause', now, duration]);
-    await q('UPDATE tasks SET status = "On Hold", total_duration = COALESCE(total_duration, 0) + ?, live_timer = NULL WHERE id = ?', [duration, taskId]);
+    await q('UPDATE tasks SET status = "On Hold", total_duration = COALESCE(total_duration, 0) + ?, live_timer = NULL WHERE id = ?', [duration, taskId]);
+
     await NotificationService.createAndSend(
       [userId],
       'Task Paused',
@@ -3386,7 +3563,8 @@ router.post('/:id/pause', requireRole(['Employee']), async (req, res) => {
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
-});
+});
+
 router.post('/:id/resume', requireRole(['Employee']), async (req, res) => {
   try {
     await ensureTaskTimeLogsTable();
@@ -3408,7 +3586,8 @@ router.post('/:id/resume', requireRole(['Employee']), async (req, res) => {
 
     const now = new Date();
     await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?)', [taskId, userId, 'resume', now]);
-    await q('UPDATE tasks SET status = "In Progress", updatedAt = NOW() WHERE id = ?', [taskId]);
+    await q('UPDATE tasks SET status = "In Progress", updatedAt = NOW() WHERE id = ?', [taskId]);
+
     await NotificationService.createAndSend(
       [userId],
       'Task Resumed',
@@ -3422,7 +3601,9 @@ router.post('/:id/resume', requireRole(['Employee']), async (req, res) => {
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
-});
+});
+
+
 router.get('/:id/timeline', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     await ensureTaskTimeLogsTable();
