@@ -257,7 +257,7 @@ async function fetchTaskTimeline(projectIds = [], projectPublicIds = []) {
 
     LEFT JOIN projects p 
       ON p.id = t.project_id
-      OR (t.project_public_id IS NOT NULL AND p.public_id = t.project_public_id)
+      OR (t.project_public_id IS NOT NULL AND p.public_id COLLATE utf8mb4_unicode_ci = t.project_public_id COLLATE utf8mb4_unicode_ci)
 
     LEFT JOIN taskassignments ta 
       ON ta.task_id = t.id

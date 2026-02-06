@@ -70,7 +70,7 @@ async function buildProjectJoinClause() {
     joinConditions.push('p.id = t.project_id');
   }
   if (projectPublicIdExists) {
-    joinConditions.push('p.public_id = t.project_public_id');
+    joinConditions.push('p.public_id COLLATE utf8mb4_unicode_ci = t.project_public_id COLLATE utf8mb4_unicode_ci');
   }
   if (joinConditions.length) {
     joinClauses.push(`LEFT JOIN projects p ON (${joinConditions.join(' OR ')})`);
@@ -445,7 +445,8 @@ getMyTasks: async (req, res) => {
     const lockSummary = {
       total_locked: tasks.filter(t => t.is_locked).length,
       has_pending_requests: Object.keys(lockStatuses).length > 0
-    };
+    };
+
     const metrics = {
       totalTasks: tasks.length,
       completedTasks: tasks.filter(t => (t.status || '').toString().toUpperCase() === 'COMPLETED').length,

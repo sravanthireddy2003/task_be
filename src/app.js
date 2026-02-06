@@ -469,11 +469,25 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 // Log and attempt graceful shutdown on unhandled errors to avoid orphaned DB connections
 process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Unhandled Rejection at:', (reason && reason.stack) || reason);
+  try {
+    const details = (reason && reason.stack) ? String(reason.stack) : String(reason);
+    logger.error('Unhandled Rejection: ' + details);
+    try { console.error('Unhandled Rejection:', details); } catch (e) {}
+    try { fs.appendFileSync(path.join(__root, 'logs', 'error_stacks.log'), `[UNHANDLED_REJECTION] ${new Date().toISOString()}\n${details}\n\n`); } catch (e) {}
+  } catch (logErr) {
+    logger.error('Unhandled Rejection (failed to serialize): ' + String(logErr));
+  }
   try { shutdown('UNHANDLED_REJECTION'); } catch (e) { process.exit(1); }
 });
 
 process.on('uncaughtException', (err) => {
-  logger.error('Uncaught Exception:', (err && err.stack) || err);
+  try {
+    const details = (err && err.stack) ? String(err.stack) : String(err);
+    logger.error('Uncaught Exception: ' + details);
+    try { console.error('Uncaught Exception:', details); } catch (e) {}
+    try { fs.appendFileSync(path.join(__root, 'logs', 'error_stacks.log'), `[UNCAUGHT_EXCEPTION] ${new Date().toISOString()}\n${details}\n\n`); } catch (e) {}
+  } catch (logErr) {
+    logger.error('Uncaught Exception (failed to serialize): ' + String(logErr));
+  }
   try { shutdown('UNCAUGHT_EXCEPTION'); } catch (e) { process.exit(1); }
 });
