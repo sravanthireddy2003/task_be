@@ -131,6 +131,16 @@ function annotateModulesWithPaths(modules, role) {
   return modules.map(m => ({ ...m, path: modulePathFor(role, m.name) }));
 }
 
+function filterRoleRestrictedModules(modules, role) {
+  if (!Array.isArray(modules)) return [];
+  // Admin role should not see "Approval Workflows" module
+  if (role === 'Admin') {
+    return modules.filter(m => (m.name || '').toLowerCase() !== 'approval workflows');
+  }
+  return modules;
+}
+
+
 function normalizeStoredModules(user) {
   if (!user || !user.modules) return null;
   let arr;
@@ -154,14 +164,14 @@ function normalizeStoredModules(user) {
 
 function getDefaultModules(role) {
   function mk(name, access) { return { moduleId: crypto.randomBytes(8).toString('hex'), name, access }; }
-  if (role === 'Admin') return [ mk('User Management','full'), mk('Dashboard','full'), mk('Clients','full'), mk('Departments','full'), mk('Tasks','full'), mk('Projects','full'), mk('Workflow (Project & Task Flow)','full'), mk('Notifications','full'), mk('Reports & Analytics','full'), mk('Document & File Management','full'), mk('Chat / Real-Time Collaboration','full'), mk('Approval Workflows','full'), mk('Settings & Master Configuration','full') ];
+  if (role === 'Admin') return [ mk('User Management','full'), mk('Dashboard','full'), mk('Clients','full'), mk('Departments','full'), mk('Tasks','full'), mk('Projects','full'), mk('Workflow (Project & Task Flow)','full'), mk('Notifications','full'), mk('Reports & Analytics','full'), mk('Document & File Management','full'), mk('Chat / Real-Time Collaboration','full'), mk('Settings & Master Configuration','full') ];
   if (role === 'Manager') return [ mk('User Management','view'), mk('Dashboard','full'), mk('Clients','full'), mk('Tasks','full'), mk('Projects','full'), mk('Workflow (Project & Task Flow)','full'), mk('Notifications','limited'), mk('Reports & Analytics','full'), mk('Document & File Management','limited'), mk('Chat / Real-Time Collaboration','full'), mk('Approval Workflows','limited') ];
   if (role === 'Employee') return [ mk('Dashboard','view'), mk('Tasks','limited'), mk('Notifications','limited'), mk('Reports & Analytics','limited'), mk('Document & File Management','limited'), mk('Chat / Real-Time Collaboration','full') ];
   if (role === 'Client-Viewer') return [ mk('Dashboard','view'), mk('Assigned Tasks','view'), mk('Document & File Management','view') ];
   return [];
 }
 
-const SIDEBAR_ORDER = ['Dashboard','User Management','Clients','Departments','Tasks','Projects','Workflow (Project & Task Flow)','Notifications','Reports & Analytics','Document & File Management','Chat / Real-Time Collaboration','Approval Workflows','Settings & Master Configuration'];
+const SIDEBAR_ORDER = ['Dashboard','User Management','Clients','Departments','Tasks','Projects','Workflow (Project & Task Flow)','Notifications','Reports & Analytics','Document & File Management','Chat / Real-Time Collaboration','Settings & Master Configuration'];
 
 function reorderModules(modules) {
   if (!modules || !modules.length) return [];
@@ -450,7 +460,8 @@ async function completeLoginForUser(user, req, res) {
 
     const storedModules = normalizeStoredModules(user);
     const modulesToReturn = storedModules && storedModules.length ? storedModules : getDefaultModules(user.role);
-    const orderedModules = reorderModules(modulesToReturn);
+    const filteredModules = filterRoleRestrictedModules(modulesToReturn, user.role);
+    const orderedModules = reorderModules(filteredModules);
     const modulesWithPaths = annotateModulesWithPaths(orderedModules, user.role);
 
     let roleBasedData = {};

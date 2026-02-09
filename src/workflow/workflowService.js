@@ -193,6 +193,23 @@ const requestTransition = async ({ tenantId, entityType, entityId, toState, user
                     logger.warn('[WARN] notify assigned manager failed:', nerr && nerr.message);
                 }
             }
+
+            // Also notify admins about the workflow request
+            try {
+                if (NotificationService && typeof NotificationService.createAndSendToRoles === 'function') {
+                    await NotificationService.createAndSendToRoles(
+                        ['Admin'],
+                        'Task Review Requested',
+                        `Task #${internalId} has been submitted for manager review and approval.`,
+                        'TASK_REVIEW_REQUEST',
+                        'task',
+                        entityId,
+                        tenantId
+                    );
+                }
+            } catch (nerr) {
+                logger.warn('[WARN] notify admins about task review failed:', nerr && nerr.message);
+            }
             
             return {
                 message: "Task submitted for review. Awaiting manager approval.",
@@ -423,6 +440,43 @@ const processApproval = async ({ tenantId, requestId, action, reason, userId, us
         ], connection);
 
         await commitTransaction(connection);
+
+        // Send notifications after successful approval processing
+        try {
+            const actionVerb = action === 'APPROVE' ? 'approved' : 'rejected';
+            const notificationTitle = action === 'APPROVE' ? `${entity_type} Request Approved` : `${entity_type} Request Rejected`;
+            const notificationMessage = `Your ${entity_type.toLowerCase()} request #${requestId} has been ${actionVerb}. Status: ${newStatus}`;
+
+            // Notify the user who made the request
+            if (req.requested_by_id) {
+                if (NotificationService && typeof NotificationService.createAndSend === 'function') {
+                    await NotificationService.createAndSend(
+                        [req.requested_by_id],
+                        notificationTitle,
+                        notificationMessage,
+                        entity_type === 'TASK' ? 'TASK_APPROVAL' : 'PROJECT_APPROVAL',
+                        entity_type.toLowerCase(),
+                        entity_id
+                    );
+                }
+            }
+
+            // Notify admins about the approval action taken
+            if (NotificationService && typeof NotificationService.createAndSendToRoles === 'function') {
+                const adminNotificationMessage = `${entity_type} request #${requestId} has been ${actionVerb} by ${userRole}.`;
+                await NotificationService.createAndSendToRoles(
+                    ['Admin'],
+                    `Approval Workflow: ${entity_type} ${action}ED`,
+                    adminNotificationMessage,
+                    entity_type === 'TASK' ? 'TASK_APPROVAL' : 'PROJECT_APPROVAL',
+                    entity_type.toLowerCase(),
+                    entity_id,
+                    tenantId
+                );
+            }
+        } catch (nerr) {
+            logger.warn('[WARN] notification on approval processing failed:', nerr && nerr.message);
+        }
 
         const actionVerb = action === 'APPROVE' ? 'approved' : 'rejected';
         return {

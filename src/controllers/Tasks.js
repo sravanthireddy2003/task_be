@@ -2411,6 +2411,27 @@ router.get("/gettasks", (req, res) => {
 
 // Convenience alias: allow GET /:id where id can be public_id or internal id
 // List all reassign requests (manager) — placed before the catch-all `/:id` route
+// router.get('/reassign-requests', requireRole(['Manager']), async (req, res) => {
+//   try {
+//     const [requests] = await new Promise((resolve, reject) =>
+//       db.query(`
+//         SELECT r.*, t.title AS task_title, t.public_id AS task_public_id, u.name AS requester_name, u.email AS requester_email, u.public_id AS requester_public_id,
+//                t.status AS task_status, t.taskDate, t.priority, t.project_id,
+//                (SELECT u2.public_id FROM users u2 JOIN taskassignments ta2 ON ta2.user_Id = u2._id WHERE ta2.task_Id = t.id AND (ta2.is_read_only IS NULL OR ta2.is_read_only != 1) LIMIT 1) AS current_assignee_public_id,
+//                (SELECT u2.name FROM users u2 JOIN taskassignments ta2 ON ta2.user_Id = u2._id WHERE ta2.task_Id = t.id AND (ta2.is_read_only IS NULL OR ta2.is_read_only != 1) LIMIT 1) AS current_assignee_name,
+//                (SELECT u2.email FROM users u2 JOIN taskassignments ta2 ON ta2.user_Id = u2._id WHERE ta2.task_Id = t.id AND (ta2.is_read_only IS NULL OR ta2.is_read_only != 1) LIMIT 1) AS current_assignee_email
+//         FROM task_resign_requests r
+//         JOIN tasks t ON r.task_id = t.id
+//         JOIN users u ON r.requested_by = u._id
+//         ORDER BY r.requested_at DESC
+//       `, [], (err, rows) => err ? reject(err) : resolve([rows]))
+//     );
+//     res.json({ success: true, requests });
+//   } catch (error) {
+//     res.status(500).json({ success: false, error: error.message });
+//   }
+// });
+
 router.get('/reassign-requests', requireRole(['Manager']), async (req, res) => {
   try {
     const [requests] = await new Promise((resolve, reject) =>
@@ -2431,6 +2452,7 @@ router.get('/reassign-requests', requireRole(['Manager']), async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+ 
 
 router.get('/:id', (req, res) => {
   const { id } = req.params;
