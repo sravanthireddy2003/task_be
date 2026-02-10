@@ -2,6 +2,7 @@ const db = require(__root + 'db');
 const express = require('express');
 const router = express.Router();
 const logger = require('../logger');
+const errorResponse = require(__root + 'utils/errorResponse');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
@@ -163,12 +164,12 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
     if (!isEmptyValue(managerInput)) {
       resolvedManagerId = await resolveUserId(managerInput);
       if (resolvedManagerId === null) {
-        return res.status(404).json({ success: false, error: 'Manager not found' });
+        return res.status(404).json(errorResponse.notFound('Manager not found', 'NOT_FOUND'));
       }
     }
 
     if (!name || !company) {
-      return res.status(400).json({ success: false, error: 'name and company required' });
+      return res.status(400).json(errorResponse.badRequest('name and company required', 'BAD_REQUEST'));
     }
 
     const hasIsDeleted = await hasColumn('clientss', 'isDeleted');
@@ -177,7 +178,7 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
       : 'SELECT id FROM clientss WHERE name = ? LIMIT 1';
     const dup = await q(dupSql, [name]);
     if (Array.isArray(dup) && dup.length > 0) {
-      return res.status(409).json({ success: false, error: 'Client with that name already exists' });
+      return res.status(409).json(errorResponse.conflict('Client with that name already exists', 'CONFLICT'));
     }
 
     const compInit = (company || '').substring(0, 3).toUpperCase() || name.substring(0, 3).toUpperCase();
@@ -527,7 +528,7 @@ if (primaryContactEmail || email) {
 
   } catch (e) {
     logger.error('Error creating client: ' + e.message);
-    return res.status(500).json({ success: false, error: e.message });
+    return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
   }
 });
  
@@ -538,7 +539,7 @@ router.get('/', ruleEngine(RULES.CLIENT_VIEW), requireRole(['Admin','Manager','C
     let where = []; let params = [];
 
     if (req.user && req.user.role === 'Client-Viewer') {
-      if (!req.viewerClientId) return res.status(403).json({ success: false, error: 'Viewer not mapped to a client' });
+      if (!req.viewerClientId) return res.status(403).json(errorResponse.forbidden('Viewer not mapped to a client', 'FORBIDDEN'));
       where.push('clientss.id = ?'); params.push(req.viewerClientId);
     }
     const hasIsDeletedList = await hasColumn('clientss', 'isDeleted');
@@ -608,7 +609,7 @@ router.get('/', ruleEngine(RULES.CLIENT_VIEW), requireRole(['Admin','Manager','C
     }));
  
     return res.json({ success: true, data: enhancedRows, meta: { total, page, perPage } });
-  } catch (e) { logger.error('Error listing clients: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
+  } catch (e) { logger.error('Error listing clients: ' + e.message); return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message })); }
 });
  
 router.get('/:id', ruleEngine(RULES.CLIENT_VIEW), requireRole(['Admin','Manager','Client-Viewer']), async (req, res) => {
@@ -616,11 +617,11 @@ router.get('/:id', ruleEngine(RULES.CLIENT_VIEW), requireRole(['Admin','Manager'
     const id = req.params.id;
 
     if (req.user && req.user.role === 'Client-Viewer') {
-      if (!req.viewerClientId) return res.status(403).json({ success: false, error: 'Viewer not mapped to a client' });
-      if (String(req.viewerClientId) !== String(id)) return res.status(403).json({ success: false, error: 'Access denied' });
+      if (!req.viewerClientId) return res.status(403).json(errorResponse.forbidden('Viewer not mapped to a client', 'FORBIDDEN'));
+      if (String(req.viewerClientId) !== String(id)) return res.status(403).json(errorResponse.forbidden('Access denied', 'FORBIDDEN'));
     }
     const clientRow = (await q('SELECT * FROM clientss WHERE id = ? LIMIT 1', [id]));
-    if (!clientRow || clientRow.length === 0) return res.status(404).json({ success: false, error: 'Client not found' });
+    if (!clientRow || clientRow.length === 0) return res.status(404).json(errorResponse.notFound('Client not found', 'NOT_FOUND'));
     const client = clientRow[0];
 
     if ((!client.createdAt || client.createdAt === null) && client.created_at) client.createdAt = client.created_at;
@@ -874,7 +875,7 @@ router.get('/:id', ruleEngine(RULES.CLIENT_VIEW), requireRole(['Admin','Manager'
       }
     } catch (e) { logger.debug('Skipping some dashboard metrics: ' + e.message); }
     return res.json({ success: true, data: { client, contacts, documents, activities, projects, dashboard: { projectCount, taskCount, completedTasks, pendingTasks, billableHours, assignedManager } } });
-  } catch (e) { logger.error('Error fetching client details: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
+  } catch (e) { logger.error('Error fetching client details: ' + e.message); return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message })); }
 });
  
 router.put(
@@ -1070,7 +1071,7 @@ router.delete('/:id', ruleEngine(RULES.CLIENT_DELETE), requireRole('Admin'), asy
     })();    return res.json({ success: true, message: 'Client permanently deleted' });
   } catch (e) {
     logger.error('Error deleting client: ' + e.message);
-    return res.status(500).json({ success: false, error: e.message });
+    return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
   }
 });
  
@@ -1101,7 +1102,7 @@ router.delete('/:id/permanent', ruleEngine(RULES.CLIENT_DELETE), requireRole('Ad
     await q('DELETE FROM clientss WHERE id = ?', [id]);
     await q('DELETE FROM client_viewers WHERE client_id = ?', [id]).catch(() => {});
     return res.json({ success: true, message: 'Client permanently deleted' });
-  } catch (e) { logger.error('Error permanently deleting client: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
+  } catch (e) { logger.error('Error permanently deleting client: ' + e.message); return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message })); }
 });
  
 router.post('/:id/assign-manager', ruleEngine(RULES.CLIENT_UPDATE), requireRole('Admin'), async (req, res) => {
@@ -1112,14 +1113,14 @@ router.post('/:id/assign-manager', ruleEngine(RULES.CLIENT_UPDATE), requireRole(
       || Object.prototype.hasOwnProperty.call(req.body || {}, 'manager_id')
       || Object.prototype.hasOwnProperty.call(req.body || {}, 'managerPublicId');
     if (!hasManagerField) {
-      return res.status(400).json({ success: false, error: 'managerId required' });
+      return res.status(400).json(errorResponse.badRequest('managerId required', 'BAD_REQUEST'));
     }
     const managerInput = managerId ?? managerIdSnake ?? managerPublicId ?? null;
     let finalManagerId = null;
     if (!isEmptyValue(managerInput)) {
       finalManagerId = await resolveUserId(managerInput);
       if (finalManagerId === null) {
-        return res.status(404).json({ success: false, error: 'Manager not found' });
+        return res.status(404).json(errorResponse.notFound('Manager not found', 'NOT_FOUND'));
       }
     }
     await q('UPDATE clientss SET manager_id = ? WHERE id = ?', [finalManagerId, id]);
@@ -1129,7 +1130,7 @@ router.post('/:id/assign-manager', ruleEngine(RULES.CLIENT_UPDATE), requireRole(
     return res.json({ success: true, message: finalManagerId ? 'Manager assigned' : 'Manager unassigned' });
   } catch (e) {
     logger.error('Error assigning manager: ' + e.message);
-    return res.status(500).json({ success: false, error: e.message });
+    return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
   }
 });
 
@@ -1140,7 +1141,7 @@ router.post('/:id/create-viewer', ruleEngine(RULES.CLIENT_CREATE), requireRole('
     
     if (!email) {
       logger.warn('[CREATE-VIEWER] Missing email');
-      return res.status(400).json({ success: false, error: 'email required' });
+      return res.status(400).json(errorResponse.badRequest('email required', 'BAD_REQUEST'));
     }
 
     const tempPassword = crypto.randomBytes(6).toString('hex');
@@ -1196,7 +1197,7 @@ router.post('/:id/create-viewer', ruleEngine(RULES.CLIENT_CREATE), requireRole('
 
   } catch (e) {
     logger.error(`[CREATE-VIEWER] FULL ERROR: ${e.stack || e.message}`);
-    return res.status(500).json({ success: false, error: e.message });
+    return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
   }
 });
  
@@ -1206,14 +1207,14 @@ router.get('/:id/viewers/:userId', requireRole(['Admin','Manager']), async (req,
     const userId = req.params.userId;
 
     const mapping = await q('SELECT * FROM client_viewers WHERE client_id = ? AND user_id = ? LIMIT 1', [clientId, userId]).catch(() => []);
-    if (!mapping || mapping.length === 0) return res.status(404).json({ success: false, error: 'Viewer not found for this client' });
+    if (!mapping || mapping.length === 0) return res.status(404).json(errorResponse.notFound('Viewer not found for this client', 'NOT_FOUND'));
     const users = await q('SELECT _id, public_id, name, email, role, modules FROM users WHERE _id = ? LIMIT 1', [userId]);
-    if (!users || users.length === 0) return res.status(404).json({ success: false, error: 'User not found' });
+    if (!users || users.length === 0) return res.status(404).json(errorResponse.notFound('User not found', 'NOT_FOUND'));
     const u = users[0];
     let modules = null;
     try { modules = u.modules ? (typeof u.modules === 'string' ? JSON.parse(u.modules) : u.modules) : null; } catch (e) { modules = null; }
     return res.json({ success: true, data: { id: u._id, publicId: u.public_id, name: u.name, email: u.email, role: u.role, modules } });
-  } catch (e) { logger.error('Error fetching viewer info: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
+  } catch (e) { logger.error('Error fetching viewer info: ' + e.message); return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message })); }
 });
  
 router.put('/:id/viewers/:userId/modules', requireRole(['Admin','Manager']), async (req, res) => {
@@ -1221,32 +1222,32 @@ router.put('/:id/viewers/:userId/modules', requireRole(['Admin','Manager']), asy
     const clientId = req.params.id;
     const userId = req.params.userId;
     const modules = req.body.modules;
-    if (!Array.isArray(modules)) return res.status(400).json({ success: false, error: 'modules array required' });
+    if (!Array.isArray(modules)) return res.status(400).json(errorResponse.badRequest('modules array required', 'BAD_REQUEST'));
 
     const mapping = await q('SELECT * FROM client_viewers WHERE client_id = ? AND user_id = ? LIMIT 1', [clientId, userId]).catch(() => []);
-    if (!mapping || mapping.length === 0) return res.status(404).json({ success: false, error: 'Viewer not found for this client' });
+    if (!mapping || mapping.length === 0) return res.status(404).json(errorResponse.notFound('Viewer not found for this client', 'NOT_FOUND'));
 
     const modulesStr = JSON.stringify(modules);
     await q('UPDATE users SET modules = ? WHERE _id = ?', [modulesStr, userId]);
     await q('INSERT INTO client_activity_logs (client_id, actor_id, action, details, created_at) VALUES (?, ?, ?, ?, NOW())', [clientId, req.user && req.user._id ? req.user._id : null, 'update-viewer-modules', JSON.stringify({ userId, modules })]).catch(()=>{});
     return res.json({ success: true, message: 'Viewer modules updated', data: { userId, modules } });
-  } catch (e) { logger.error('Error updating viewer modules: ' + e.message); return res.status(500).json({ success: false, error: e.message }); }
+  } catch (e) { logger.error('Error updating viewer modules: ' + e.message); return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message })); }
 });
  
-router.post('/:id/contacts', ruleEngine(RULES.CLIENT_CONTACT_ADD), requireRole(['Admin','Manager']), async (req, res) => { try { const id = req.params.id; const { name, email, phone, designation, is_primary } = req.body; if (!name) return res.status(400).json({ success: false, error: 'name required' }); if (is_primary) { await q('UPDATE client_contacts SET is_primary = 0 WHERE client_id = ?', [id]); } const r = await q('INSERT INTO client_contacts (client_id, name, email, phone, designation, is_primary, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())', [id, name, email || null, phone || null, designation || null, is_primary ? 1 : 0]); return res.status(201).json({ success: true, data: { id: r.insertId } }); } catch (e) { logger.error('Error adding contact: '+e.message); return res.status(500).json({ success: false, error: e.message }); } });
+router.post('/:id/contacts', ruleEngine(RULES.CLIENT_CONTACT_ADD), requireRole(['Admin','Manager']), async (req, res) => { try { const id = req.params.id; const { name, email, phone, designation, is_primary } = req.body; if (!name) return res.status(400).json(errorResponse.badRequest('name required', 'BAD_REQUEST')); if (is_primary) { await q('UPDATE client_contacts SET is_primary = 0 WHERE client_id = ?', [id]); } const r = await q('INSERT INTO client_contacts (client_id, name, email, phone, designation, is_primary, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())', [id, name, email || null, phone || null, designation || null, is_primary ? 1 : 0]); return res.status(201).json({ success: true, data: { id: r.insertId } }); } catch (e) { logger.error('Error adding contact: '+e.message); return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message })); } });
  
-router.put('/:id/contacts/:contactId', requireRole(['Admin','Manager']), async (req, res) => { try { const id = req.params.id; const contactId = req.params.contactId; const payload = req.body || {}; if (payload.is_primary) { await q('UPDATE client_contacts SET is_primary = 0 WHERE client_id = ?', [id]); } const allowed = ['name','email','phone','designation','is_primary']; const sets = []; const params = []; for (const k of allowed) if (payload[k] !== undefined) { sets.push(`${k} = ?`); params.push(payload[k]); } if (!sets.length) return res.status(400).json({ success: false, error: 'No fields' }); params.push(contactId); await q(`UPDATE client_contacts SET ${sets.join(', ')} WHERE id = ?`, params); return res.json({ success: true, message: 'Contact updated' }); } catch (e) { logger.error('Error updating contact: '+e.message); return res.status(500).json({ success: false, error: e.message }); } });
+router.put('/:id/contacts/:contactId', requireRole(['Admin','Manager']), async (req, res) => { try { const id = req.params.id; const contactId = req.params.contactId; const payload = req.body || {}; if (payload.is_primary) { await q('UPDATE client_contacts SET is_primary = 0 WHERE client_id = ?', [id]); } const allowed = ['name','email','phone','designation','is_primary']; const sets = []; const params = []; for (const k of allowed) if (payload[k] !== undefined) { sets.push(`${k} = ?`); params.push(payload[k]); } if (!sets.length) return res.status(400).json(errorResponse.badRequest('No fields', 'BAD_REQUEST')); params.push(contactId); await q(`UPDATE client_contacts SET ${sets.join(', ')} WHERE id = ?`, params); return res.json({ success: true, message: 'Contact updated' }); } catch (e) { logger.error('Error updating contact: '+e.message); return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message })); } });
  
-router.delete('/:id/contacts/:contactId', requireRole(['Admin','Manager']), async (req, res) => { try { const contactId = req.params.contactId; await q('DELETE FROM client_contacts WHERE id = ?', [contactId]); return res.json({ success: true, message: 'Contact deleted' }); } catch (e) { logger.error('Error deleting contact: '+e.message); return res.status(500).json({ success: false, error: e.message }); } });
+router.delete('/:id/contacts/:contactId', requireRole(['Admin','Manager']), async (req, res) => { try { const contactId = req.params.contactId; await q('DELETE FROM client_contacts WHERE id = ?', [contactId]); return res.json({ success: true, message: 'Contact deleted' }); } catch (e) { logger.error('Error deleting contact: '+e.message); return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message })); } });
  
-router.post('/:id/contacts/:contactId/set-primary', ruleEngine(RULES.CLIENT_CONTACT_UPDATE), requireRole(['Admin','Manager']), async (req, res) => { try { const id = req.params.id; const contactId = req.params.contactId; await q('UPDATE client_contacts SET is_primary = 0 WHERE client_id = ?', [id]); await q('UPDATE client_contacts SET is_primary = 1 WHERE id = ?', [contactId]); return res.json({ success: true, message: 'Primary contact set' }); } catch (e) { logger.error('Error setting primary contact: '+e.message); return res.status(500).json({ success: false, error: e.message }); } });
+router.post('/:id/contacts/:contactId/set-primary', ruleEngine(RULES.CLIENT_CONTACT_UPDATE), requireRole(['Admin','Manager']), async (req, res) => { try { const id = req.params.id; const contactId = req.params.contactId; await q('UPDATE client_contacts SET is_primary = 0 WHERE client_id = ?', [id]); await q('UPDATE client_contacts SET is_primary = 1 WHERE id = ?', [contactId]); return res.json({ success: true, message: 'Primary contact set' }); } catch (e) { logger.error('Error setting primary contact: '+e.message); return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message })); } });
  
 router.post('/:id/documents', ruleEngine(RULES.CLIENT_UPDATE), requireRole(['Admin','Manager']), async (req, res) => {
   try {
     const id = req.params.id;
 
     const docs = Array.isArray(req.body.documents) ? req.body.documents : (req.body.file_name ? [req.body] : []);
-    if (!docs || docs.length === 0) return res.status(400).json({ success: false, error: 'file_name (or file_url + file_name) required' });
+    if (!docs || docs.length === 0) return res.status(400).json(errorResponse.badRequest('file_name (or file_url + file_name) required', 'BAD_REQUEST'));
  
     const inserted = [];
     for (const d of docs) {
@@ -1268,18 +1269,18 @@ router.post('/:id/documents', ruleEngine(RULES.CLIENT_UPDATE), requireRole(['Adm
       }
     }
  
-    if (inserted.length === 0) return res.status(400).json({ success: false, error: 'No valid documents provided' });
+    if (inserted.length === 0) return res.status(400).json(errorResponse.badRequest('No valid documents provided', 'BAD_REQUEST'));
     return res.status(201).json({ success: true, data: inserted });
   } catch (e) {
     logger.error('Error attaching document(s): '+e.message);
-    return res.status(500).json({ success: false, error: e.message });
+    return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
   }
 });
 
 router.post('/:id/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin','Manager']), upload.array('files', 20), async (req, res) => {
   try {
     const id = req.params.id;
-    if (!req.files || req.files.length === 0) return res.status(400).json({ success: false, error: 'No files uploaded' });
+    if (!req.files || req.files.length === 0) return res.status(400).json(errorResponse.badRequest('No files uploaded', 'BAD_REQUEST'));
     const inserted = [];
     for (const f of req.files) {
       try {
@@ -1298,7 +1299,7 @@ router.post('/:id/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin'
     return res.status(201).json({ success: true, data: inserted });
   } catch (e) {
     logger.error('Error in file upload: ' + e.message);
-    return res.status(500).json({ success: false, error: e.message });
+    return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
   }
 });
 

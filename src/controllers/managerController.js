@@ -1,6 +1,7 @@
 const db = require(__root + 'db');
 const RoleBasedLoginResponse = require(__root + 'controller/utils/RoleBasedLoginResponse');
 const { normalizeProjectStatus } = require(__root + 'utils/projectStatus');
+const errorResponse = require(__root + 'utils/errorResponse');
 
 let logger;
 try { logger = require(global.__root + 'logger'); } catch (e) { try { logger = require('../../logger'); } catch (e2) { logger = console; } }
@@ -380,7 +381,7 @@ module.exports = {
           : 'SELECT id, public_id, project_id, project_public_id, client_id FROM tasks WHERE public_id = ? LIMIT 1';
         const taskRow = (await queryAsync(taskSql, [isNumeric ? Number(taskVal) : taskVal]))[0];
         if (!taskRow) {
-          return res.status(404).json({ success: false, error: 'Task not found' });
+          return res.status(404).json(errorResponse.notFound('Task not found', 'TASK_NOT_FOUND'));
         }
 
         // determine client id for the task
@@ -394,7 +395,7 @@ module.exports = {
         }
 
         if (!clientForTask) {
-          return res.status(404).json({ success: false, error: 'Client not found for the specified task' });
+          return res.status(404).json(errorResponse.notFound('Client not found for the specified task', 'CLIENT_NOT_FOUND'));
         }
 
         // ensure manager has access to this task/client: either client is part of manager's projects or project belongs to manager
@@ -404,7 +405,7 @@ module.exports = {
         const hasAccessByProject = (taskProjectId && projectIds.includes(taskProjectId)) || (taskProjectPublicId && projectPublicIds.includes(taskProjectPublicId));
 
         if (!hasAccessByClient && !hasAccessByProject) {
-          return res.status(403).json({ success: false, error: 'Access denied to the requested task/client' });
+          return res.status(403).json(errorResponse.forbidden('Access denied to the requested task/client', 'ACCESS_DENIED'));
         }
 
         // limit the response to this single client

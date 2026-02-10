@@ -8,6 +8,7 @@ const fs = require('fs');
 const multer = require('multer');
 const mime = require('mime-types');
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
+const errorResponse = require(__root + 'utils/errorResponse');
 const ruleEngine = require(__root + 'middleware/ruleEngine');
 const RULES = require(__root + 'rules/ruleCodes');
 const { normalizeProjectStatus } = require(__root + 'utils/projectStatus');
@@ -76,7 +77,7 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
     const { projectName, description, clientPublicId, projectManagerId, projectManagerPublicId, project_manager_id, department_ids = [], departmentIds = [], departmentPublicIds = [], priority = 'Medium', startDate, endDate, start_date, end_date, budget } = req.body;
  
     if (!projectName || !clientPublicId) {
-      return res.status(400).json({ success: false, message: 'projectName and clientPublicId are required' });
+      return res.status(400).json(errorResponse.badRequest('projectName and clientPublicId are required', 'MISSING_REQUIRED_FIELDS'));
     }
  
     const clientHasPublic = await hasColumn('clientss', 'public_id');
@@ -87,11 +88,11 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
       if (/^\d+$/.test(String(clientPublicId))) {
         client = await q('SELECT id, name, email FROM clientss WHERE id = ? LIMIT 1', [clientPublicId]);
       } else {
-        return res.status(400).json({ success: false, message: 'clients table has no public_id column; provide numeric client id instead' });
+        return res.status(400).json(errorResponse.badRequest('clients table has no public_id column; provide numeric client id instead', 'CLIENT_TABLE_ERROR'));
       }
     }
     if (!client || client.length === 0) {
-      return res.status(404).json({ success: false, message: 'Client not found' });
+      return res.status(404).json(errorResponse.notFound('Client not found', 'CLIENT_NOT_FOUND'));
     }
     const clientId = client[0].id;
     const clientInfo = client[0]; // Store client details for email
@@ -138,7 +139,7 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
     if (pmPublic) {
       const pmRows = await q('SELECT _id, public_id, name, email FROM users WHERE public_id = ? LIMIT 1', [pmPublic]);
       if (!pmRows || pmRows.length === 0) {
-        return res.status(400).json({ success: false, message: 'Project manager not found' });
+        return res.status(400).json(errorResponse.badRequest('Project manager not found', 'PROJECT_MANAGER_NOT_FOUND'));
       }
       pmId = pmRows[0]._id;
       projectManagerInfo = pmRows[0]; // Store PM details for email
@@ -241,7 +242,7 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
     res.status(201).json({ success: true, data: response });
   } catch (e) {
     logger.error('Create project error:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
   }
 });
  
@@ -333,7 +334,7 @@ router.get('/', async (req, res) => {
     res.json({ success: true, data: enriched });
   } catch (e) {
     logger.error('Get projects error:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
   }
 });
 
@@ -440,7 +441,7 @@ router.get('/stats', async (req, res) => {
     });
   } catch (e) {
     logger.error('Get stats error:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
   }
 });
 
@@ -451,7 +452,7 @@ router.get('/:id', async (req, res) => {
     const project = await q('SELECT * FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
  
     if (!project || project.length === 0) {
-      return res.status(404).json({ success: false, message: 'Project not found' });
+      return res.status(404).json(errorResponse.notFound('Project not found', 'PROJECT_NOT_FOUND'));
     }
  
     const p = project[0];
@@ -488,7 +489,7 @@ router.get('/:id', async (req, res) => {
     res.json({ success: true, data: out });
   } catch (e) {
     logger.error('Get project error:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
   }
 });
 
@@ -516,7 +517,7 @@ router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Mana
  
     const project = await q('SELECT * FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
     if (!project || project.length === 0) {
-      return res.status(404).json({ success: false, message: 'Project not found' });
+      return res.status(404).json(errorResponse.notFound('Project not found', 'PROJECT_NOT_FOUND'));
     }
  
     const projectId = project[0].id;
@@ -532,7 +533,7 @@ router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Mana
         if (/^\d+$/.test(String(clientPublicId))) {
           client = await q('SELECT id FROM clientss WHERE id = ? LIMIT 1', [clientPublicId]);
         } else {
-          return res.status(400).json({ success: false, message: 'clients table has no public_id column; provide numeric client id instead' });
+          return res.status(400).json(errorResponse.badRequest('clients table has no public_id column; provide numeric client id instead', 'CLIENT_TABLE_ERROR'));
         }
       }
       if (!client || client.length === 0) {
@@ -546,7 +547,7 @@ router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Mana
       const pmPublic = projectManagerPublicId || projectManagerId || project_manager_id;
       const pmRows = await q('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [pmPublic]);
       if (!pmRows || pmRows.length === 0) {
-        return res.status(400).json({ success: false, message: 'Project manager not found' });
+        return res.status(400).json(errorResponse.badRequest('Project manager not found', 'PROJECT_MANAGER_NOT_FOUND'));
       }
       updateFields.push('project_manager_id = ?');
       params.push(pmRows[0]._id);
@@ -622,7 +623,7 @@ router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Mana
     res.json({ success: true, data: out });
   } catch (e) {
     logger.error('Update project error:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
   }
 });
 
@@ -633,12 +634,12 @@ router.post('/:id/departments', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['
     const { department_ids } = req.body;
  
     if (!Array.isArray(department_ids) || department_ids.length === 0) {
-      return res.status(400).json({ success: false, message: 'department_ids must be a non-empty array' });
+      return res.status(400).json(errorResponse.badRequest('department_ids must be a non-empty array', 'INVALID_DEPARTMENT_IDS'));
     }
  
     const project = await q('SELECT * FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
     if (!project || project.length === 0) {
-      return res.status(404).json({ success: false, message: 'Project not found' });
+      return res.status(404).json(errorResponse.notFound('Project not found', 'PROJECT_NOT_FOUND'));
     }
  
     const projectId = project[0].id;
@@ -682,7 +683,7 @@ router.post('/:id/departments', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['
     });
   } catch (e) {
     logger.error('Add departments error:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
   }
 });
 
@@ -693,7 +694,7 @@ router.delete('/:id/departments/:deptId', ruleEngine(RULES.PROJECT_UPDATE), requ
  
     const project = await q('SELECT * FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
     if (!project || project.length === 0) {
-      return res.status(404).json({ success: false, message: 'Project not found' });
+      return res.status(404).json(errorResponse.notFound('Project not found', 'PROJECT_NOT_FOUND'));
     }
  
     await q('DELETE FROM project_departments WHERE project_id = ? AND department_id = ?', [project[0].id, deptId]);
@@ -701,7 +702,7 @@ router.delete('/:id/departments/:deptId', ruleEngine(RULES.PROJECT_UPDATE), requ
     res.json({ success: true, message: 'Department removed from project' });
   } catch (e) {
     logger.error('Remove department error:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
   }
 });
 
@@ -712,7 +713,7 @@ router.delete('/:id', ruleEngine(RULES.PROJECT_DELETE), requireRole(['Admin', 'M
  
     const project = await q('SELECT * FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
     if (!project || project.length === 0) {
-      return res.status(404).json({ success: false, message: 'Project not found' });
+      return res.status(404).json(errorResponse.notFound('Project not found', 'PROJECT_NOT_FOUND'));
     }
  
     const projectId = project[0].id;
@@ -731,7 +732,7 @@ router.delete('/:id', ruleEngine(RULES.PROJECT_DELETE), requireRole(['Admin', 'M
     res.json({ success: true, message: 'Project deleted successfully' });
   } catch (e) {
     logger.error('Delete project error:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
   }
 });
 
@@ -741,7 +742,7 @@ router.get('/:id/summary', async (req, res) => {
     const { id } = req.params;
     const project = await q('SELECT * FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
     if (!project || project.length === 0) {
-      return res.status(404).json({ success: false, message: 'Project not found' });
+      return res.status(404).json(errorResponse.notFound('Project not found', 'PROJECT_NOT_FOUND'));
     }
     const projectId = project[0].id;
 
@@ -784,7 +785,7 @@ router.get('/:id/summary', async (req, res) => {
     });
   } catch (e) {
     logger.error('Get project summary error:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
   }
 });
 
@@ -795,7 +796,7 @@ router.get('/:id/tasks', async (req, res) => {
     const project = await q('SELECT id FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
 
     if (!project || project.length === 0) {
-      return res.status(404).json({ success: false, message: 'Project not found' });
+      return res.status(404).json(errorResponse.notFound('Project not found', 'PROJECT_NOT_FOUND'));
     }
 
     const projectId = project[0].id;
@@ -854,7 +855,7 @@ router.get('/:id/tasks', async (req, res) => {
         ORDER BY t.createdAt DESC
       `, [projectId, req.user._id]);
     } else {
-      return res.status(403).json({ success: false, message: 'Access denied' });
+      return res.status(403).json(errorResponse.forbidden('Access denied', 'ACCESS_DENIED'));
     }
 
     const formattedTasks = tasks.map(task => ({
@@ -923,7 +924,7 @@ router.get('/:id/tasks', async (req, res) => {
     });
   } catch (e) {
     logger.error('Get project tasks error:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
   }
 });
 

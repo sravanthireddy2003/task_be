@@ -1,4 +1,5 @@
 const db = require(__root + 'db');
+const errorResponse = require(__root + 'utils/errorResponse');
 let logger;
 try { logger = require(__root + 'logger'); } catch (e) { logger = require('../../logger'); }
 const RoleBasedLoginResponse = require(__root + 'controller/utils/RoleBasedLoginResponse');
@@ -575,7 +576,7 @@ tasksOverview: async (req, res) => {
       const { id } = req.params;
       const { title, description, dueDate, status } = req.body;
       if (!id) {
-        return res.status(400).json({ success: false, error: 'Checklist item id required' });
+        return res.status(400).json(errorResponse.badRequest('Checklist item id required', 'BAD_REQUEST'));
       }
       await ensureSubtaskPermission(id, req.user._id, req.user.tenant_id);
       const updates = [];
@@ -597,7 +598,7 @@ tasksOverview: async (req, res) => {
         params.push(status);
       }
       if (!updates.length) {
-        return res.status(400).json({ success: false, error: 'Nothing to update' });
+        return res.status(400).json(errorResponse.badRequest('Nothing to update', 'BAD_REQUEST'));
       }
       const columnsPresence = await getSubtaskColumnPresence();
       if (columnsPresence.updated_at) {
@@ -616,7 +617,7 @@ tasksOverview: async (req, res) => {
     try {
       const { id } = req.params;
       if (!id) {
-        return res.status(400).json({ success: false, error: 'Checklist item id required' });
+        return res.status(400).json(errorResponse.badRequest('Checklist item id required', 'BAD_REQUEST'));
       }
       await ensureSubtaskPermission(id, req.user._id, req.user.tenant_id);
       const columnsPresence = await getSubtaskColumnPresence();
@@ -640,7 +641,7 @@ tasksOverview: async (req, res) => {
     try {
       const { id } = req.params;
       if (!id) {
-        return res.status(400).json({ success: false, error: 'Checklist item id required' });
+        return res.status(400).json(errorResponse.badRequest('Checklist item id required', 'BAD_REQUEST'));
       }
       await ensureSubtaskPermission(id, req.user._id, req.user.tenant_id);
       const columnsPresence = await getSubtaskColumnPresence();
@@ -670,7 +671,7 @@ tasksOverview: async (req, res) => {
     try {
       const { id } = req.params;
       if (!id) {
-        return res.status(400).json({ success: false, error: 'Checklist item id required' });
+        return res.status(400).json(errorResponse.badRequest('Checklist item id required', 'BAD_REQUEST'));
       }
       await ensureSubtaskPermission(id, req.user._id, req.user.tenant_id);
       const hasDeleted = await hasColumn('subtasks', 'isDeleted');

@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const ruleEngine = require(__root + 'middleware/ruleEngine');
 const RULES = require(__root + 'rules/ruleCodes');
+const errorResponse = require(__root + 'utils/errorResponse');
 
 require('dotenv').config();
 
@@ -30,7 +31,7 @@ router.post('/', ruleEngine(RULES.SUBTASK_CREATE), requireRole(['Admin', 'Manage
     const { taskId, title, description, priority = 'Medium', assignedTo, estimatedHours } = req.body;
 
     if (!taskId || !title) {
-      return res.status(400).json({ success: false, message: 'taskId and title are required' });
+      return res.status(400).json(errorResponse.badRequest('taskId and title are required', 'MISSING_REQUIRED_FIELD', null, 'title'));
     }
 
     const task = await q('SELECT * FROM tasks WHERE id = ? OR public_id = ? LIMIT 1', [taskId, taskId]);
@@ -84,7 +85,7 @@ router.post('/', ruleEngine(RULES.SUBTASK_CREATE), requireRole(['Admin', 'Manage
     });
   } catch (e) {
     logger.error('Create subtask error:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    res.status(500).json(errorResponse.serverError('Failed to create subtask', 'SUBTASK_CREATION_ERROR', { details: e.message }));
   }
 });
 
@@ -95,7 +96,7 @@ router.get('/task/:taskId', async (req, res) => {
 
     const task = await q('SELECT * FROM tasks WHERE id = ? OR public_id = ? LIMIT 1', [taskId, taskId]);
     if (!task || task.length === 0) {
-      return res.status(404).json({ success: false, message: 'Task not found' });
+      return res.status(404).json(errorResponse.notFound('Task not found', 'TASK_NOT_FOUND'));
     }
 
     const hasAssignedTo = await hasColumn('subtasks', 'assigned_to');
@@ -127,7 +128,7 @@ router.get('/task/:taskId', async (req, res) => {
     res.json({ success: true, data: enriched });
   } catch (e) {
     logger.error('Get subtasks error:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    res.status(500).json(errorResponse.serverError('Failed to retrieve subtasks', 'SUBTASK_FETCH_ERROR', { details: e.message }));
   }
 });
 
@@ -138,7 +139,7 @@ router.get('/:id', async (req, res) => {
     const subtask = await q('SELECT * FROM subtasks WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
 
     if (!subtask || subtask.length === 0) {
-      return res.status(404).json({ success: false, message: 'Subtask not found' });
+      return res.status(404).json(errorResponse.notFound('Subtask not found', 'SUBTASK_NOT_FOUND'));
     }
 
     const st = subtask[0];
@@ -160,7 +161,7 @@ router.get('/:id', async (req, res) => {
     });
   } catch (e) {
     logger.error('Get subtask error:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    res.status(500).json(errorResponse.serverError('Failed to retrieve subtask', 'SUBTASK_FETCH_ERROR', { details: e.message }));
   }
 });
 
@@ -172,7 +173,7 @@ router.put('/:id', ruleEngine(RULES.SUBTASK_UPDATE), requireRole(['Admin', 'Mana
 
     const subtask = await q('SELECT * FROM subtasks WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
     if (!subtask || subtask.length === 0) {
-      return res.status(404).json({ success: false, message: 'Subtask not found' });
+      return res.status(404).json(errorResponse.notFound('Subtask not found', 'SUBTASK_NOT_FOUND'));
     }
 
     const subtaskId = subtask[0].id;
@@ -188,7 +189,7 @@ router.put('/:id', ruleEngine(RULES.SUBTASK_UPDATE), requireRole(['Admin', 'Mana
     if (actualHours) { updateFields.push('actual_hours = ?'); params.push(actualHours); }
 
     if (updateFields.length === 0) {
-      return res.status(400).json({ success: false, message: 'No fields to update' });
+      return res.status(400).json(errorResponse.badRequest('No fields to update', 'NO_UPDATE_FIELDS'));
     }
 
     params.push(subtaskId);
@@ -207,7 +208,7 @@ router.put('/:id', ruleEngine(RULES.SUBTASK_UPDATE), requireRole(['Admin', 'Mana
     });
   } catch (e) {
     logger.error('Update subtask error:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    res.status(500).json(errorResponse.serverError('Failed to update subtask', 'SUBTASK_UPDATE_ERROR', { details: e.message }));
   }
 });
 
@@ -218,7 +219,7 @@ router.delete('/:id', ruleEngine(RULES.SUBTASK_DELETE), requireRole(['Admin', 'M
     const subtask = await q('SELECT * FROM subtasks WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
 
     if (!subtask || subtask.length === 0) {
-      return res.status(404).json({ success: false, message: 'Subtask not found' });
+      return res.status(404).json(errorResponse.notFound('Subtask not found', 'SUBTASK_NOT_FOUND'));
     }
 
     const subtaskId = subtask[0].id;
@@ -231,7 +232,7 @@ router.delete('/:id', ruleEngine(RULES.SUBTASK_DELETE), requireRole(['Admin', 'M
     res.json({ success: true, message: 'Subtask deleted' });
   } catch (e) {
     logger.error('Delete subtask error:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    res.status(500).json(errorResponse.serverError('Failed to delete subtask', 'SUBTASK_DELETE_ERROR', { details: e.message }));
   }
 });
 

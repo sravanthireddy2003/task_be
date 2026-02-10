@@ -29,6 +29,7 @@ const toMySQLDate = (d) => {
 };
 const NotificationService = require(__root + 'services/notificationService');
 const workflowService = require(__root + 'workflow/workflowService');
+const errorResponse = require(__root + 'utils/errorResponse');
 const { check } = require('express-validator');
 const validateRequest = require(__root + 'middleware/validateRequest');
 router.use(requireAuth);        // ✅ Sets req.user from JWT
@@ -167,12 +168,12 @@ router.use(tenantMiddleware);
 router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const taskIds = req.body.taskIds || req.body.task_ids || [];
-    if (!Array.isArray(taskIds) || taskIds.length === 0) return res.status(400).json({ success: false, error: 'taskIds (array) required' });
+    if (!Array.isArray(taskIds) || taskIds.length === 0) return res.status(400).json(errorResponse.badRequest('Task IDs array is required', 'INVALID_INPUT', null, 'taskIds'));
 
     const numericIds = taskIds.filter(id => /^\d+$/.test(String(id))).map(Number);
     const publicIds = taskIds.filter(id => !/^\d+$/.test(String(id)));
     const allIds = [...numericIds, ...publicIds];
-    if (allIds.length === 0) return res.status(400).json({ success: false, error: 'No valid task IDs provided' });
+    if (allIds.length === 0) return res.status(400).json(errorResponse.badRequest('No valid task IDs provided', 'INVALID_INPUT'));
     const subtaskCreatorColumnExists = await hasColumn('subtasks', 'created_by');
 
     let internalIds = numericIds;
@@ -643,7 +644,7 @@ async function createJsonHandler(req, res) {
     });
   } catch (error) {
     logger.error('Error in task creation process:', error);
-    return res.status(500).send("Error in task creation process");
+    return res.status(500).json(errorResponse.serverError('Error in task creation process', 'TASK_CREATION_ERROR', { details: error.message }));
   }
 }
 
@@ -977,14 +978,24 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
       })
       .catch((error) => {
         logger.error('Task creation failed:', error);
-        return res.status(500).json({ success: false, error: error.message });
+        // Check if it's an assignment error
+        if (error.message && error.message.includes('already has an active task')) {
+          const userMatch = error.message.match(/User (\d+)/);
+          const userId = userMatch ? userMatch[1] : null;
+          return res.status(400).json(errorResponse.assignmentError(
+            'The selected assignee already has an active task and cannot be assigned another until it is completed',
+            'ASSIGNEE_ALREADY_ASSIGNED',
+            { userId }
+          ));
+        }
+        return res.status(500).json(errorResponse.serverError('Task creation failed', 'TASK_CREATION_ERROR', { details: error.message }));
       });
 
   } catch (error) {
     logger.error('Error in continueTaskCreation:', error);
     return connection.rollback(() => {
       connection.release();
-      res.status(500).json({ error: "Error in task creation process: " + error.message });
+      res.status(500).json(errorResponse.serverError('Error in task creation process', 'TASK_CREATION_ERROR', { details: error.message }));
     });
   }
 }
@@ -1028,7 +1039,7 @@ router.get('/', async (req, res) => {
   try {
     const user = req.user;
     const projectParam = req.query.project_id || req.query.projectId || req.query.projectPublicId || req.body && (req.body.project_id || req.body.project_public_id || req.body.projectPublicId);
-    if (!projectParam) return res.status(400).json({ success: false, error: 'project_id or projectPublicId query parameter required' });
+    if (!projectParam) return res.status(400).json(errorResponse.badRequest('project_id or projectPublicId query parameter required', 'MISSING_PARAMETER', null, 'projectId'));
 
     const tasksHasProjectId = await hasColumn('tasks', 'project_id');
     const tasksHasProjectPublicId = await hasColumn('tasks', 'project_public_id');
@@ -1058,11 +1069,11 @@ router.get('/', async (req, res) => {
       projectPublicIdToUse = projectParam;
       try {
         const projRows = await new Promise((resolve, reject) => db.query('SELECT id, public_id FROM projects WHERE public_id = ? LIMIT 1', [projectParam], (err, r) => err ? reject(err) : resolve(r)));
-        if (!projRows || projRows.length === 0) return res.status(404).json({ success: false, error: 'Project not found' });
+        if (!projRows || projRows.length === 0) return res.status(404).json(errorResponse.notFound('Project not found', 'PROJECT_NOT_FOUND', null));
         resolvedProjectId = projRows[0].id;
       } catch (err) {
         logger.error('Error resolving project public_id: ' + (err && err.message));
-        return res.status(500).json({ success: false, error: 'Failed resolving project id' });
+        return res.status(500).json(errorResponse.serverError('Failed resolving project ID', 'PROJECT_RESOLUTION_ERROR'));
       }
     } else {
       resolvedProjectId = Number(projectParam);
@@ -1315,7 +1326,7 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
     db.getConnection((err, connection) => {
       if (err) {
         logger.error(`DB connection error: ${err}`);
-        return res.status(500).json({ success: false, error: 'Database connection error' });
+        return res.status(500).json(errorResponse.serverError('Database connection failed', 'DB_CONNECTION_ERROR'));
       }
 
       (async () => {
@@ -1372,7 +1383,7 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
 
           if (updates.length === 1) {
             connection.release();
-            return res.status(400).json({ success: false, error: 'No fields to update' });
+            return res.status(400).json(errorResponse.badRequest('No fields to update', 'NO_FIELDS_PROVIDED'));
           }
 
           const updateTaskQuery = `UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`;
@@ -1380,7 +1391,7 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
             if (err) {
               connection.release();
               logger.error(`Error updating task: ${err.message}`);
-              return res.status(500).json({ success: false, error: 'Database update error' });
+              return res.status(500).json(errorResponse.databaseError('Database update failed', 'DB_UPDATE_ERROR'));
             }
 
             if (result.affectedRows === 0) {
@@ -1428,7 +1439,7 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
                 const hasActiveForNew = await assigneeHasActiveTask(newAssigneeId);
                 if (hasActiveForNew) {
                   connection.release();
-                  return res.status(400).json({ success: false, error: 'The selected assignee already has an active task and cannot be reassigned another until it is completed.' });
+                  return res.status(400).json(errorResponse.assignmentError('The selected assignee already has an active task and cannot be reassigned another until it is completed', 'ASSIGNEE_ALREADY_ASSIGNED', { userId: newAssigneeId }));
                 }
 
                 await new Promise((resolve, reject) =>
@@ -1598,7 +1609,7 @@ router.patch('/:taskId/reassign/:userId', ruleEngine('task_reassign'), requireRo
         const exists = await q('SELECT 1 FROM taskassignments WHERE task_Id = ? AND user_Id = ?', [taskId, newAssigneeId]);
         if (!exists.length) {
           const hasActive = await assigneeHasActiveTask(newAssigneeId);
-          if (hasActive) return res.status(400).json({ success: false, error: 'The selected assignee already has an active task and cannot be assigned another until it is completed.' });
+          if (hasActive) return res.status(400).json(errorResponse.assignmentError('The selected assignee already has an active task and cannot be assigned another until it is completed', 'ASSIGNEE_ALREADY_ASSIGNED', { userId: newUserIds[0] }));
           await q('INSERT INTO taskassignments (task_Id, user_Id, is_read_only) VALUES (?, ?, 0)', [taskId, newAssigneeId]);
         }
       }
@@ -3015,7 +3026,7 @@ router.put("/updatetask/:id", requireRole(['Admin', 'Manager']), async (req, res
             const candidateId = String(candidate);
             const hasActive = await assigneeHasActiveTask(candidateId);
             if (hasActive) {
-              return res.status(400).json({ success: false, error: 'The selected assignee already has an active task and cannot be assigned another until it is completed.' });
+              return res.status(400).json(errorResponse.assignmentError('The selected assignee already has an active task and cannot be assigned another until it is completed', 'ASSIGNEE_ALREADY_ASSIGNED', { userId: newAssigneeIds[0] }));
             }
             const insertQuery = `INSERT INTO taskassignments (task_Id, user_Id) VALUES (?, ?)`;
             try {
@@ -3391,7 +3402,7 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
       newAssigneeUser = newUserRows[0];
 
       const hasActiveForNew = await assigneeHasActiveTask(finalNewAssigneeId);
-      if (hasActiveForNew) return res.status(400).json({ success: false, error: 'The selected new assignee already has an active task and cannot be assigned another until it is completed.' });
+      if (hasActiveForNew) return res.status(400).json(errorResponse.assignmentError('The selected new assignee already has an active task and cannot be assigned another until it is completed', 'ASSIGNEE_ALREADY_ASSIGNED', { userId: newAssigneeId }));
     }
 
     const [oldUserRows] = await new Promise((resolve, reject) =>

@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const NotificationService = require('../services/notificationService');
+const errorResponse = require(__root + 'utils/errorResponse');
 
 let logger;
 try { logger = require(global.__root + 'logger'); } catch (e) { try { logger = require('../../logger'); } catch (e2) { logger = console; } }
@@ -64,7 +65,8 @@ async function fetchClientDocuments(clientIds = []) {
   const rows = await q(
     'SELECT id, client_id, file_url, file_name, file_type, uploaded_at FROM client_documents WHERE client_id IN (?) AND is_active = 1 ORDER BY uploaded_at DESC',
     [clientIds]
-  );
+  );
+
   const base = env.BASE_URL || env.FRONTEND_URL;
   return (rows || []).reduce((memo, row) => {
     if (!row || row.client_id === undefined || row.client_id === null) return memo;
@@ -79,7 +81,8 @@ async function fetchClientDocuments(clientIds = []) {
     memo[row.client_id].push(row);
     return memo;
   }, {});
-}
+}
+
 function getColumnType(table, column) {
   return new Promise((resolve) => {
     db.query("SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?", [table, column], (err, rows) => {
@@ -87,7 +90,8 @@ function getColumnType(table, column) {
       return resolve(rows[0].DATA_TYPE);
     });
   });
-}
+}
+
 function safeSelect(table, baseCols, optionalCols=[], whereClause='', params=[], cb) {
   (async () => {
     try {
@@ -113,7 +117,8 @@ function safeSelect(table, baseCols, optionalCols=[], whereClause='', params=[],
 module.exports = {
   getDashboard: async (req, res) => {
     try {
-      const q = (sql, params=[]) => new Promise((r, rej) => db.query(sql, params, (e, rows) => e ? rej(e) : r(rows)));
+      const q = (sql, params=[]) => new Promise((r, rej) => db.query(sql, params, (e, rows) => e ? rej(e) : r(rows)));
+
       const logData = {
         logId: `LOG-${Date.now()}`,
         action: "Dashboard Viewed",
@@ -129,13 +134,16 @@ module.exports = {
         await q("INSERT INTO audit_logs (action, module, performed_by, user_id, tenant_id, ip_address, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)", 
           [logData.action, logData.module, logData.performedBy, logData.userId, logData.tenantId, logData.ipAddress, logData.timestamp]);
       } catch (e) {
-      }
+      }
+
       const totalClients = (await q("SELECT COUNT(*) as c FROM clientss WHERE isDeleted IS NULL OR isDeleted != 1"))[0].c || 0;
       const totalTasks = (await q("SELECT COUNT(*) as c FROM tasks WHERE LOWER(status) NOT IN ('closed')"))[0].c || 0;
-      const pendingTasks = (await q("SELECT COUNT(*) as c FROM tasks WHERE LOWER(status) IN ('pending', 'not started') AND LOWER(status) != 'closed'"))[0].c || 0;
+      const pendingTasks = (await q("SELECT COUNT(*) as c FROM tasks WHERE LOWER(status) IN ('pending', 'not started') AND LOWER(status) != 'closed'"))[0].c || 0;
+
       const overdueTasks = (await q("SELECT COUNT(*) as c FROM tasks WHERE taskDate < CURDATE() AND LOWER(status) NOT IN ('completed', 'closed')"))[0].c || 0;
       const completedToday = (await q("SELECT COUNT(*) as c FROM tasks WHERE DATE(completed_at) = CURDATE() AND LOWER(status) = 'completed'"))[0].c || 0;
-      const activeProjects = (await q("SELECT COUNT(DISTINCT p.id) as c FROM projects p INNER JOIN tasks t ON p.id = t.project_id WHERE p.is_active = 1 AND DATE(t.taskDate) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND LOWER(t.status) != 'closed'"))[0].c || 0;
+      const activeProjects = (await q("SELECT COUNT(DISTINCT p.id) as c FROM projects p INNER JOIN tasks t ON p.id = t.project_id WHERE p.is_active = 1 AND DATE(t.taskDate) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) AND LOWER(t.status) != 'closed'"))[0].c || 0;
+
       const taskStatusRows = await q("SELECT LOWER(status) as s, COUNT(*) as c FROM tasks WHERE LOWER(status) != 'closed' GROUP BY status");
       const total = taskStatusRows.reduce((sum, r) => sum + r.c, 0);
       const taskDistribution = [
@@ -143,8 +151,10 @@ module.exports = {
         { name: "In Progress", value: total > 0 ? Math.round((taskStatusRows.find(r => r.s === 'in progress')?.c || 0) / total * 100) : 0, color: "#3B82F6" },
         { name: "Not Started", value: total > 0 ? Math.round((taskStatusRows.find(r => r.s === 'not started')?.c || 0) / total * 100) : 0, color: "#F59E0B" },
         { name: "Overdue", value: total > 0 ? Math.round(overdueTasks / total * 100) : 0, color: "#EF4444" }
-      ];
-      const weeklyRows = await q("SELECT DATE(createdAt) as day, COUNT(*) as tasks FROM tasks WHERE createdAt >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) AND LOWER(status) != 'closed' GROUP BY DATE(createdAt) ORDER BY day");
+      ];
+
+      const weeklyRows = await q("SELECT DATE(createdAt) as day, COUNT(*) as tasks FROM tasks WHERE createdAt >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) AND LOWER(status) != 'closed' GROUP BY DATE(createdAt) ORDER BY day");
+
       const taskDetailsRows = await q(`
         SELECT
           DATE(createdAt) as day,
@@ -164,7 +174,8 @@ module.exports = {
         date.setDate(date.getDate() - (6 - i));
         const dayStr = date.toISOString().split('T')[0];
         const row = weeklyRows.find(r => r.day === dayStr);
-        const tasks = row ? row.tasks : 0;
+        const tasks = row ? row.tasks : 0;
+
         const dayTasks = taskDetailsRows.filter(t => t.day === dayStr).map(t => ({
           id: t.id,
           title: t.title,
@@ -189,7 +200,8 @@ module.exports = {
           status,
           tasksList: dayTasks
         };
-      });
+      });
+
       const employeeRows = await q(`
         SELECT u.name, COUNT(CASE WHEN LOWER(t.status) = 'completed' THEN 1 END) as completed, COUNT(CASE WHEN LOWER(t.status) = 'in progress' THEN 1 END) as inProgress
         FROM users u
@@ -200,7 +212,8 @@ module.exports = {
         ORDER BY completed DESC, inProgress DESC
         LIMIT 4
       `);
-      const topEmployees = employeeRows.map(r => ({ name: r.name, completed: r.completed, inProgress: r.inProgress }));
+      const topEmployees = employeeRows.map(r => ({ name: r.name, completed: r.completed, inProgress: r.inProgress }));
+
       const clientRows = await q(`
         SELECT c.name as client, COUNT(t.id) as tasks
         FROM clientss c
@@ -212,7 +225,8 @@ module.exports = {
         LIMIT 4
       `);
       const maxTasks = clientRows.length ? Math.max(...clientRows.map(r => r.tasks)) : 1;
-      const clientWorkload = clientRows.map(r => ({ client: r.client, workload: maxTasks ? r.tasks / maxTasks : 0 }));
+      const clientWorkload = clientRows.map(r => ({ client: r.client, workload: maxTasks ? r.tasks / maxTasks : 0 }));
+
       const recentTasks = await q("SELECT id, title, status, priority, taskDate FROM tasks WHERE LOWER(status) != 'closed' ORDER BY createdAt DESC LIMIT 2");
       const recentActivities = recentTasks.map(t => ({
         id: t.id,
@@ -220,7 +234,8 @@ module.exports = {
         status: t.status,
         priority: t.priority || 'Medium',
         dueDate: t.taskDate
-      }));
+      }));
+
       const projectRows = await q(`
         SELECT p.id, p.name, COUNT(t.id) as tasks, c.name as client
         FROM projects p
@@ -280,7 +295,7 @@ module.exports = {
   manageUsers: async (req, res) => {
     const cols = await buildSelect('users', ['_id','public_id','name','email','role','isActive'], ['tenant_id']).catch(() => '_id, public_id, name, email, role, isActive');
     db.query(`SELECT ${cols} FROM users`, [], (err, rows) => {
-      if (err) return res.status(500).json({ success: false, error: err.message });
+      if (err) return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: err.message }));
       const out = rows.map(r => { r.id = r.public_id || r._id; delete r.public_id; return r; });
       res.json({ success: true, data: out });
     });
@@ -370,7 +385,7 @@ module.exports = {
       }
       const users = await q('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [filterUserParam]);
       if (!Array.isArray(users) || users.length === 0) {
-        return res.status(404).json({ success: false, message: 'User not found for provided userId' });
+        return res.status(404).json(errorResponse.notFound('User not found for provided userId', 'NOT_FOUND'));
       }
       return runQuery(users[0]._id);
     }
@@ -385,7 +400,7 @@ module.exports = {
     const hasPublic = await tableHasColumn('departments', 'public_id');
     const optional = [].concat(hasPublic ? ['public_id'] : []).concat(['manager_id','head_id']);
     safeSelect('departments', ['id','name','created_at'], optional, '', [], (err, rows) => {
-        if (err) return res.status(500).json({ success: false, error: err.message });
+        if (err) return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: err.message }));
         const finishWith = (outRows) => {
           try {
             const userIds = Array.from(new Set((outRows || []).map(r => r.manager_id).concat((outRows || []).map(r => r.head_id)).filter(Boolean)));
@@ -394,7 +409,8 @@ module.exports = {
               if (uErr || !Array.isArray(uRows)) return res.json({ success: true, data: outRows });
               const mapId = {};
               const mapName = {};
-              uRows.forEach(u => {
+              uRows.forEach(u => {
+
                 if (u._id) mapId[String(u._id)] = u.public_id || String(u._id);
                 if (u.public_id) mapId[String(u.public_id)] = u.public_id || String(u._id);
                 if (u._id) mapName[String(u._id)] = u.name || null;
@@ -422,7 +438,8 @@ module.exports = {
           const whereParts = colNames.map(n => `${n} = ?`).join(' OR ');
           const params = colNames.map(() => resolvedUserId);
           const hasPublic2 = colNames.includes('public_id');
-          const optional2 = [].concat(hasPublic2 ? ['public_id'] : []).concat(['manager_id','head_id']);
+          const optional2 = [].concat(hasPublic2 ? ['public_id'] : []).concat(['manager_id','head_id']);
+
           safeSelect('departments', ['id','name','created_at'], optional2, `WHERE ${whereParts}`, params, (fErr, fRows) => {
             if (fErr) return finishWith(rows);
             return finishWith(fRows);
@@ -435,20 +452,22 @@ module.exports = {
       const isNumeric = /^\d+$/.test(String(filterUserParam));
       if (isNumeric) { runQuery(filterUserParam); return; }
       db.query('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [filterUserParam], (err, rows) => {
-        if (err) return res.status(500).json({ success: false, error: err.message });
-        if (!rows || rows.length === 0) return res.status(404).json({ success: false, message: 'User not found for provided userId' });
+        if (err) return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: err.message }));
+        if (!rows || rows.length === 0) return res.status(404).json(errorResponse.notFound('User not found for provided userId', 'NOT_FOUND'));
         runQuery(rows[0]._id);
       });
       return;
     }
 
     runQuery(null);
-  },
+  },
+
   createDepartment: async (req, res) => {
     try {
       const { name, managerId, headId } = req.body;
-      if (!name) return res.status(400).json({ success: false, message: 'Department name required' });
-      if (!managerId) return res.status(400).json({ success: false, message: 'managerId is required' });
+      if (!name) return res.status(400).json(errorResponse.badRequest('Department name required', 'BAD_REQUEST'));
+
+      if (!managerId) return res.status(400).json(errorResponse.badRequest('managerId is required', 'BAD_REQUEST'));
 
       const resolveUser = (rawId) => new Promise((resolve, reject) => {
         if (!rawId) return resolve(null);
@@ -458,13 +477,15 @@ module.exports = {
           if (!rows || rows.length === 0) return resolve(null);
           return resolve(rows[0]._id);
         });
-      });
+      });
+
       const getColumnType = (table, column) => new Promise((resolve) => {
         db.query("SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?", [table, column], (err, rows) => {
           if (err || !Array.isArray(rows) || rows.length === 0) return resolve(null);
           return resolve(rows[0].DATA_TYPE);
         });
-      });
+      });
+
       const hasManager = await tableHasColumn('departments', 'manager_id');
       const hasHead = await tableHasColumn('departments', 'head_id');
       const hasCreatedBy = await tableHasColumn('departments', 'created_by');
@@ -487,7 +508,7 @@ module.exports = {
           if (colType && ['varchar','char','text'].includes(String(colType).toLowerCase())) {
             manager_id = managerId;
           } else {
-            return res.status(400).json({ success: false, message: 'managerId could not be resolved to a user' });
+            return res.status(400).json(errorResponse.badRequest('managerId could not be resolved to a user', 'BAD_REQUEST'));
           }
         }
       }
@@ -519,7 +540,7 @@ module.exports = {
       db.query(sql, params, (err, result) => {
         if (err) {
           logger.error('createDepartment error', err && err.message);
-          return res.status(500).json({ success: false, error: err.message });
+          return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: err.message }));
         }
         const insertId = result && result.insertId ? result.insertId : null;
         if (!insertId) return res.status(201).json({ success: true, data: { id: insertId, name, manager_id, head_id } });
@@ -560,7 +581,8 @@ module.exports = {
               outRow.head_id = row.head_id ? (mapId[String(row.head_id)] || String(row.head_id)) : null;
               return res.status(201).json({ success: true, data: outRow });
             });
-          } else {
+          } else {
+
             const uids = [];
             if (row.manager_id) uids.push(row.manager_id);
             if (row.head_id) uids.push(row.head_id);
@@ -591,16 +613,17 @@ module.exports = {
       });
     } catch (e) {
       logger.error('createDepartment catch', e && e.message);
-      return res.status(500).json({ success: false, error: e.message });
+      return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
     }
-  },
+  },
+
   updateDepartment: async (req, res) => {
     try {
       let { id } = req.params;
-      if (!id) return res.status(400).json({ success: false, message: 'Department id required' });
+      if (!id) return res.status(400).json(errorResponse.badRequest('Department id required', 'BAD_REQUEST'));
       if (!/^\d+$/.test(String(id))) {
         const rows = await new Promise((resolve) => db.query('SELECT id FROM departments WHERE public_id = ? LIMIT 1', [id], (e, r) => e ? resolve([]) : resolve(r)));
-        if (!rows || !rows[0]) return res.status(404).json({ success: false, message: 'Department not found' });
+        if (!rows || !rows[0]) return res.status(404).json(errorResponse.notFound('Department not found', 'NOT_FOUND'));
         id = rows[0].id;
       }
       const { name, managerId, headId } = req.body;
@@ -639,15 +662,15 @@ module.exports = {
         updates.push('head_id = ?'); params.push(finalH);
       }
 
-      if (updates.length === 0) return res.status(400).json({ success: false, message: 'No fields to update' });
+      if (updates.length === 0) return res.status(400).json(errorResponse.badRequest('No fields to update', 'BAD_REQUEST'));
       const sql = `UPDATE departments SET ${updates.join(', ')}, updated_at = NOW() WHERE id = ?`;
       params.push(id);
       db.query(sql, params, (err, result) => {
         if (err) {
           logger.error('updateDepartment error', err && err.message);
-          return res.status(500).json({ success: false, error: err.message });
+          return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: err.message }));
         }
-        if (!result || result.affectedRows === 0) return res.status(404).json({ success: false, message: 'Department not found' });
+        if (!result || result.affectedRows === 0) return res.status(404).json(errorResponse.notFound('Department not found', 'NOT_FOUND'));
         (async () => {
           try {
             await NotificationService.createAndSendToRoles(['Admin'], 'Department Updated', `Department "${name || 'Unknown'}" has been updated`, 'DEPARTMENT_UPDATED', 'department', id, req.user ? req.user.tenant_id : null);
@@ -688,19 +711,20 @@ module.exports = {
       });
     } catch (e) {
       logger.error('updateDepartment catch', e && e.message);
-      return res.status(500).json({ success: false, error: e.message });
+      return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
     }
-  },
+  },
+
   deleteDepartment: (req, res) => {
     let { id } = req.params;
-    if (!id) return res.status(400).json({ success: false, message: 'Department id required' });
+    if (!id) return res.status(400).json(errorResponse.badRequest('Department id required', 'BAD_REQUEST'));
     if (!/^\d+$/.test(String(id))) {
       db.query('DELETE FROM departments WHERE public_id = ?', [id], (err, result) => {
         if (err) {
           logger.error('deleteDepartment error', err && err.message);
-          return res.status(500).json({ success: false, error: err.message });
+          return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: err.message }));
         }
-        if (!result || result.affectedRows === 0) return res.status(404).json({ success: false, message: 'Department not found' });
+        if (!result || result.affectedRows === 0) return res.status(404).json(errorResponse.notFound('Department not found', 'NOT_FOUND'));
         (async () => {
           try {
             await NotificationService.createAndSendToRoles(['Admin'], 'Department Deleted', `Department with ID "${id}" has been deleted`, 'DEPARTMENT_DELETED', 'department', id, req.user ? req.user.tenant_id : null);
@@ -722,9 +746,9 @@ module.exports = {
     db.query('DELETE FROM departments WHERE id = ?', [id], (err, result) => {
       if (err) {
         logger.error('deleteDepartment error', err && err.message);
-        return res.status(500).json({ success: false, error: err.message });
+        return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: err.message }));
       }
-      if (!result || result.affectedRows === 0) return res.status(404).json({ success: false, message: 'Department not found' });
+      if (!result || result.affectedRows === 0) return res.status(404).json(errorResponse.notFound('Department not found', 'NOT_FOUND'));
       return res.json({ success: true, message: 'Department deleted' });
     });
   },
@@ -734,11 +758,13 @@ module.exports = {
 
     const runQuery = async (resolvedUserId) => {
       safeSelect('projects', ['id','name','description','status','manager_id'], ['tenant_id'], '', [], (err, rows) => {
-        if (err) return res.status(500).json({ success: false, error: err.message });
+        if (err) return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: err.message }));
+
         try {
           const managerIds = new Set();
           rows.forEach(r => { if (r.manager_id) managerIds.add(r.manager_id); });
-            if (managerIds.size === 0) {
+            if (managerIds.size === 0) {
+
               if (resolvedUserId) {
                 const filtered = rows.filter(r => String(r.manager_id) === String(resolvedUserId));
                 return res.json({ success: true, data: filtered });
@@ -763,8 +789,8 @@ module.exports = {
       const isNumeric = /^\d+$/.test(String(filterUserParam));
       if (isNumeric) { runQuery(filterUserParam); return; }
       db.query('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [filterUserParam], (err, rows) => {
-        if (err) return res.status(500).json({ success: false, error: err.message });
-        if (!rows || rows.length === 0) return res.status(404).json({ success: false, message: 'User not found for provided userId' });
+        if (err) return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: err.message }));
+        if (!rows || rows.length === 0) return res.status(404).json(errorResponse.notFound('User not found for provided userId', 'NOT_FOUND'));
         runQuery(rows[0]._id);
       });
       return;
@@ -781,7 +807,7 @@ module.exports = {
       '',
       [],
       (err, rows) => {
-      if (err) return res.status(500).json({ success: false, error: err.message });
+      if (err) return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: err.message }));
       try {
         const userIdSet = new Set();
         rows.forEach(r => {
@@ -808,7 +834,8 @@ module.exports = {
               if (Array.isArray(arr)) { r.assigned_to = arr.map(id => map[id] || id); return r; }
             } catch (e) {
               const parts = String(r.assigned_to).split(',').map(s=>s.trim()).filter(Boolean);
-              r.assigned_to = parts.map(id => map[id] || id);
+              r.assigned_to = parts.map(id => map[id] || id);
+
               try {
                 const now = new Date();
                 const taskDate = r.taskDate ? new Date(r.taskDate) : null;
@@ -824,7 +851,8 @@ module.exports = {
                 r.summary = taskDate ? { dueStatus: taskDate < now ? 'Overdue' : 'On Time', dueDate: taskDate.toISOString() } : {};
               } catch (er) {  }
               return r;
-            }
+            }
+
             try {
               const now = new Date();
               const taskDate = r.taskDate ? new Date(r.taskDate) : null;
@@ -840,7 +868,8 @@ module.exports = {
               r.summary = taskDate ? { dueStatus: taskDate < now ? 'Overdue' : 'On Time', dueDate: taskDate.toISOString() } : {};
             } catch (er) {  }
             return r;
-          });
+          });
+
           try {
             const taskIds = out.map(r => r.id).filter(Boolean);
             if (!taskIds.length) return res.json({ success: true, data: out });
@@ -911,7 +940,8 @@ module.exports = {
         return res.json({ success: true, data: rows });
       }
     });
-  },
+  },
+
   getModules: (req, res) => {
     const modules = readModules();
     return res.json({ success: true, data: modules });
@@ -921,13 +951,13 @@ module.exports = {
     const { id } = req.params;
     const modules = readModules();
     const m = modules.find(x => x.moduleId === id);
-    if (!m) return res.status(404).json({ success: false, message: 'Module not found' });
+    if (!m) return res.status(404).json(errorResponse.notFound('Module not found', 'NOT_FOUND'));
     return res.json({ success: true, data: m });
   },
 
   createModule: (req, res) => {
     const { name, description } = req.body;
-    if (!name) return res.status(400).json({ success: false, message: 'name required' });
+    if (!name) return res.status(400).json(errorResponse.badRequest('name required', 'BAD_REQUEST'));
     const modules = readModules();
     const moduleId = crypto.randomBytes(8).toString('hex');
     const m = { moduleId, name, description: description || '' };
@@ -948,7 +978,7 @@ module.exports = {
     const { name, description } = req.body;
     const modules = readModules();
     const idx = modules.findIndex(x => x.moduleId === id);
-    if (idx === -1) return res.status(404).json({ success: false, message: 'Module not found' });
+    if (idx === -1) return res.status(404).json(errorResponse.notFound('Module not found', 'NOT_FOUND'));
     if (name) modules[idx].name = name;
     if (description !== undefined) modules[idx].description = description;
     if (!writeModules(modules)) return res.status(500).json({ success: false, message: 'Failed to write module' });
@@ -966,7 +996,7 @@ module.exports = {
     const { id } = req.params;
     let modules = readModules();
     const idx = modules.findIndex(x => x.moduleId === id);
-    if (idx === -1) return res.status(404).json({ success: false, message: 'Module not found' });
+    if (idx === -1) return res.status(404).json(errorResponse.notFound('Module not found', 'NOT_FOUND'));
     const removed = modules.splice(idx, 1)[0];
     if (!writeModules(modules)) return res.status(500).json({ success: false, message: 'Failed to write module' });
     (async () => {
@@ -979,7 +1009,8 @@ module.exports = {
     return res.json({ success: true, data: removed });
   },
 
-  getSettings: (req, res) => {
+  getSettings: (req, res) => {
+
     const settings = {
       version: "1.0.0",
       general: {
@@ -1011,7 +1042,9 @@ module.exports = {
   },
 
   putSettings: (req, res) => {
-    const updates = req.body;
+    const updates = req.body;
+
+
     const current = {
       version: "1.0.0",
       general: {
@@ -1038,10 +1071,15 @@ module.exports = {
         public_key: "pk_live_123456",
         secret_key: "sk_live_123456"
       }
-    };
+    };
+
     Object.keys(updates).forEach(key => {
-      if (current[key]) {
-        Object.assign(current[key], updates[key]);
+      if (current[key] !== undefined) {
+        if (typeof updates[key] === 'object' && updates[key] !== null) {
+          Object.assign(current[key], updates[key]);
+        } else {
+          current[key] = updates[key];
+        }
       }
     });
     return res.json({ success: true, data: current });

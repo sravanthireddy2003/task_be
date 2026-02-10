@@ -4,6 +4,7 @@ const storageService = require('../services/storageService');
 const db = require('../db');
 const crypto = require('crypto');
 const path = require('path');
+const errorResponse = require(__root + 'utils/errorResponse');
 
 const NotificationService = require('../services/notificationService');
 const workflowService = require(__root + 'workflow/workflowService');
@@ -91,11 +92,11 @@ module.exports = {
       try {
 
         if (!isAdmin(req.user) && !isManager(req.user)) {
-          return res.status(403).json({ success: false, error: 'Insufficient permissions to upload documents' });
+          return res.status(403).json(errorResponse.forbidden('Insufficient permissions to upload documents', 'FORBIDDEN'));
         }
 
         const file = req.file;
-        if (!file) return res.status(400).json({ success: false, error: 'No file uploaded' });
+        if (!file) return res.status(400).json(errorResponse.badRequest('No file uploaded', 'BAD_REQUEST'));
 
         let entityType = (req.body.entityType || req.body.entity_type || null);
         let entityId = (req.body.entityId || req.body.entity_id || null);
@@ -106,7 +107,7 @@ module.exports = {
         }
 
         if (isManager(req.user) && entityType && String(entityType).toUpperCase() === 'PROJECT' && entityId && !(await managerOwnsProject(entityId, req.user))) {
-          return res.status(403).json({ success: false, error: 'Manager does not have access to this project' });
+          return res.status(403).json(errorResponse.forbidden('Manager does not have access to this project', 'FORBIDDEN'));
         }
 
         const docId = makeId();
@@ -358,7 +359,7 @@ module.exports = {
 
         try {
           const docRows = await q('SELECT documentId, fileName, filePath, entityType, entityId FROM documents WHERE documentId = ? LIMIT 1', [id]);
-          if (!docRows || !docRows.length) return res.status(404).json({ success: false, error: 'Document not found' });
+          if (!docRows || !docRows.length) return res.status(404).json(errorResponse.notFound('Document not found', 'NOT_FOUND'));
           const doc = docRows[0];
 
           const projectParam = req.query.projectId || req.query.project_id || req.headers['project-id'];
@@ -389,24 +390,24 @@ module.exports = {
 
 
                 } else {
-                  return res.status(403).json({ success: false, error: 'Access denied' });
+                  return res.status(403).json(errorResponse.forbidden('Access denied', 'FORBIDDEN'));
                 }
               } else {
-                return res.status(403).json({ success: false, error: 'Access denied' });
+                return res.status(403).json(errorResponse.forbidden('Access denied', 'FORBIDDEN'));
               }
             } else {
-              return res.status(403).json({ success: false, error: 'Access denied' });
+              return res.status(403).json(errorResponse.forbidden('Access denied', 'FORBIDDEN'));
             }
           } else {
-            return res.status(403).json({ success: false, error: 'Access denied' });
+            return res.status(403).json(errorResponse.forbidden('Access denied', 'FORBIDDEN'));
           }
         } catch (e) {
-          return res.status(403).json({ success: false, error: 'Access denied' });
+          return res.status(403).json(errorResponse.forbidden('Access denied', 'FORBIDDEN'));
         }
       }
 
       const row = (await q('SELECT documentId, fileName, filePath, storageProvider FROM documents WHERE documentId = ? LIMIT 1', [id]))[0];
-      if (!row) return res.status(404).json({ success: false, error: 'Document not found' });
+      if (!row) return res.status(404).json(errorResponse.notFound('Document not found', 'NOT_FOUND'));
 
       try {
         const handle = await storageService.getDownloadHandle({ storagePath: row.filePath }, { expiresIn: 300 });
@@ -425,7 +426,7 @@ module.exports = {
 
       }
 
-      return res.status(404).json({ success: false, error: 'Preview not available' });
+      return res.status(404).json(errorResponse.notFound('Preview not available', 'NOT_FOUND'));
     } catch (err) { return next(err); }
   },
 
@@ -434,10 +435,10 @@ module.exports = {
       const id = req.params.id;
 
       const allowed = await userHasAccess(id, req.user, ['download']);
-      if (!allowed) return res.status(403).json({ success: false, error: 'Insufficient permission to download' });
+      if (!allowed) return res.status(403).json(errorResponse.forbidden('Insufficient permission to download', 'FORBIDDEN'));
 
       const row = (await q('SELECT documentId, fileName, filePath, storageProvider FROM documents WHERE documentId = ? LIMIT 1', [id]))[0];
-      if (!row) return res.status(404).json({ success: false, error: 'Document not found' });
+      if (!row) return res.status(404).json(errorResponse.notFound('Document not found', 'NOT_FOUND'));
 
       const handle = await storageService.getDownloadHandle({ storagePath: row.filePath });
       if (handle.redirectUrl) {
@@ -468,13 +469,13 @@ module.exports = {
       const singleAssigneeId = req.body.assigneeId;
       const incomingAssigneeIds = Array.isArray(req.body.assigneeIds) ? req.body.assigneeIds : [];
       const assigneeIds = incomingAssigneeIds.length ? incomingAssigneeIds : (singleAssigneeId ? [singleAssigneeId] : []);
-      if (!documentId || !bodyAccess || assigneeIds.length === 0) return res.status(400).json({ success: false, error: 'documentId, assigneeIds/assigneeId, and accessType are required' });
+      if (!documentId || !bodyAccess || assigneeIds.length === 0) return res.status(400).json(errorResponse.badRequest('documentId, assigneeIds/assigneeId, and accessType are required', 'BAD_REQUEST'));
 
       const requesterId = req.user._id || req.user.id;
       const requesterRole = req.user.role.toLowerCase();
 
       const drows = await q('SELECT documentId, fileName, entityType, entityId FROM documents WHERE documentId = ? LIMIT 1', [documentId]);
-      if (!drows || drows.length === 0) return res.status(404).json({ success: false, error: 'Document not found' });
+      if (!drows || drows.length === 0) return res.status(404).json(errorResponse.notFound('Document not found', 'NOT_FOUND'));
       const doc = drows[0];
 
       let projectParam = req.body.projectId || req.body.project_id || req.query.projectId || req.query.project_id || req.headers['project-id'] || null;
@@ -511,7 +512,7 @@ module.exports = {
       }
 
       if (!projectId && !projectInternalId) {
-        return res.status(400).json({ success: false, error: 'Document must be linked to a project or provide projectId' });
+        return res.status(400).json(errorResponse.badRequest('Document must be linked to a project or provide projectId', 'BAD_REQUEST'));
       }
 
       const requestedLevelKey = String(bodyAccess).toLowerCase();
@@ -521,7 +522,7 @@ module.exports = {
         owner: 'OWNER', admin: 'OWNER'
       };
       if (!aliasMap[requestedLevelKey]) {
-        return res.status(400).json({ success: false, error: 'Invalid accessType. Use VIEW|EDIT|OWNER or aliases: read, write, preview, download, admin' });
+        return res.status(400).json(errorResponse.badRequest('Invalid accessType. Use VIEW|EDIT|OWNER or aliases: read, write, preview, download, admin', 'BAD_REQUEST'));
       }
       const requestedLevel = aliasMap[requestedLevelKey];
 
@@ -529,7 +530,7 @@ module.exports = {
       const ownerCheck = await q('SELECT accessType FROM document_access WHERE documentId = ? AND userId = ? LIMIT 1', [documentId, requesterId]);
       if (ownerCheck && ownerCheck.length && String(ownerCheck[0].accessType).toUpperCase() === 'OWNER') requesterIsOwner = true;
       if (!requesterIsOwner && requesterRole !== 'admin') {
-        return res.status(403).json({ success: false, error: 'Only document OWNER or Admin can assign access' });
+        return res.status(403).json(errorResponse.forbidden('Only document OWNER or Admin can assign access', 'FORBIDDEN'));
       }
 
       const assignments = [];
@@ -625,10 +626,10 @@ module.exports = {
   getProjectMembers: async (req, res, next) => {
     try {
       const projectId = req.params.projectId;
-      if (!projectId) return res.status(400).json({ success: false, error: 'projectId is required' });
+      if (!projectId) return res.status(400).json(errorResponse.badRequest('projectId is required', 'BAD_REQUEST'));
 
       const projRows = await q('SELECT id, public_id, project_manager_id FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [projectId, projectId]);
-      if (!projRows || projRows.length === 0) return res.status(404).json({ success: false, error: 'Project not found' });
+      if (!projRows || projRows.length === 0) return res.status(404).json(errorResponse.notFound('Project not found', 'NOT_FOUND'));
       const project = projRows[0];
 
       const pid = project.id;

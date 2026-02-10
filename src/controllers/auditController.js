@@ -1,4 +1,5 @@
 const db = require('../db');
+const errorResponse = require(__root + 'utils/errorResponse');
 
 const q = (sql, params = []) => new Promise((resolve, reject) => db.query(sql, params, (e, r) => e ? reject(e) : resolve(r)));
 

@@ -12,6 +12,7 @@ const ruleEngine = require(__root + 'middleware/ruleEngine');
 const RULES = require(__root + 'rules/ruleCodes');
 
 const NotificationService = require('../services/notificationService');
+const errorResponse = require(__root + 'utils/errorResponse');
 require('dotenv').config();
 let env;
 try { env = require(__root + 'config/env'); } catch (e) { env = require('../config/env'); }
@@ -300,7 +301,7 @@ router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), a
   const { id } = req.params;
   const { name, title, email, role, isActive, phone, departmentId, departmentName } = req.body;
 
-  if (!name || !email || !role) return res.status(400).json({ success: false, message: "Name, email and role required" });
+  if (!name || !email || !role) return res.status(400).json(errorResponse.badRequest('Name, email and role are required', 'MISSING_REQUIRED_FIELD', null, 'email'));
 
   try {
 
@@ -338,7 +339,7 @@ router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), a
     if (departmentPublicId !== undefined) updates.department_public_id = departmentPublicId;
 
     if (Object.keys(updates).length === 0) {
-      return res.status(400).json({ success: false, message: "No fields to update" });
+        return res.status(400).json(errorResponse.badRequest('No fields to update', 'NO_FIELDS_PROVIDED'));
     }
 
     const setClause = Object.keys(updates).map(key => `${key} = ?`).join(', ');

@@ -4,6 +4,7 @@ const router = express.Router();
 const workflowService = require('./workflowService');
 const auth = require('../middleware/auth');
 const { requireAuth, requireRole } = require('../middleware/roles');
+const errorResponse = require('../utils/errorResponse');
 let logger;
 try { logger = require(global.__root + 'logger'); } catch (e) { logger = require('../logger'); }
 
@@ -19,7 +20,9 @@ router.use((req, res, next) => {
   }
   req.normalizedTenantId = tid;
   next();
-});
+});
+
+
 router.post('/request', requireAuth, async (req, res) => {
   try {
     const { entityType, entityId, toState, projectId, meta } = req.body;
@@ -40,24 +43,28 @@ router.post('/request', requireAuth, async (req, res) => {
     res.json({ success: true, data: result });
   } catch (e) {
     logger.error("[ERROR] /workflow/request:", e);
-    res.status(400).json({ success: false, error: e.message });
+    res.status(400).json(errorResponse.badRequest(e.message, 'WORKFLOW_REQUEST_ERROR'));
   }
-});
+});
+
+
 router.post('/project/close-request', requireAuth, requireRole(['MANAGER']), async (req, res) => {
   try {
     const { projectId, reason } = req.body;
     const tenantId = req.normalizedTenantId;
     const userId = req.user._id;
 
-    if (!projectId) return res.status(400).json({ success: false, error: 'projectId is required' });
+    if (!projectId) return res.status(400).json(errorResponse.badRequest('projectId is required', 'MISSING_PARAMETER', null, 'projectId'));
 
     const result = await workflowService.requestProjectClosure({ tenantId, projectId, reason, userId });
     return res.json({ success: true, message: 'Project closure request sent to admin', data: result });
   } catch (e) {
     logger.error('[ERROR] /workflow/project/close-request:', e);
-    return res.status(400).json({ success: false, error: e.message });
+    return res.status(400).json(errorResponse.badRequest(e.message, 'PROJECT_CLOSURE_ERROR'));
   }
-});
+});
+
+
 router.post('/approve', requireAuth, requireRole(['MANAGER', 'ADMIN']), async (req, res) => {
   try {
     const { requestId, action, reason } = req.body;
@@ -66,7 +73,7 @@ router.post('/approve', requireAuth, requireRole(['MANAGER', 'ADMIN']), async (r
     const userRole = req.user.role;
 
     if (!['APPROVE', 'REJECT'].includes(action)) {
-      return res.status(400).json({ success: false, error: "Invalid action. Must be 'APPROVE' or 'REJECT'." });
+      return res.status(400).json(errorResponse.badRequest("Invalid action. Must be 'APPROVE' or 'REJECT'.", 'INVALID_ACTION'));
     }
 
     const result = await workflowService.processApproval({
@@ -85,9 +92,13 @@ router.post('/approve', requireAuth, requireRole(['MANAGER', 'ADMIN']), async (r
     });
   } catch (e) {
     logger.error("[ERROR] /workflow/approve:", e);
-    res.status(400).json({ success: false, error: e.message });
+    res.status(400).json(errorResponse.badRequest(e.message, 'APPROVAL_PROCESSING_ERROR'));
   }
-});
+});
+
+
+
+
 router.get('/pending', requireAuth, async (req, res) => {
   try {
     let role = req.query.role || req.user.role;
@@ -97,14 +108,19 @@ router.get('/pending', requireAuth, async (req, res) => {
     const requestedStatus = req.query.status || (['Manager', 'Admin'].includes(role) ? 'all' : 'PENDING');
     
     const tenantId = req.normalizedTenantId;
-    const userId = req.user._id; // Get the logged-in user's ID
-    const pendingRequests = await workflowService.getRequests({ tenantId, role, status: 'PENDING', userId });
-    const approvedRequests = await workflowService.getRequests({ tenantId, role, status: 'APPROVED', userId });
+    const userId = req.user._id; // Get the logged-in user's ID
+
+    const pendingRequests = await workflowService.getRequests({ tenantId, role, status: 'PENDING', userId });
+
+    const approvedRequests = await workflowService.getRequests({ tenantId, role, status: 'APPROVED', userId });
+
     const filterClosedProjects = (requests) => 
       requests.filter(r => String(r.project_status).toUpperCase() !== 'CLOSED');
 
-    const filteredPendingRequests = filterClosedProjects(pendingRequests);
-    const filteredApprovedRequests = approvedRequests;
+    const filteredPendingRequests = filterClosedProjects(pendingRequests);
+
+    const filteredApprovedRequests = approvedRequests;
+
     const responseData = {
       ready_to_approve: filteredPendingRequests.map(r => ({
         ...r,
@@ -132,7 +148,8 @@ router.get('/pending', requireAuth, async (req, res) => {
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
-});
+});
+
 router.get('/history/:entityType/:entityId', requireAuth, async (req, res) => {
   try {
     const { entityType, entityId } = req.params;
