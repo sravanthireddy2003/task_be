@@ -49,10 +49,10 @@ const PASSWORD_EXPIRE_DAYS = Number(process.env.PASSWORD_EXPIRE_DAYS || 60);
 const SECRET = env.JWT_SECRET || env.SECRET || process.env.SECRET || 'secret';
 router.post('/refresh', (req, res) => {
   logger.info('=== REFRESH ENDPOINT CALLED ===');
-  
+
   const incoming = (req.body && req.body.refreshToken)
     || (req.headers.authorization && req.headers.authorization.split(' ')[1]);
-  
+
   if (!incoming) {
     logger.warn('No refresh token provided');
     return res.status(400).json({ message: 'refreshToken required' });
@@ -75,7 +75,7 @@ router.post('/refresh', (req, res) => {
 
     const tokenIdForJwt = payload.id;
     logger.debug('Token ID:', tokenIdForJwt);
-    
+
     logger.info('Issuing new tokens');
 
     const token = jwt.sign({ id: tokenIdForJwt }, SECRET, { expiresIn: ACCESS_TOKEN_EXPIRES_IN });
@@ -86,10 +86,10 @@ router.post('/refresh', (req, res) => {
 
     const isNumeric = /^\d+$/.test(String(tokenIdForJwt));
     const sqlFind = isNumeric ? 'SELECT * FROM users WHERE _id = ? LIMIT 1' : 'SELECT * FROM users WHERE public_id = ? LIMIT 1';
-    
+
     logger.debug('Querying user with ID', tokenIdForJwt);
     logger.silly('SQL:', sqlFind);
-    
+
     db.query(sqlFind, [tokenIdForJwt], (err, rows) => {
       if (err) {
         logger.error('Database error:', err && err.message);
@@ -164,18 +164,18 @@ function normalizeStoredModules(user) {
 
 function getDefaultModules(role) {
   function mk(name, access) { return { moduleId: crypto.randomBytes(8).toString('hex'), name, access }; }
-  if (role === 'Admin') return [ mk('User Management','full'), mk('Dashboard','full'), mk('Clients','full'), mk('Departments','full'), mk('Tasks','full'), mk('Projects','full'), mk('Workflow (Project & Task Flow)','full'), mk('Notifications','full'), mk('Reports & Analytics','full'), mk('Document & File Management','full'), mk('Chat / Real-Time Collaboration','full'), mk('Settings & Master Configuration','full') ];
-  if (role === 'Manager') return [ mk('User Management','view'), mk('Dashboard','full'), mk('Clients','full'), mk('Tasks','full'), mk('Projects','full'), mk('Workflow (Project & Task Flow)','full'), mk('Notifications','limited'), mk('Reports & Analytics','full'), mk('Document & File Management','limited'), mk('Chat / Real-Time Collaboration','full'), mk('Approval Workflows','limited') ];
-  if (role === 'Employee') return [ mk('Dashboard','view'), mk('Tasks','limited'), mk('Notifications','limited'), mk('Reports & Analytics','limited'), mk('Document & File Management','limited'), mk('Chat / Real-Time Collaboration','full') ];
-  if (role === 'Client-Viewer') return [ mk('Dashboard','view'), mk('Assigned Tasks','view'), mk('Document & File Management','view') ];
+  if (role === 'Admin') return [mk('User Management', 'full'), mk('Dashboard', 'full'), mk('Clients', 'full'), mk('Departments', 'full'), mk('Tasks', 'full'), mk('Projects', 'full'), mk('Workflow (Project & Task Flow)', 'full'), mk('Notifications', 'full'), mk('Reports & Analytics', 'full'), mk('Document & File Management', 'full'), mk('Chat / Real-Time Collaboration', 'full'), mk('Settings & Master Configuration', 'full')];
+  if (role === 'Manager') return [mk('User Management', 'view'), mk('Dashboard', 'full'), mk('Clients', 'full'), mk('Tasks', 'full'), mk('Projects', 'full'), mk('Workflow (Project & Task Flow)', 'full'), mk('Notifications', 'limited'), mk('Reports & Analytics', 'full'), mk('Document & File Management', 'limited'), mk('Chat / Real-Time Collaboration', 'full'), mk('Approval Workflows', 'limited')];
+  if (role === 'Employee') return [mk('Dashboard', 'view'), mk('Tasks', 'limited'), mk('Notifications', 'limited'), mk('Reports & Analytics', 'limited'), mk('Document & File Management', 'limited'), mk('Chat / Real-Time Collaboration', 'full')];
+  if (role === 'Client-Viewer') return [mk('Dashboard', 'view'), mk('Assigned Tasks', 'view'), mk('Document & File Management', 'view')];
   return [];
 }
 
-const SIDEBAR_ORDER = ['Dashboard','User Management','Clients','Departments','Tasks','Projects','Workflow (Project & Task Flow)','Notifications','Reports & Analytics','Document & File Management','Chat / Real-Time Collaboration','Settings & Master Configuration'];
+const SIDEBAR_ORDER = ['Dashboard', 'User Management', 'Clients', 'Departments', 'Tasks', 'Projects', 'Workflow (Project & Task Flow)', 'Notifications', 'Reports & Analytics', 'Document & File Management', 'Chat / Real-Time Collaboration', 'Settings & Master Configuration'];
 
 function reorderModules(modules) {
   if (!modules || !modules.length) return [];
-  return [ ...SIDEBAR_ORDER.map(name => modules.find(m => m.name === name)).filter(Boolean), ...modules.filter(m => !SIDEBAR_ORDER.includes(m.name)) ];
+  return [...SIDEBAR_ORDER.map(name => modules.find(m => m.name === name)).filter(Boolean), ...modules.filter(m => !SIDEBAR_ORDER.includes(m.name))];
 }
 
 async function ensureUsers2FAColumns() {
@@ -213,7 +213,7 @@ if (requireRedis && process.env.REDIS_URL) {
     redis.on('error', (err) => {
       logger.warn('Redis error (AuthController):', err && err.message);
     });
-    } catch (e) {
+  } catch (e) {
     logger.warn('Failed to initialize Redis client (AuthController):', e && e.message);
     redis = null;
   }
@@ -343,7 +343,7 @@ router.post('/login', [
         const ok = await bcrypt.compare(password, user.password);
         if (!ok) {
           await recordFailedAttempt(`${tenantId}::${email}`);
-          return res.status(401).json({ message: 'Invalid credentials' });
+          return res.status(401).json({ message: 'Invalid email or password' });
         }
 
         if (user.is_locked) return res.status(423).json({ message: 'Account locked. Contact admin.' });
@@ -407,7 +407,7 @@ router.post('/login', [
     const ok = await bcrypt.compare(password, user.password);
     if (!ok) {
       await recordFailedAttempt(lockKey);
-      return res.status(401).json({ message: 'Invalid credentials' });
+      return res.status(401).json({ message: 'Invalid email or password' });
     }
 
     if (user.is_locked) return res.status(423).json({ message: 'Account locked. Contact admin.' });
@@ -480,8 +480,8 @@ async function completeLoginForUser(user, req, res) {
       const insert = 'INSERT INTO login_history (user_id, tenant_id, ip, user_agent, success, created_at) VALUES (?, ?, ?, ?, ?, NOW())';
       const ip = req.ip || (req.connection && req.connection.remoteAddress);
       const ua = req.headers['user-agent'] || '';
-      db.query(insert, [user._id, user.tenant_id || null, ip, ua, 1], () => {});
-    } catch (e) {}
+      db.query(insert, [user._id, user.tenant_id || null, ip, ua, 1], () => { });
+    } catch (e) { }
 
     try {
       await new Promise((resolve, reject) => {
@@ -500,13 +500,13 @@ async function completeLoginForUser(user, req, res) {
       photoUrl = `${req.protocol}://${req.get('host')}${photoUrl.startsWith('/') ? '' : '/'}${photoUrl}`;
     }
 
-    return res.json({ 
-      token, 
-      refreshToken, 
-      user: { 
-        id: user.public_id || String(user._id), 
-        email: user.email, 
-        name: user.name, 
+    return res.json({
+      token,
+      refreshToken,
+      user: {
+        id: user.public_id || String(user._id),
+        email: user.email,
+        name: user.name,
         role: user.role,
         modules: modulesWithPaths,
         phone: user.phone || null,
@@ -550,10 +550,10 @@ router.post('/verify-otp', (req, res) => {
 
 router.post('/refresh', (req, res) => {
   logger.info('=== REFRESH ENDPOINT CALLED ===');
-  
+
   const incoming = (req.body && req.body.refreshToken)
     || (req.headers.authorization && req.headers.authorization.split(' ')[1]);
-  
+
   if (!incoming) {
     logger.warn('No refresh token provided');
     return res.status(400).json({ message: 'refreshToken required' });
@@ -568,7 +568,7 @@ router.post('/refresh', (req, res) => {
     logger.debug('Verifying token with secret...');
     const payload = jwt.verify(incoming, SECRET);
     logger.debug('Token payload verified:', JSON.stringify(payload, null, 2));
-    
+
     if (!payload || payload.type !== 'refresh' || !payload.id) {
       logger.warn('Token missing required fields:', { hasPayload: !!payload, type: payload && payload.type, id: payload && payload.id });
       return res.status(401).json({ message: 'Invalid refresh token' });
@@ -576,21 +576,21 @@ router.post('/refresh', (req, res) => {
 
     const tokenIdForJwt = payload.id;
     logger.debug('Token ID:', tokenIdForJwt);
-    
+
     logger.info('Access token expires in: ' + ACCESS_TOKEN_EXPIRES_IN);
     logger.info('Refresh token expires in: ' + REFRESH_TOKEN_EXPIRES_IN);
 
-    const token = jwt.sign({ 
-      id: tokenIdForJwt 
-    }, SECRET, { 
-      expiresIn: ACCESS_TOKEN_EXPIRES_IN 
+    const token = jwt.sign({
+      id: tokenIdForJwt
+    }, SECRET, {
+      expiresIn: ACCESS_TOKEN_EXPIRES_IN
     });
 
-    const refreshToken = jwt.sign({ 
-      id: tokenIdForJwt, 
-      type: 'refresh' 
-    }, SECRET, { 
-      expiresIn: REFRESH_TOKEN_EXPIRES_IN 
+    const refreshToken = jwt.sign({
+      id: tokenIdForJwt,
+      type: 'refresh'
+    }, SECRET, {
+      expiresIn: REFRESH_TOKEN_EXPIRES_IN
     });
 
     logger.debug('New tokens generated');
@@ -599,46 +599,46 @@ router.post('/refresh', (req, res) => {
 
     const isNumeric = /^\d+$/.test(String(tokenIdForJwt));
     const sqlFind = isNumeric ? 'SELECT * FROM users WHERE _id = ? LIMIT 1' : 'SELECT * FROM users WHERE public_id = ? LIMIT 1';
-    
+
     logger.debug('Querying user with ID:', tokenIdForJwt);
     logger.silly('SQL:', sqlFind);
-    
+
     db.query(sqlFind, [tokenIdForJwt], (err, rows) => {
       if (err) {
         logger.error('Database error:', err && err.message);
         return res.status(500).json({ message: 'DB error', error: err && err.message });
       }
-      
+
       logger.debug('User query result:', rows ? `Found ${rows.length} rows` : 'No rows');
-      
+
       if (!rows || rows.length === 0) {
         logger.warn('No user found, returning tokens only');
         return res.json({ token, refreshToken });
       }
-      
+
       const user = rows[0];
       logger.info('User found:', user.email);
-      
+
       const userResp = { id: user.public_id || String(user._id), email: user.email, name: user.name, role: user.role };
-      
+
       logger.info('Sending response with tokens and user info');
       return res.json({ token, refreshToken, user: userResp });
     });
   } catch (e) {
     logger.error('JWT Verification Error:', e && e.message);
     logger.error('Stack trace:', e && e.stack);
-    
+
     if (e && e.name === 'TokenExpiredError') {
       logger.warn('Token expired at:', e.expiredAt);
       return res.status(401).json({ message: 'Refresh token expired' });
     }
-    
+
     if (e && e.name === 'JsonWebTokenError') {
       logger.warn('JWT Error details:', e && e.message);
       logger.debug('Possible causes: - Wrong secret key; - Malformed token; - Token signed with different algorithm');
       return res.status(401).json({ message: 'Invalid refresh token', error: e && e.message });
     }
-    
+
     logger.error('Other error:', e);
     return res.status(401).json({ message: 'Invalid refresh token', error: e && e.message });
   }
@@ -723,7 +723,7 @@ router.post('/reset-password', (req, res) => {
 
   const handleResetForUser = async (user) => {
     if (process.env.OTP_DEBUG === 'true') {
-      try { logger.debug(`[RESET-PW] verifyOtp called for user _id=${user._id} email=${user.email} otp=${otp}`); } catch (e) {}
+      try { logger.debug(`[RESET-PW] verifyOtp called for user _id=${user._id} email=${user.email} otp=${otp}`); } catch (e) { }
     }
     const ok = await otpService.verifyOtp(user._id || user.email, otp);
     if (!ok) return res.status(401).json({ message: 'Invalid or expired OTP' });
@@ -740,8 +740,8 @@ router.post('/reset-password', (req, res) => {
       if (err2) return res.status(500).json({ message: 'Failed to update password' });
       try {
         const ih = 'INSERT INTO password_history (user_id, password_hash, changed_at) VALUES (?, ?, NOW())';
-        db.query(ih, [user._id, hashed], () => {});
-      } catch (e) {}
+        db.query(ih, [user._id, hashed], () => { });
+      } catch (e) { }
       return res.json({ message: 'Password updated' });
     });
   };
@@ -802,8 +802,8 @@ router.post('/complete-setup', async (req, res) => {
         if (uErr) return res.status(500).json({ message: 'Failed to update password' });
         try {
           const ih = 'INSERT INTO password_history (user_id, password_hash, changed_at) VALUES (?, ?, NOW())';
-          db.query(ih, [user._id, hashed], () => {});
-        } catch (e) {}
+          db.query(ih, [user._id, hashed], () => { });
+        } catch (e) { }
         return res.json({ message: 'Password setup complete' });
       });
     });
@@ -814,59 +814,59 @@ router.post('/complete-setup', async (req, res) => {
 
 router.get('/profile', requireAuth, async (req, res) => {
   const user = req.user;
-  
+
   try {
 
     const wanted = [
-      '_id', 'public_id', 'name', 'email', 'role', 'tenant_id', 'phone', 
+      '_id', 'public_id', 'name', 'email', 'role', 'tenant_id', 'phone',
       'isActive', 'created_at', 'createdAt', 'last_login', 'last_login_at',
       'email_verified', 'is_email_verified', 'twofa_secret', 'is2fa_enabled',
       'photo', 'title', 'department' // Profile photo and additional fields
     ];
-    
+
     const infoSql = `SELECT COLUMN_NAME FROM information_schema.COLUMNS 
                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' 
                      AND COLUMN_NAME IN (${wanted.map(() => '?').join(',')})`;
-    
+
     db.query(infoSql, wanted, (iErr, cols) => {
       if (iErr) {
         logger.error('Column detection error:', iErr);
-        const safe = { 
-          id: user.public_id || user._id, 
-          email: user.email, 
-          name: user.name, 
-          role: user.role 
+        const safe = {
+          id: user.public_id || user._id,
+          email: user.email,
+          name: user.name,
+          role: user.role
         };
         return res.json({ user: safe });
       }
-      
+
       const present = Array.isArray(cols) ? cols.map(r => r.COLUMN_NAME) : [];
       const selectCols = ['_id', 'public_id', 'name', 'email', 'role', 'tenant_id']
         .concat([
-          'phone', 'isActive', 'created_at', 'createdAt', 'last_login', 
-          'last_login_at', 'email_verified', 'is_email_verified', 
+          'phone', 'isActive', 'created_at', 'createdAt', 'last_login',
+          'last_login_at', 'email_verified', 'is_email_verified',
           'twofa_secret', 'is2fa_enabled', 'photo', 'title', 'department'
         ].filter(c => present.includes(c)));
-      
+
       const sql = `SELECT ${selectCols.join(', ')} FROM users WHERE _id = ? LIMIT 1`;
-      
+
       db.query(sql, [user._id], (uErr, rows) => {
         if (uErr) {
           logger.error('User query error:', uErr);
           return res.status(500).json({ message: 'Database error' });
         }
-        
+
         if (!rows || rows.length === 0) {
           return res.status(404).json({ message: 'User not found' });
         }
-        
+
         const row = rows[0];
 
         let photoUrl = row.photo;
         if (photoUrl && !photoUrl.startsWith('http')) {
           photoUrl = `${req.protocol}://${req.get('host')}${photoUrl.startsWith('/') ? '' : '/'}${photoUrl}`;
         }
-        
+
         const safe = {
           id: row.public_id || row._id,
           email: row.email,
@@ -878,11 +878,11 @@ router.get('/profile', requireAuth, async (req, res) => {
           department: row.department || null,
           photo: photoUrl, // ✅ Full URL: http://localhost:3000/uploads/profiles/...
           accountStatus: Boolean(row.isActive) ? 'Active' : 'Inactive',
-          memberSince: (row.created_at || row.createdAt) 
-            ? new Date(row.created_at || row.createdAt).toISOString() 
+          memberSince: (row.created_at || row.createdAt)
+            ? new Date(row.created_at || row.createdAt).toISOString()
             : null,
-          lastLogin: (row.last_login || row.last_login_at) 
-            ? new Date(row.last_login || row.last_login_at).toISOString() 
+          lastLogin: (row.last_login || row.last_login_at)
+            ? new Date(row.last_login || row.last_login_at).toISOString()
             : null,
           emailVerified: Boolean(row.email_verified ?? row.is_email_verified ?? true),
           twoFactor: {
@@ -891,20 +891,20 @@ router.get('/profile', requireAuth, async (req, res) => {
             status: Boolean(row.is2fa_enabled === 1 || row.is2fa_enabled === true) ? 'Enabled' : 'Disabled'
           }
         };
-        
+
         logger.info('Profile served:', { id: safe.id, hasPhoto: !!safe.photo });
         res.json({ user: safe });
       });
     });
   } catch (e) {
     logger.error('Profile GET error:', e && e.message ? e.message : e);
-    res.status(500).json({ 
-      user: { 
-        id: user.public_id || user._id, 
-        email: user.email, 
-        name: user.name, 
-        role: user.role 
-      } 
+    res.status(500).json({
+      user: {
+        id: user.public_id || user._id,
+        email: user.email,
+        name: user.name,
+        role: user.role
+      }
     });
   }
 });
@@ -926,7 +926,7 @@ router.put("/profile", requireAuth, upload.single("photo"), async (req, res) => 
 
       allFiles.forEach((file) => {
         if (file.startsWith(String(user._id))) {
-          try { fs.unlinkSync(path.join(uploadDir, file)); } catch {}
+          try { fs.unlinkSync(path.join(uploadDir, file)); } catch { }
         }
       });
 
@@ -1045,8 +1045,8 @@ router.post('/change-password', requireAuth, async (req, res) => {
 
       try {
         const ih = 'INSERT INTO password_history (user_id, password_hash, changed_at) VALUES (?, ?, NOW())';
-        db.query(ih, [user._id, hashed], () => {});
-      } catch (e) {}
+        db.query(ih, [user._id, hashed], () => { });
+      } catch (e) { }
 
       return res.json({ message: 'Password changed' });
     });
@@ -1127,24 +1127,24 @@ router.post('/2fa/verify', requireAuth, (req, res) => {
     const okCols = await ensureUsers2FAColumns();
     if (!okCols) return res.status(500).json({ message: 'Failed to ensure 2FA columns on users table' });
     db.query('SELECT twofa_secret FROM users WHERE _id = ? LIMIT 1', [userId], (err, rows) => {
-    if (err) return res.status(500).json({ message: 'DB error', error: err.message });
-    if (!rows || rows.length === 0) return res.status(404).json({ message: 'User not found' });
-    const secret = rows[0].twofa_secret || rows[0].twofaSecret || null;
-    if (!secret) return res.status(400).json({ message: '2FA not configured for user' });
-    const verified = speakeasy.totp.verify({ secret: String(secret), encoding: 'base32', token: String(token), window: 1 });
-    if (!verified) {
+      if (err) return res.status(500).json({ message: 'DB error', error: err.message });
+      if (!rows || rows.length === 0) return res.status(404).json({ message: 'User not found' });
+      const secret = rows[0].twofa_secret || rows[0].twofaSecret || null;
+      if (!secret) return res.status(400).json({ message: '2FA not configured for user' });
+      const verified = speakeasy.totp.verify({ secret: String(secret), encoding: 'base32', token: String(token), window: 1 });
+      if (!verified) {
 
-      if (process.env.DEV_INCLUDE_OTP === 'true') {
-        try {
-          const current = speakeasy.totp({ secret: String(secret), encoding: 'base32' });
-          const serverTime = new Date().toISOString();
-          return res.status(401).json({ success: false, message: 'Invalid token', expected: current, serverTime });
-        } catch (e) {
-          return res.status(401).json({ success: false, message: 'Invalid token' });
+        if (process.env.DEV_INCLUDE_OTP === 'true') {
+          try {
+            const current = speakeasy.totp({ secret: String(secret), encoding: 'base32' });
+            const serverTime = new Date().toISOString();
+            return res.status(401).json({ success: false, message: 'Invalid token', expected: current, serverTime });
+          } catch (e) {
+            return res.status(401).json({ success: false, message: 'Invalid token' });
+          }
         }
+        return res.status(401).json({ success: false, message: 'Invalid token' });
       }
-      return res.status(401).json({ success: false, message: 'Invalid token' });
-    }
 
       const upd = 'UPDATE users SET is2fa_enabled = 1 WHERE _id = ?';
       db.query(upd, [userId], (uErr) => {
@@ -1156,7 +1156,7 @@ router.post('/2fa/verify', requireAuth, (req, res) => {
           return res.json({ success: true, enabled: true, message: '2FA verified and enabled' });
         }
       });
-  });
+    });
   })();
 });
 
