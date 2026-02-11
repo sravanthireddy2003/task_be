@@ -128,6 +128,8 @@ module.exports = {
     }
   },
 
+
+  // auditlogs 
   admin: async (req, res, next) => {
     try {
       const { perPage, page, offset } = parsePagination(req);
