@@ -20,7 +20,7 @@ function createProjectStatusInfo(projectStatus, isLocked) {
 
   const isPendingClosure = upper === 'PENDING_FINAL_APPROVAL';
   const isProjectClosed = upper === 'CLOSED' || (locked && !isPendingClosure);
-  
+
   return {
 
     raw: raw,
@@ -56,13 +56,13 @@ const storage = multer.diskStorage({
   }
 });
 const upload = multer({ storage });
- 
+
 function q(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
   });
 }
- 
+
 async function hasColumn(table, column) {
   try {
     const rows = await q("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?", [table, column]);
@@ -71,15 +71,15 @@ async function hasColumn(table, column) {
     return false;
   }
 }
- 
+
 router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { projectName, description, clientPublicId, projectManagerId, projectManagerPublicId, project_manager_id, department_ids = [], departmentIds = [], departmentPublicIds = [], priority = 'Medium', startDate, endDate, start_date, end_date, budget } = req.body;
- 
+
     if (!projectName || !clientPublicId) {
       return res.status(400).json(errorResponse.badRequest('projectName and clientPublicId are required', 'MISSING_REQUIRED_FIELDS'));
     }
- 
+
     const clientHasPublic = await hasColumn('clientss', 'public_id');
     let client;
     if (clientHasPublic) {
@@ -96,7 +96,7 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
     }
     const clientId = client[0].id;
     const clientInfo = client[0]; // Store client details for email
- 
+
     const deptInput = Array.isArray(departmentPublicIds) && departmentPublicIds.length > 0 ? departmentPublicIds : (department_ids.length > 0 ? department_ids : departmentIds);
     let deptIdMap = {};
     let departmentNames = [];
@@ -104,7 +104,7 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
 
       const numeric = deptInput.filter(d => /^\d+$/.test(String(d))).map(Number);
       const publicIds = deptInput.filter(d => !/^\d+$/.test(String(d)));
- 
+
       let deptRecords = [];
       if (numeric.length > 0 && publicIds.length > 0) {
         const placeholdersNum = numeric.map(() => '?').join(',');
@@ -117,22 +117,22 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
         const placeholdersPub = publicIds.map(() => '?').join(',');
         deptRecords = await q(`SELECT id, public_id, name FROM departments WHERE public_id IN (${placeholdersPub})`, publicIds);
       }
- 
+
       deptRecords.forEach(d => {
         if (d.public_id) deptIdMap[d.public_id] = d.id;
         deptIdMap[String(d.id)] = d.id;
         departmentNames.push(d.name);
       });
- 
+
       const notFound = deptInput.filter(di => !deptIdMap[String(di)]);
       if (notFound.length > 0) {
         return res.status(400).json({ success: false, message: `Departments not found: ${notFound.join(', ')}` });
       }
     }
- 
+
     const publicId = crypto.randomBytes(8).toString('hex');
     const createdBy = req.user._id;
- 
+
     let pmId = null;
     let projectManagerInfo = null;
     const pmPublic = projectManagerPublicId || projectManagerId || project_manager_id || null;
@@ -150,7 +150,7 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Planning', ?)
     `;
     const projectParams = [publicId, clientId, pmId, projectName, description || null, priority, startDate || start_date || null, endDate || end_date || null, budget || null, createdBy];
- 
+
     const result = await q(projectSql, projectParams);
     const projectId = result.insertId;
 
@@ -165,9 +165,9 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
 
     const project = await q('SELECT * FROM projects WHERE id = ? LIMIT 1', [projectId]);
     const depts = await q('SELECT pd.department_id, d.name, d.public_id FROM project_departments pd JOIN departments d ON pd.department_id = d.id WHERE pd.project_id = ?', [projectId]);
- 
+
     const responseClientInfo = clientHasPublic ? await q('SELECT public_id, name FROM clientss WHERE id = ? LIMIT 1', [clientId]) : await q('SELECT id as public_id, name FROM clientss WHERE id = ? LIMIT 1', [clientId]);
- 
+
     const response = {
       id: project[0].public_id,
       public_id: project[0].public_id,
@@ -182,19 +182,19 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
       departments: depts.map(d => ({ public_id: d.public_id, name: d.name })),
       client: responseClientInfo && responseClientInfo.length > 0 ? { public_id: responseClientInfo[0].public_id, name: responseClientInfo[0].name } : null
     };
-   
+
     if (project[0].project_manager_id) {
       const pmRows = await q('SELECT public_id, name FROM users WHERE _id = ? LIMIT 1', [project[0].project_manager_id]);
       if (pmRows && pmRows.length > 0) {
         response.project_manager = { public_id: pmRows[0].public_id, name: pmRows[0].name };
       }
     }
- 
+
     const emailService = require(__root + 'utils/emailService');
-   
+
     const projectLink = `${env.FRONTEND_URL || env.BASE_URL}/projects/${publicId}`;
     const creatorName = req.user.name || 'Administrator';
-   
+
     const emailResults = await emailService.sendProjectNotifications({
       projectManagerInfo,
       clientInfo,
@@ -208,8 +208,22 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
       projectLink,
       creatorName
     });
- 
+
     logger.info('Project emails sent:', emailResults);
+
+    try {
+      const auditController = require('./auditController');
+      auditController.log({
+        user_id: req.user._id,
+        tenant_id: req.user.tenant_id,
+        action: 'CREATE_PROJECT',
+        entity: 'Project',
+        entity_id: publicId,
+        details: { name: projectName, clientId: clientPublicId }
+      });
+    } catch (auditErr) {
+      logger.warn('Failed to log create_project audit:', auditErr.message);
+    }
 
     (async () => {
       try {
@@ -245,7 +259,7 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
     res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: e.message }));
   }
 });
- 
+
 router.get('/', async (req, res) => {
   try {
     if (req.query.dropdown === '1' || req.query.dropdown === 'true') {
@@ -323,14 +337,14 @@ router.get('/', async (req, res) => {
       try {
         const clientInfo = clientHasPublic ? await q('SELECT public_id, name FROM clientss WHERE id = ? LIMIT 1', [p.client_id]) : await q('SELECT id as public_id, name FROM clientss WHERE id = ? LIMIT 1', [p.client_id]);
         if (clientInfo && clientInfo.length > 0) out.client = { public_id: clientInfo[0].public_id, name: clientInfo[0].name };
-      } catch (e) {}
+      } catch (e) { }
       if (p.project_manager_id) {
         const pm = await q('SELECT public_id, name FROM users WHERE _id = ? LIMIT 1', [p.project_manager_id]);
         if (pm && pm.length > 0) out.project_manager = { public_id: pm[0].public_id, name: pm[0].name };
       }
       return out;
     }));
- 
+
     res.json({ success: true, data: enriched });
   } catch (e) {
     logger.error('Get projects error:', e.message);
@@ -450,11 +464,11 @@ router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const project = await q('SELECT * FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
- 
+
     if (!project || project.length === 0) {
       return res.status(404).json(errorResponse.notFound('Project not found', 'PROJECT_NOT_FOUND'));
     }
- 
+
     const p = project[0];
     const depts = await q(`
       SELECT pd.department_id, d.name, d.public_id
@@ -462,7 +476,7 @@ router.get('/:id', async (req, res) => {
       JOIN departments d ON pd.department_id = d.id
       WHERE pd.project_id = ?
     `, [p.id]);
- 
+
     const out = {
       id: p.public_id,
       public_id: p.public_id,
@@ -484,8 +498,8 @@ router.get('/:id', async (req, res) => {
       const clientHasPublic_single = await hasColumn('clientss', 'public_id');
       const clientInfo_single = clientHasPublic_single ? await q('SELECT public_id, name FROM clientss WHERE id = ? LIMIT 1', [p.client_id]) : await q('SELECT id as public_id, name FROM clientss WHERE id = ? LIMIT 1', [p.client_id]);
       if (clientInfo_single && clientInfo_single.length > 0) out.client = { public_id: clientInfo_single[0].public_id, name: clientInfo_single[0].name };
-    } catch (e) {}
- 
+    } catch (e) { }
+
     res.json({ success: true, data: out });
   } catch (e) {
     logger.error('Get project error:', e.message);
@@ -511,15 +525,15 @@ router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Mana
       department_ids,
       projectManagerId,
       project_manager_id,
-      clientPublicId,      
+      clientPublicId,
       projectManagerPublicId
     } = req.body;
- 
+
     const project = await q('SELECT * FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
     if (!project || project.length === 0) {
       return res.status(404).json(errorResponse.notFound('Project not found', 'PROJECT_NOT_FOUND'));
     }
- 
+
     const projectId = project[0].id;
     const updateFields = [];
     const params = [];
@@ -574,12 +588,12 @@ router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Mana
       const deptRecords = await q(deptQuery, department_ids);
       const deptIdMap = {};
       deptRecords.forEach(d => deptIdMap[d.public_id] = d.id);
- 
+
       const notFound = department_ids.filter(deptPublicId => !deptIdMap[deptPublicId]);
       if (notFound.length > 0) {
         return res.status(400).json({ success: false, message: `Departments not found: ${notFound.join(', ')}` });
       }
- 
+
       for (const deptPublicId of department_ids) {
         const deptId = deptIdMap[deptPublicId];
         if (deptId) {
@@ -601,7 +615,7 @@ router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Mana
       JOIN departments d ON pd.department_id = d.id
       WHERE pd.project_id = ?
     `, [projectId]);
- 
+
     const out = {
       ...updated[0],
       id: updated[0].public_id,
@@ -620,6 +634,21 @@ router.put('/:id', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Mana
         logger.error('Project update notification error:', notifErr);
       }
     })();
+
+    try {
+      const auditController = require('./auditController');
+      auditController.log({
+        user_id: req.user._id,
+        tenant_id: req.user.tenant_id,
+        action: 'UPDATE_PROJECT',
+        entity: 'Project',
+        entity_id: String(id),
+        details: { name: name || updated[0].name, updates: req.body }
+      });
+    } catch (auditErr) {
+      logger.warn('Failed to log update_project audit:', auditErr.message);
+    }
+
     res.json({ success: true, data: out });
   } catch (e) {
     logger.error('Update project error:', e.message);
@@ -632,16 +661,16 @@ router.post('/:id/departments', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['
   try {
     const { id } = req.params;
     const { department_ids } = req.body;
- 
+
     if (!Array.isArray(department_ids) || department_ids.length === 0) {
       return res.status(400).json(errorResponse.badRequest('department_ids must be a non-empty array', 'INVALID_DEPARTMENT_IDS'));
     }
- 
+
     const project = await q('SELECT * FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
     if (!project || project.length === 0) {
       return res.status(404).json(errorResponse.notFound('Project not found', 'PROJECT_NOT_FOUND'));
     }
- 
+
     const projectId = project[0].id;
 
 
@@ -650,12 +679,12 @@ router.post('/:id/departments', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['
     const deptRecords = await q(deptQuery, department_ids);
     const deptIdMap = {};
     deptRecords.forEach(d => deptIdMap[d.public_id] = d.id);
- 
+
     const notFound = department_ids.filter(deptPublicId => !deptIdMap[deptPublicId]);
     if (notFound.length > 0) {
       return res.status(400).json({ success: false, message: `Departments not found: ${notFound.join(', ')}` });
     }
- 
+
     for (const deptPublicId of department_ids) {
       const deptId = deptIdMap[deptPublicId];
       if (deptId) {
@@ -668,14 +697,14 @@ router.post('/:id/departments', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['
         }
       }
     }
- 
+
     const depts = await q(`
       SELECT pd.department_id, d.name, d.public_id
       FROM project_departments pd
       JOIN departments d ON pd.department_id = d.id
       WHERE pd.project_id = ?
     `, [projectId]);
- 
+
     res.json({
       success: true,
       message: 'Departments added to project',
@@ -691,14 +720,14 @@ router.post('/:id/departments', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['
 router.delete('/:id/departments/:deptId', ruleEngine(RULES.PROJECT_UPDATE), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { id, deptId } = req.params;
- 
+
     const project = await q('SELECT * FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
     if (!project || project.length === 0) {
       return res.status(404).json(errorResponse.notFound('Project not found', 'PROJECT_NOT_FOUND'));
     }
- 
+
     await q('DELETE FROM project_departments WHERE project_id = ? AND department_id = ?', [project[0].id, deptId]);
- 
+
     res.json({ success: true, message: 'Department removed from project' });
   } catch (e) {
     logger.error('Remove department error:', e.message);
@@ -710,25 +739,25 @@ router.delete('/:id/departments/:deptId', ruleEngine(RULES.PROJECT_UPDATE), requ
 router.delete('/:id', ruleEngine(RULES.PROJECT_DELETE), requireRole(['Admin', 'Manager']), async (req, res) => {
   try {
     const { id } = req.params;
- 
+
     const project = await q('SELECT * FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
     if (!project || project.length === 0) {
       return res.status(404).json(errorResponse.notFound('Project not found', 'PROJECT_NOT_FOUND'));
     }
- 
+
     const projectId = project[0].id;
 
     try {
 
-      await q('DELETE FROM subtasks WHERE project_id = ?', [projectId]).catch(() => {});
-      await q('DELETE FROM task_assignments WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)', [projectId]).catch(() => {});
-      await q('DELETE FROM tasks WHERE project_id = ?', [projectId]).catch(() => {});
-      await q('DELETE FROM project_departments WHERE project_id = ?', [projectId]).catch(() => {});
+      await q('DELETE FROM subtasks WHERE project_id = ?', [projectId]).catch(() => { });
+      await q('DELETE FROM task_assignments WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)', [projectId]).catch(() => { });
+      await q('DELETE FROM tasks WHERE project_id = ?', [projectId]).catch(() => { });
+      await q('DELETE FROM project_departments WHERE project_id = ?', [projectId]).catch(() => { });
       await q('DELETE FROM projects WHERE id = ?', [projectId]);
     } catch (e) {
       await q('UPDATE projects SET is_active = 0 WHERE id = ?', [projectId]);
     }
- 
+
     res.json({ success: true, message: 'Project deleted successfully' });
   } catch (e) {
     logger.error('Delete project error:', e.message);
@@ -874,7 +903,7 @@ router.get('/:id/tasks', async (req, res) => {
       created_at: task.created_at,
       assigned_users: task.assigned_users ? task.assigned_users.split(',') : [],
       assigned_user_ids: task.assigned_user_ids ? task.assigned_user_ids.split(',').map(id => parseInt(id)) : []
-    ,
+      ,
       subtasks: []
     }));
 
@@ -940,6 +969,5 @@ router.get('/projectdropdown', requireRole(['Admin', 'Manager', 'Employee']), as
 });
 
 module.exports = router;
- 
- 
- 
+
+

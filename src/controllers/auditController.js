@@ -1,5 +1,12 @@
 const db = require('../db');
-const errorResponse = require(__root + 'utils/errorResponse');
+let errorResponse;
+try {
+  if (typeof __root !== 'undefined') errorResponse = require(__root + 'utils/errorResponse');
+  else errorResponse = require('../utils/errorResponse');
+} catch (e) {
+  errorResponse = { serverError: (m) => ({ success: false, message: m }) };
+}
+
 
 const q = (sql, params = []) => new Promise((resolve, reject) => db.query(sql, params, (e, r) => e ? reject(e) : resolve(r)));
 
@@ -25,11 +32,11 @@ async function buildBaseQuery(filters = {}) {
 
 function inferActor(details, row) {
   if (!details || typeof details !== 'object') return null;
-  const keys = ['performedBy','userName','actor_name','uploadedBy','approvedBy','userRole','clientName','sentTo','assignedBy','assignedTo'];
+  const keys = ['performedBy', 'userName', 'actor_name', 'uploadedBy', 'approvedBy', 'userRole', 'clientName', 'sentTo', 'assignedBy', 'assignedTo'];
   for (const k of keys) {
     if (details[k]) {
       const name = String(details[k]);
-      const id = name.toLowerCase().replace(/\s+/g,'-').replace(/[^a-z0-9-_]/g,'');
+      const id = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-_]/g, '');
       return { id, name };
     }
   }
@@ -38,7 +45,7 @@ function inferActor(details, row) {
 
 function normalizeLogRow(r) {
   let details = r.details;
-  try { if (typeof details === 'string' && details.length) details = JSON.parse(details); } catch (e) {  }
+  try { if (typeof details === 'string' && details.length) details = JSON.parse(details); } catch (e) { }
 
   if (details && details.status === 'error' && details.message) {
     details.message = 'Something went wrong. Please try again later.';
@@ -71,10 +78,10 @@ function normalizeLogRow(r) {
 
   const merged = Object.assign({}, details || {});
   const topLevelFields = [
-    'performedBy','userName','tenant','ipAddress','device','status',
-    'assignedTo','assignedBy','project','from','to','clientName',
-    'fileName','uploadedBy','userRole','location','reason','attemptsLeft',
-    'type','channel','sentTo','approvedBy','previousStatus','newStatus'
+    'performedBy', 'userName', 'tenant', 'ipAddress', 'device', 'status',
+    'assignedTo', 'assignedBy', 'project', 'from', 'to', 'clientName',
+    'fileName', 'uploadedBy', 'userRole', 'location', 'reason', 'attemptsLeft',
+    'type', 'channel', 'sentTo', 'approvedBy', 'previousStatus', 'newStatus'
   ];
 
   const out = {
@@ -116,7 +123,8 @@ module.exports = {
       const details = entry.metadata || entry.details || {};
       await q(`INSERT INTO audit_logs (actor_id, tenant_id, action, entity, entity_id, details, createdAt) VALUES (?, ?, ?, ?, ?, ?, NOW())`, [actorId, tenantId, action, entity, entityId, JSON.stringify(details)]);
     } catch (e) {
-      logger.error('auditController.log failed:', e && e.message);
+      logger.error('auditController.log failed:', e);
+
     }
   },
 
@@ -217,12 +225,16 @@ module.exports = {
         mgrParts.push("(a.entity = 'Task' AND EXISTS (SELECT 1 FROM tasks t WHERE (t.public_id = a.entity_id OR t.id = a.entity_id) AND (t.project_public_id IN (?))))");
         mgrParams.push(projectPublicIds);
       }
-      const actorFilterIds = [];
-      if (teamInternalIds && teamInternalIds.length) actorFilterIds.push(...teamInternalIds);
-      if (teamPublicIds && teamPublicIds.length) actorFilterIds.push(...teamPublicIds);
-      if (actorFilterIds.length) {
+      const actorFilterIds = new Set();
+      if (managerInternalId) actorFilterIds.add(managerInternalId);
+      if (managerPublicId) actorFilterIds.add(managerPublicId);
+      if (teamInternalIds && teamInternalIds.length) teamInternalIds.forEach(id => actorFilterIds.add(id));
+      if (teamPublicIds && teamPublicIds.length) teamPublicIds.forEach(id => actorFilterIds.add(id));
+
+      const distinctActorIds = Array.from(actorFilterIds);
+      if (distinctActorIds.length) {
         mgrParts.push('(a.actor_id IN (?))');
-        mgrParams.push(actorFilterIds);
+        mgrParams.push(distinctActorIds);
       }
 
       if (mgrParts.length) {
@@ -244,7 +256,7 @@ module.exports = {
         rows = await q(sqlAll, params);
         total = (rows && rows.length) || 0;
       } else {
-          const sql = `
+        const sql = `
             SELECT a.id, a.actor_id, u.name AS actor_name, a.action, a.entity, a.entity_id, a.details, a.createdAt
             FROM audit_logs a
             LEFT JOIN users u ON u._id = a.actor_id
@@ -252,7 +264,7 @@ module.exports = {
             ORDER BY a.createdAt DESC
             LIMIT ? OFFSET ?
           `;
-          rows = await q(sql, [...params, perPage, offset]);
+        rows = await q(sql, [...params, perPage, offset]);
       }
 
       const logs = (rows || []).map(normalizeLogRow);

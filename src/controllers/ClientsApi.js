@@ -500,6 +500,20 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.CLIENT_CREATE),
     `, [clientId, req.user && req.user._id ? req.user._id : null, 'create',
       JSON.stringify({ createdBy: req.user ? req.user.id : null })]);
 
+    try {
+      const auditController = require('./auditController');
+      auditController.log({
+        user_id: req.user._id,
+        tenant_id: req.user.tenant_id,
+        action: 'CREATE_CLIENT',
+        entity: 'Client',
+        entity_id: String(clientId),
+        details: { name, company, ref, managerId: resolvedManagerId }
+      });
+    } catch (auditErr) {
+      logger.warn('Failed to log create_client audit:', auditErr.message);
+    }
+
     (async () => {
       try {
         await NotificationService.createAndSendToRoles(['Admin'], 'Client Added', `New client "${name}" has been added`, 'CLIENT_ADDED', 'client', clientId, req.user ? req.user.tenant_id : null);
@@ -1041,6 +1055,20 @@ router.put(
         id,
         req.user?.tenant_id
       ).catch(() => { });
+
+      try {
+        const auditController = require('./auditController');
+        auditController.log({
+          user_id: req.user._id,
+          tenant_id: req.user.tenant_id,
+          action: 'UPDATE_CLIENT',
+          entity: 'Client',
+          entity_id: String(id),
+          details: { name: updated[0].name, updates: payload }
+        });
+      } catch (auditErr) {
+        logger.warn('Failed to log update_client audit:', auditErr.message);
+      }
 
 
       return res.json({
