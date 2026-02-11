@@ -500,6 +500,20 @@ async function completeLoginForUser(user, req, res) {
       photoUrl = `${req.protocol}://${req.get('host')}${photoUrl.startsWith('/') ? '' : '/'}${photoUrl}`;
     }
 
+    try {
+      const auditController = require('./auditController');
+      auditController.log({
+        user_id: user._id,
+        tenant_id: user.tenant_id,
+        action: 'LOGIN',
+        entity: 'User',
+        entity_id: user.public_id || String(user._id),
+        details: { email: user.email, ip: req.ip || (req.connection && req.connection.remoteAddress) }
+      });
+    } catch (e) {
+      logger.warn('Failed to log login audit:', e.message);
+    }
+
     return res.json({
       token,
       refreshToken,

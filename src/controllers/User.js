@@ -24,7 +24,7 @@ const queryAsync = (sql, params = []) =>
 
 router.use(requireAuth);
 
-router.get("/getusers", ruleEngine(RULES.USER_LIST), requireRole('Admin','Manager'), async (req, res) => {
+router.get("/getusers", ruleEngine(RULES.USER_LIST), requireRole('Admin', 'Manager'), async (req, res) => {
   const query = `
     SELECT 
       u._id, u.public_id, u.name, u.title, u.email, u.role, u.isActive, u.phone, u.isGuest,
@@ -161,7 +161,7 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), asyn
 
     let departmentPublicId = null;
     let resolvedDepartmentName = null;
-    
+
     if (departmentId) {
 
       const dept = await new Promise((resolve, reject) => {
@@ -221,13 +221,19 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), asyn
 
     const insertId = result.insertId;
 
-    (async () => {
-      try {
-        await NotificationService.createAndSendToRoles(['Admin'], 'User Created', `New user "${name}" has been created`, 'USER_CREATED', 'user', insertId, req.user ? req.user.tenant_id : null);
-      } catch (notifErr) {
-        logger.error('User creation notification error:', notifErr);
-      }
-    })();
+    try {
+      const auditController = require('./auditController');
+      auditController.log({
+        user_id: req.user._id,
+        tenant_id: req.user.tenant_id,
+        action: 'CREATE_USER',
+        entity: 'User',
+        entity_id: publicId,
+        details: { name, email, role, title }
+      });
+    } catch (auditErr) {
+      logger.warn('Failed to log create_user audit:', auditErr.message);
+    }
 
     const setupToken = jwt.sign({ id: publicId, step: 'setup' }, env.JWT_SECRET || env.SECRET || 'change_this_secret', { expiresIn: '7d' });
     const setupUrlBase = env.FRONTEND_URL || env.BASE_URL;
@@ -246,9 +252,9 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), asyn
     });
 
     emailService.sendEmail({ to: email, subject: tpl.subject, text: tpl.text, html: tpl.html })
-      .then(r => { 
-        if (r.sent) logger.info(`✅ Welcome email sent to ${email}`); 
-        else logger.warn(`⚠️ Welcome email not sent to ${email}`); 
+      .then(r => {
+        if (r.sent) logger.info(`✅ Welcome email sent to ${email}`);
+        else logger.warn(`⚠️ Welcome email not sent to ${email}`);
       })
       .catch(err => logger.error(`❌ Failed to send welcome email to ${email}:`, err?.message));
 
@@ -307,7 +313,7 @@ router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), a
 
     let departmentPublicId = null;
     let resolvedDepartmentName = null;
-    
+
     if (departmentId) {
       const dept = await new Promise((resolve, reject) => {
         db.query('SELECT public_id, name FROM departments WHERE public_id = ? LIMIT 1', [departmentId], (err, rows) => err ? reject(err) : resolve(rows));
@@ -327,7 +333,7 @@ router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), a
     }
 
     const isNumeric = /^\d+$/.test(String(id));
-    
+
     // Build dynamic update
     const updates = {};
     if (name !== undefined) updates.name = name;
@@ -339,7 +345,7 @@ router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), a
     if (departmentPublicId !== undefined) updates.department_public_id = departmentPublicId;
 
     if (Object.keys(updates).length === 0) {
-        return res.status(400).json(errorResponse.badRequest('No fields to update', 'NO_FIELDS_PROVIDED'));
+      return res.status(400).json(errorResponse.badRequest('No fields to update', 'NO_FIELDS_PROVIDED'));
     }
 
     const setClause = Object.keys(updates).map(key => `${key} = ?`).join(', ');
@@ -364,14 +370,40 @@ router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), a
       `;
       db.query(selectSql, [id], (err, user) => {
         if (err || !user || user.length === 0) {
-          return res.status(200).json({ 
-            success: true, 
+          try {
+            const auditController = require('./auditController');
+            auditController.log({
+              user_id: req.user._id,
+              tenant_id: req.user.tenant_id,
+              action: 'UPDATE_USER',
+              entity: 'User',
+              entity_id: String(id),
+              details: { updates }
+            });
+          } catch (auditErr) {
+            logger.warn('Failed to log update_user audit (fallback):', auditErr.message);
+          }
+          return res.status(200).json({
+            success: true,
             message: "User updated but could not fetch updated data",
             user: { id, name, email, role, title, isActive: Boolean(isActive), phone: phone || null, departmentPublicId, departmentName: resolvedDepartmentName }
           });
         }
 
         const u = user[0];
+        try {
+          const auditController = require('./auditController');
+          auditController.log({
+            user_id: req.user._id,
+            tenant_id: req.user.tenant_id,
+            action: 'UPDATE_USER',
+            entity: 'User',
+            entity_id: u.public_id || String(u._id),
+            details: { name: u.name, updates }
+          });
+        } catch (auditErr) {
+          logger.warn('Failed to log update_user audit:', auditErr.message);
+        }
         res.status(200).json({
           success: true,
           message: "User updated successfully",
@@ -397,7 +429,7 @@ router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), a
   }
 });
 
-router.get("/getuserbyid/:id", ruleEngine(RULES.USER_VIEW), requireRole('Admin','Manager'), (req, res) => {
+router.get("/getuserbyid/:id", ruleEngine(RULES.USER_VIEW), requireRole('Admin', 'Manager'), (req, res) => {
   const { id } = req.params;
   const isNumeric = /^\d+$/.test(String(id));
   const query = `

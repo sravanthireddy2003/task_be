@@ -33,7 +33,7 @@ const errorResponse = require(__root + 'utils/errorResponse');
 const { check } = require('express-validator');
 const validateRequest = require(__root + 'middleware/validateRequest');
 router.use(requireAuth);        // ✅ Sets req.user from JWT
-router.use(tenantMiddleware); 
+router.use(tenantMiddleware);
 
 const hasColumn = (table, column) => new Promise((resolve) => {
   db.query(
@@ -117,7 +117,7 @@ async function ensureTaskTimeLogsTable() {
       WHERE table_schema = DATABASE() 
       AND table_name = 'task_time_logs'
     `);
-    
+
     if (tableExists[0].count === 0) {
       await q(`
         CREATE TABLE task_time_logs (
@@ -197,7 +197,7 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
       if (await hasColumn('tasks', 'rejected_by')) cols.push('t.rejected_by');
       if (await hasColumn('tasks', 'rejected_at')) cols.push('t.rejected_at');
       if (cols.length) optionalSelect = ', ' + cols.join(', ');
-    } catch (e) {  }
+    } catch (e) { }
 
     const sql = `
       SELECT
@@ -294,9 +294,9 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
         if (!s) return;
         const rawTaskId = (s.task_id !== undefined && s.task_id !== null) ? s.task_id
           : (s.task_Id !== undefined && s.task_Id !== null) ? s.task_Id
-          : (s.taskId !== undefined && s.taskId !== null) ? s.taskId
-          : (s.task !== undefined && s.task !== null) ? s.task
-          : null;
+            : (s.taskId !== undefined && s.taskId !== null) ? s.taskId
+              : (s.task !== undefined && s.task !== null) ? s.task
+                : null;
         if (rawTaskId === null) return;
         const key = String(rawTaskId);
         if (!checklistMap[key]) checklistMap[key] = [];
@@ -336,10 +336,10 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
         if (!activitiesMap[key]) activitiesMap[key] = [];
         const userInfo = activity.user_id
           ? {
-              id: activity.user_public_id || String(activity.user_id),
-              internalId: String(activity.user_id),
-              name: activity.user_name || null
-            }
+            id: activity.user_public_id || String(activity.user_id),
+            internalId: String(activity.user_id),
+            name: activity.user_name || null
+          }
           : null;
         activitiesMap[key].push({
           type: activity.type || null,
@@ -501,9 +501,9 @@ async function createJsonHandler(req, res) {
       const resolveProjectAndClient = (cb) => {
         if (finalClientId && !finalProjectId && !finalProjectPublicId) return cb(null, finalClientId);
         if (!finalProjectId && !finalProjectPublicId) return cb(new Error('missing_client_and_project'));
-        
+
         logger.info('Resolving project details:', { finalProjectId, finalProjectPublicId });
-        
+
         const q = `SELECT id, public_id, client_id FROM projects WHERE id = ? OR public_id = ? LIMIT 1`;
         connection.query(q, [finalProjectId || null, finalProjectPublicId || null], (qErr, rows) => {
           if (qErr) {
@@ -613,29 +613,30 @@ async function createJsonHandler(req, res) {
                     }
 
                     logger.info('Continuing task creation with adjusted date');
-                    continueTaskCreation(req, connection, { 
-                  ...req.body, 
-                  assigned_to: finalAssigned, 
-                  stage: normalizedStage, 
-                  taskDate: adjustedTaskDate.toISOString(), 
-                  time_alloted: finalTimeAlloted, 
-                  client_id: finalClientId, 
-                  projectId: finalProjectId, 
-                  projectPublicId: finalProjectPublicId 
-                }, createdAt, updatedAt, "HIGH", res);
+                    continueTaskCreation(req, connection, {
+                      ...req.body,
+                      assigned_to: finalAssigned,
+                      stage: normalizedStage,
+                      taskDate: adjustedTaskDate.toISOString(),
+                      time_alloted: finalTimeAlloted,
+                      client_id: finalClientId,
+                      projectId: finalProjectId,
+                      projectPublicId: finalProjectPublicId
+                    }, createdAt, updatedAt, "HIGH", res);
+                  });
+                }
               });
-            } });
             } else {
-                logger.info('Continuing task creation without priority adjustment');
-              continueTaskCreation(req, connection, { 
-                ...req.body, 
-                assigned_to: finalAssigned, 
-                stage: normalizedStage, 
-                taskDate: adjustedTaskDate, 
-                time_alloted: finalTimeAlloted, 
-                client_id: finalClientId, 
-                projectId: finalProjectId, 
-                projectPublicId: finalProjectPublicId 
+              logger.info('Continuing task creation without priority adjustment');
+              continueTaskCreation(req, connection, {
+                ...req.body,
+                assigned_to: finalAssigned,
+                stage: normalizedStage,
+                taskDate: adjustedTaskDate,
+                time_alloted: finalTimeAlloted,
+                client_id: finalClientId,
+                projectId: finalProjectId,
+                projectPublicId: finalProjectPublicId
               }, createdAt, updatedAt, finalPriority, res);
             }
           });
@@ -841,7 +842,7 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
           }
 
           logger.debug(`Running resolve query ${idx}:`, resolveQueries[idx], resolveParams[idx]);
-          
+
           connection.query(resolveQueries[idx], resolveParams[idx], (err, rows) => {
             if (err) {
               logger.error('Error resolving users:', err);
@@ -894,14 +895,28 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
           );
         }
 
-        await NotificationService.createAndSendToRoles(['Manager', 'Admin'], 
-          'New Task Created', 
-          `A new task "${body.title}" has been created`, 
-          'TASK_CREATED', 
-          'task', 
-          result.publicId, 
+        await NotificationService.createAndSendToRoles(['Manager', 'Admin'],
+          'New Task Created',
+          `A new task "${body.title}" has been created`,
+          'TASK_CREATED',
+          'task',
+          result.publicId,
           req.user.tenant_id
         );
+
+        try {
+          const auditController = require('./auditController');
+          auditController.log({
+            user_id: req.user._id,
+            tenant_id: req.user.tenant_id,
+            action: 'CREATE_TASK',
+            entity: 'Task',
+            entity_id: result.publicId,
+            details: { title: body.title, projectId: result.projectId, assignedTo: result.assignedUsers }
+          });
+        } catch (auditErr) {
+          logger.warn('Failed to log create_task audit:', auditErr);
+        }
 
         if (projectId) {
           try {
@@ -914,7 +929,7 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
                     logger.error('Error checking project status:', err);
                     return resolve(); // Don't fail the task creation
                   }
-                  
+
                   if (rows && rows.length > 0 && rows[0].status === 'Planning') {
                     const updateQuery = 'UPDATE projects SET status = ? WHERE id = ?';
                     db.query(updateQuery, ['ACTIVE', projectId], (updateErr) => {
@@ -931,7 +946,7 @@ async function continueTaskCreation(req, connection, body, createdAt, updatedAt,
                 });
               });
             };
-            
+
             await updateProjectStatus();
           } catch (e) {
             logger.error('Failed to update project status:', e && e.message);
@@ -1059,7 +1074,7 @@ router.get('/', async (req, res) => {
       if (await hasColumn('tasks', 'rejected_by')) cols.push('t.rejected_by');
       if (await hasColumn('tasks', 'rejected_at')) cols.push('t.rejected_at');
       if (cols.length) optionalSelect = ', ' + cols.join(', ');
-    } catch (e) {  }
+    } catch (e) { }
 
     let resolvedProjectId = projectParam;
     let projectPublicIdToUse = null;
@@ -1079,11 +1094,11 @@ router.get('/', async (req, res) => {
       resolvedProjectId = Number(projectParam);
     }
 
-      try {
-        await ensureProjectOpen(resolvedProjectId);
-      } catch (err) {
-        return res.status(err.status || 403).json({ success: false, message: err.message });
-      }
+    try {
+      await ensureProjectOpen(resolvedProjectId);
+    } catch (err) {
+      return res.status(err.status || 403).json({ success: false, message: err.message });
+    }
 
     let sql;
     let params = [];
@@ -1482,7 +1497,7 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
                 WHERE t.id = ? GROUP BY t.id LIMIT 1
               `;
 
-              const rows = await new Promise((resolve, reject) => 
+              const rows = await new Promise((resolve, reject) =>
                 connection.query(fetchSql, [internalTaskId], (e, r) => e ? reject(e) : resolve(r))
               );
 
@@ -1550,11 +1565,25 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
                   emailStatus = anySent ? { sent: true } : { sent: false };
                 } catch (mailErr) {
                   logger.error(`Email failed for task=${taskId}: ${mailErr && mailErr.message}`);
-                  emailStatus = { sent: false, error: mailErr && mailErr.message };
                 }
               }
 
+              try {
+                const auditController = require('./auditController');
+                auditController.log({
+                  user_id: req.user._id,
+                  tenant_id: req.user.tenant_id,
+                  action: 'UPDATE_TASK',
+                  entity: 'Task',
+                  entity_id: String(taskId),
+                  details: { title: taskObj.title, updates: req.body }
+                });
+              } catch (auditErr) {
+                logger.warn('Failed to log update_task audit:', auditErr);
+              }
+
               connection.release();
+
               res.status(200).json({
                 success: true,
                 message: 'Task updated successfully',
@@ -1679,7 +1708,7 @@ router.patch('/:taskId/reassign/:userId', ruleEngine('task_reassign'), requireRo
 router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Employee']), async (req, res) => {
   try {
     await ensureTaskTimeLogsTable();
-    
+
     const { id } = req.params;
     const { status, projectId, taskId } = req.body;
 
@@ -1747,7 +1776,7 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
 
     const task = tasks[0];
     const currentStatusStr = task.status || task.stage || 'PENDING';
-    
+
     const normalizedCurrent = currentStatusStr.toUpperCase();
     const normalizedTarget = status.toUpperCase();
 
@@ -1763,9 +1792,9 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
 
     const allowedNext = allowedTransitions[normalizedCurrent] || [];
     if (!allowedNext.includes(normalizedTarget)) {
-      return res.status(400).json({ 
-        success: false, 
-        message: `Invalid transition from '${currentStatusStr}' to '${status}'. Allowed: ${allowedNext.join(', ')}` 
+      return res.status(400).json({
+        success: false,
+        message: `Invalid transition from '${currentStatusStr}' to '${status}'. Allowed: ${allowedNext.join(', ')}`
       });
     }
 
@@ -1801,23 +1830,23 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
 
     const now = new Date();
     if ((normalizedTarget === 'REVIEW' || normalizedTarget === 'COMPLETED' || normalizedTarget === 'ON HOLD') && normalizedCurrent === 'IN PROGRESS') {
-       const lastLog = await q('SELECT timestamp FROM task_time_logs WHERE task_id = ? AND (action = ? OR action = ?) ORDER BY timestamp DESC LIMIT 1', [resolvedTaskId, 'start', 'resume']);
-       let duration = 0;
-       if (lastLog.length > 0) {
-         duration = Math.floor((now - new Date(lastLog[0].timestamp)) / 1000);
-       }
-       
-       const action = normalizedTarget === 'REVIEW' ? 'pause' : (normalizedTarget === 'COMPLETED' ? 'complete' : 'pause');
-       await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp, duration) VALUES (?, ?, ?, ?, ?)', 
-         [resolvedTaskId, req.user._id, action, now, duration]);
-       
-       const timerUpdate = normalizedTarget === 'COMPLETED' 
-         ? 'completed_at = ?, total_duration = COALESCE(total_duration, 0) + ?, live_timer = NULL' 
-         : 'total_duration = COALESCE(total_duration, 0) + ?, live_timer = NULL';
-       const params = normalizedTarget === 'COMPLETED' ? [now, duration, resolvedTaskId] : [duration, resolvedTaskId];
-       
-       await q(`UPDATE tasks SET ${timerUpdate} WHERE id = ?`, params);
-    } 
+      const lastLog = await q('SELECT timestamp FROM task_time_logs WHERE task_id = ? AND (action = ? OR action = ?) ORDER BY timestamp DESC LIMIT 1', [resolvedTaskId, 'start', 'resume']);
+      let duration = 0;
+      if (lastLog.length > 0) {
+        duration = Math.floor((now - new Date(lastLog[0].timestamp)) / 1000);
+      }
+
+      const action = normalizedTarget === 'REVIEW' ? 'pause' : (normalizedTarget === 'COMPLETED' ? 'complete' : 'pause');
+      await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp, duration) VALUES (?, ?, ?, ?, ?)',
+        [resolvedTaskId, req.user._id, action, now, duration]);
+
+      const timerUpdate = normalizedTarget === 'COMPLETED'
+        ? 'completed_at = ?, total_duration = COALESCE(total_duration, 0) + ?, live_timer = NULL'
+        : 'total_duration = COALESCE(total_duration, 0) + ?, live_timer = NULL';
+      const params = normalizedTarget === 'COMPLETED' ? [now, duration, resolvedTaskId] : [duration, resolvedTaskId];
+
+      await q(`UPDATE tasks SET ${timerUpdate} WHERE id = ?`, params);
+    }
     else if (normalizedTarget === 'IN PROGRESS' && normalizedCurrent !== 'IN PROGRESS') {
 
       const action = (normalizedCurrent === 'ON HOLD') ? 'resume' : 'start';
@@ -1826,7 +1855,7 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
       } else {
         await q('UPDATE tasks SET live_timer = ? WHERE id = ?', [now, resolvedTaskId]);
       }
-      await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?)', 
+      await q('INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?)',
         [resolvedTaskId, req.user._id, action, now]);
     }
 
@@ -1868,18 +1897,18 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
       task.public_id
     );
 
-    await NotificationService.createAndSendToRoles(['Manager'], 
-      'Task Status Updated', 
-      `Task "${task.title}" status changed to ${status}`, 
-      'TASK_STATUS_CHANGED', 
-      'task', 
-      task.public_id, 
+    await NotificationService.createAndSendToRoles(['Manager'],
+      'Task Status Updated',
+      `Task "${task.title}" status changed to ${status}`,
+      'TASK_STATUS_CHANGED',
+      'task',
+      task.public_id,
       req.user.tenant_id
     );
 
     res.json({
       success: true,
-      message: normalizedTarget === 'REVIEW' 
+      message: normalizedTarget === 'REVIEW'
         ? `Task "${task.title}" has been moved to Review and sent to the manager for final approval.`
         : (normalizedTarget === 'COMPLETED' ? `Task "${task.title}" marked as Completed.` : `Task status updated to ${status}`),
       data: {
@@ -2356,10 +2385,10 @@ router.get("/gettasks", (req, res) => {
             stage: row.stage,
             status: row.status,
             rejection: row.rejection_reason ? {
-               reason: row.rejection_reason,
-               rejectedBy: row.rejected_by_name || 'Manager',
-               rejectedAt: row.rejected_at,
-               id: row.rejected_by_public_id
+              reason: row.rejection_reason,
+              rejectedBy: row.rejected_by_name || 'Manager',
+              rejectedAt: row.rejected_at,
+              id: row.rejected_by_public_id
             } : null,
             taskDate: row.taskDate,
             day: row.taskDate ? (new Date(row.taskDate).toISOString().split('T')[0]) : null,
@@ -2463,7 +2492,7 @@ router.get('/reassign-requests', requireRole(['Manager']), async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
- 
+
 
 router.get('/:id', (req, res) => {
   const { id } = req.params;
@@ -3268,7 +3297,7 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
           `SELECT _id, public_id, name, email 
            FROM users 
            WHERE role = 'Manager' AND isActive = 1 AND email NOT LIKE '%@example.com' 
-           ORDER BY name ASC LIMIT 1`, 
+           ORDER BY name ASC LIMIT 1`,
           [], (err, rows) => err ? reject(err) : resolve([rows])
         )
       );
@@ -3291,8 +3320,8 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
 
     const [insertResult] = await new Promise((resolve, reject) =>
       db.query(
-        'INSERT INTO task_resign_requests (task_id, requested_by, reason, status) VALUES (?, ?, ?, ?)', 
-        [taskId, employee._id, reason || null, 'PENDING'], 
+        'INSERT INTO task_resign_requests (task_id, requested_by, reason, status) VALUES (?, ?, ?, ?)',
+        [taskId, employee._id, reason || null, 'PENDING'],
         (err, result) => err ? reject(err) : resolve([result])
       )
     );
@@ -3328,7 +3357,7 @@ router.post('/:id/request-reassignment', requireRole(['Employee']), async (req, 
 
 router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', requireRole(['Manager']), async (req, res) => {
   let { taskId, requestId, action } = req.params;
-  
+
   const dbTransaction = (connection) => new Promise((resolve, reject) => {
     if (connection) return resolve(connection);
     db.getConnection((err, conn) => {
@@ -3372,8 +3401,8 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
     const [reqRows] = await new Promise((resolve, reject) =>
       db.query(
         `SELECT * FROM task_resign_requests 
-         WHERE id = ? AND task_id = ? AND status = 'PENDING'`, 
-        [requestId, taskId], 
+         WHERE id = ? AND task_id = ? AND status = 'PENDING'`,
+        [requestId, taskId],
         (err, rows) => err ? reject(err) : resolve([rows])
       )
     );
@@ -3432,7 +3461,7 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
     const prevAssigneeName = prevAssigneeUser?.[0]?.name || 'Previous Assignee';
 
     const connection = await dbTransaction();
-    
+
     try {
 
       await new Promise((resolve, reject) => {
@@ -3507,33 +3536,33 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
           );
         });
 
-          // Start timer for the new assignee so UI shows live timer after approval
-          try {
-            if (finalNewAssigneeId) {
-              const now = new Date();
-              const wasOnHold = task && task.status && String(task.status).toUpperCase() === 'ON HOLD';
-              const startAction = wasOnHold ? 'resume' : 'start';
+        // Start timer for the new assignee so UI shows live timer after approval
+        try {
+          if (finalNewAssigneeId) {
+            const now = new Date();
+            const wasOnHold = task && task.status && String(task.status).toUpperCase() === 'ON HOLD';
+            const startAction = wasOnHold ? 'resume' : 'start';
 
-              await new Promise((resolve, reject) => {
-                connection.query(
-                  'UPDATE tasks SET live_timer = ?, started_at = COALESCE(started_at, ?) WHERE id = ?',
-                  [now, now, taskId],
-                  (err) => err ? reject(err) : resolve()
-                );
-              });
+            await new Promise((resolve, reject) => {
+              connection.query(
+                'UPDATE tasks SET live_timer = ?, started_at = COALESCE(started_at, ?) WHERE id = ?',
+                [now, now, taskId],
+                (err) => err ? reject(err) : resolve()
+              );
+            });
 
-              await new Promise((resolve, reject) => {
-                connection.query(
-                  'INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?)',
-                  [taskId, finalNewAssigneeId, startAction, now],
-                  (err) => err ? reject(err) : resolve()
-                );
-              });
-            }
-          } catch (timerErr) {
-            // Do not fail the entire approval for timer issues; log and continue
-            logger.error(`Failed to start timer on reassignment approval for task=${taskId}: ${timerErr && timerErr.message}`);
+            await new Promise((resolve, reject) => {
+              connection.query(
+                'INSERT INTO task_time_logs (task_id, user_id, action, timestamp) VALUES (?, ?, ?, ?)',
+                [taskId, finalNewAssigneeId, startAction, now],
+                (err) => err ? reject(err) : resolve()
+              );
+            });
           }
+        } catch (timerErr) {
+          // Do not fail the entire approval for timer issues; log and continue
+          logger.error(`Failed to start timer on reassignment approval for task=${taskId}: ${timerErr && timerErr.message}`);
+        }
 
         await commitTransaction(connection);
 
@@ -3694,7 +3723,7 @@ router.get('/:id/reassign-requests', requireRole(['Employee', 'Manager']), async
 router.post('/:id/start', requireRole(['Employee']), async (req, res) => {
   try {
     await ensureTaskTimeLogsTable();
-    
+
     const { id } = req.params;
     const userId = req.user._id;
 
@@ -3710,9 +3739,9 @@ router.post('/:id/start', requireRole(['Employee']), async (req, res) => {
       return res.json({ success: true, message: 'Task already in progress' });
     }
     if (normalizedStatus !== 'TO DO' && normalizedStatus !== 'PENDING') {
-      return res.status(400).json({ 
-        success: false, 
-        error: `Cannot start task with status '${currentStatus}'. Only 'TO DO' or 'PENDING' tasks can be started.` 
+      return res.status(400).json({
+        success: false,
+        error: `Cannot start task with status '${currentStatus}'. Only 'TO DO' or 'PENDING' tasks can be started.`
       });
     }
 
@@ -3750,8 +3779,8 @@ router.post('/:id/start', requireRole(['Employee']), async (req, res) => {
       publicId
     );
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: '✅ Started',
       data: { taskId: publicId, status: 'In Progress', started_at: now.toISOString() }
     });
@@ -3764,7 +3793,7 @@ router.post('/:id/start', requireRole(['Employee']), async (req, res) => {
 router.post('/:id/pause', requireRole(['Employee']), async (req, res) => {
   try {
     await ensureTaskTimeLogsTable();
-    
+
     const { id } = req.params;
     const userId = req.user._id;
 
@@ -3814,7 +3843,7 @@ router.post('/:id/pause', requireRole(['Employee']), async (req, res) => {
 router.post('/:id/resume', requireRole(['Employee']), async (req, res) => {
   try {
     await ensureTaskTimeLogsTable();
-    
+
     const { id } = req.params;
     const userId = req.user._id;
 
@@ -3861,7 +3890,7 @@ router.post('/:id/resume', requireRole(['Employee']), async (req, res) => {
 router.get('/:id/timeline', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     await ensureTaskTimeLogsTable();
-    
+
     let id = req.params.id;
     if (req.headers['x-task-public-id']) id = req.headers['x-task-public-id'];
 
