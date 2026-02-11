@@ -138,7 +138,7 @@ async function fetchChecklistMap(taskIds = []) {
 
 async function ensureAssignedTask(taskId, userId, tenantId) {
   let internalTaskId = taskId;
-  if (typeof taskId === 'string' && !/^\d+$/.test(taskId)) { // if not numeric, assume public_id
+  if (typeof taskId === 'string' && !/^\d+$/.test(taskId)) {
     const taskRows = await queryAsync('SELECT id FROM tasks WHERE public_id = ?', [taskId]);
     if (taskRows.length === 0) {
       throw new Error('Task not found');
@@ -232,7 +232,7 @@ async function insertChecklistItem({ taskId, title, description, dueDate, userId
     insertColumns.push('created_at');
     placeholders.push('NOW()');
   }
-  const result = await queryAsync(
+  const result = await queryRegex(
     `INSERT INTO subtasks (${insertColumns.join(', ')}) VALUES (${placeholders.join(', ')})`,
     insertParams
   );
@@ -263,7 +263,6 @@ function buildProjectPayload(row) {
 }
 
 module.exports = {
-
   getMyTasks: async (req, res) => {
     try {
       await requireFeatureAccess(req, 'Assigned Tasks');
@@ -285,6 +284,26 @@ module.exports = {
         'MIN(c.name) AS client_name'
       ].concat(projectData.selects);
 
+      // ✅ FIXED: Complete GROUP BY clause with all non-aggregated columns
+      // Ensure all non-aggregated columns in SELECT are included in GROUP BY
+      const groupByColumns = [
+        't.id',
+        't.public_id',
+        't.title',
+        ...(taskDescriptionExists ? ['t.description'] : []),
+        't.status',
+        't.stage',
+        't.priority',
+        't.taskDate',
+        't.client_id',
+        // Add t.project_id if it exists in SELECT/join
+        ...(await hasColumn('tasks', 'project_id') ? ['t.project_id'] : []),
+        ...(await hasColumn('tasks', 'project_public_id') ? ['t.project_public_id'] : []),
+        ...(await hasColumn('tasks', 'started_at') ? ['t.started_at'] : []),
+        ...(await hasColumn('tasks', 'live_timer') ? ['t.live_timer'] : []),
+        ...(await hasColumn('tasks', 'total_duration') ? ['t.total_duration'] : [])
+      ];
+
       const rows = await queryAsync(
         `SELECT
          ${selectParts.join(', ')},
@@ -301,7 +320,7 @@ module.exports = {
        WHERE 1=1
         ${taskDeletionClause}
         ${tenantClause}
-       GROUP BY t.id
+       GROUP BY ${groupByColumns.join(', ')}
        ORDER BY t.updatedAt DESC`,
         [req.user._id, ...tenantParams]
       );
@@ -312,30 +331,30 @@ module.exports = {
       const lockStatuses = {};
       if (taskIds.length > 0) {
         const lockResult = await queryAsync(`
-        SELECT 
-          r.task_id,
-          r.status AS request_status,
-          r.id AS request_id,
-          r.requested_at,
-          r.responded_at,
-          r.requested_by,
-          r.responded_by,
-          ru.name AS responder_name,
-          ru.public_id AS responder_public_id,  
-          ru._id AS responder_internal_id,      
-          u.name AS requester_name,
-          u.public_id AS requester_id,
-          t.status AS task_current_status
-        FROM task_resign_requests r
-        INNER JOIN tasks t ON t.id = r.task_id
-        LEFT JOIN users u ON r.requested_by = u._id
-        LEFT JOIN users ru ON r.responded_by = ru._id
-        WHERE r.task_id IN (${taskIds.map(id => parseInt(id)).join(',')})
-        ORDER BY 
-          CASE WHEN r.responded_at IS NULL THEN 1 ELSE 0 END ASC,
-          r.responded_at DESC,
-          r.requested_at DESC
-      `);
+          SELECT 
+            r.task_id,
+            r.status AS request_status,
+            r.id AS request_id,
+            r.requested_at,
+            r.responded_at,
+            r.requested_by,
+            r.responded_by,
+            ru.name AS responder_name,
+            ru.public_id AS responder_public_id,  
+            ru._id AS responder_internal_id,      
+            u.name AS requester_name,
+            u.public_id AS requester_id,
+            t.status AS task_current_status
+          FROM task_resign_requests r
+          INNER JOIN tasks t ON t.id = r.task_id
+          LEFT JOIN users u ON r.requested_by = u._id
+          LEFT JOIN users ru ON r.responded_by = ru._id
+          WHERE r.task_id IN (${taskIds.map(id => parseInt(id)).join(',')})
+          ORDER BY 
+            CASE WHEN r.responded_at IS NULL THEN 1 ELSE 0 END ASC,
+            r.responded_at DESC,
+            r.requested_at DESC
+        `);
 
         const lockRows = Array.isArray(lockResult) ? lockResult : [];
         lockRows.forEach(row => {
@@ -496,7 +515,6 @@ module.exports = {
               title: 'Fix login issue',
               description: 'Resolve login redirect bug',
               status: 'pending',
-
               reassignment: {
                 requested: true,
                 status: 'pending',
@@ -510,7 +528,6 @@ module.exports = {
               title: 'Create dashboard UI',
               description: 'Employee dashboard layout',
               status: 'in_progress',
-
               reassignment: {
                 requested: false,
                 status: null
@@ -521,7 +538,6 @@ module.exports = {
               title: 'API integration',
               description: 'Integrate task APIs',
               status: 'completed',
-
               reassignment: {
                 requested: false,
                 status: null
@@ -532,7 +548,6 @@ module.exports = {
               title: 'Write unit tests',
               description: 'Coverage for task module',
               status: 'pending',
-
               reassignment: {
                 requested: true,
                 status: 'approved',
@@ -541,7 +556,6 @@ module.exports = {
               }
             }
           ],
-
           rules: {
             allowReassignment: true,
             allowMultipleRequestsForSameTask: false,
@@ -553,6 +567,7 @@ module.exports = {
       return res.status(error.status || 500).json({ success: false, error: error.message });
     }
   },
+
   createChecklistItem: async (req, res) => {
     try {
       const { taskId } = req.params;
