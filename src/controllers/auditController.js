@@ -116,12 +116,11 @@ module.exports = {
   log: async (entry) => {
     try {
       const actorId = entry.user_id || entry.actor_id || null;
-      const tenantId = entry.tenant_id || null;
       const action = entry.action || 'ACTION';
       const entity = entry.entity || null;
       const entityId = entry.entity_id || entry.entityId || null;
       const details = entry.metadata || entry.details || {};
-      await q(`INSERT INTO audit_logs (actor_id, tenant_id, action, entity, entity_id, details, createdAt) VALUES (?, ?, ?, ?, ?, ?, NOW())`, [actorId, tenantId, action, entity, entityId, JSON.stringify(details)]);
+      await q(`INSERT INTO audit_logs (actor_id, action, entity, entity_id, details, createdAt) VALUES (?, ?, ?, ?, ?, NOW())`, [actorId, action, entity, entityId, JSON.stringify(details)]);
     } catch (e) {
       logger.error('auditController.log failed:', e);
 

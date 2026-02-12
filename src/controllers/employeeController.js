@@ -4,16 +4,16 @@ let logger;
 try { logger = require(__root + 'logger'); } catch (e) { logger = require('../../logger'); }
 const RoleBasedLoginResponse = require(__root + 'controller/utils/RoleBasedLoginResponse');
 const { normalizeProjectStatus } = require(__root + 'utils/projectStatus');
- 
+
 const MAX_CHECKLIST_ITEMS = 10;
 const columnExistenceCache = {};
 let subtaskColumnPresenceCache = null;
- 
+
 const queryAsync = (sql, params = []) =>
   new Promise((resolve, reject) =>
     db.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)))
   );
- 
+
 async function hasColumn(table, column) {
   const cacheKey = `${table}::${column}`;
   if (columnExistenceCache[cacheKey] !== undefined) return columnExistenceCache[cacheKey];
@@ -24,7 +24,7 @@ async function hasColumn(table, column) {
   columnExistenceCache[cacheKey] = Array.isArray(rows) && rows.length > 0;
   return columnExistenceCache[cacheKey];
 }
- 
+
 async function getSubtaskColumnPresence() {
   if (subtaskColumnPresenceCache) return subtaskColumnPresenceCache;
   const columnsToCheck = ['description', 'completed_at', 'created_at', 'updated_at', 'created_by', 'deleted_at', 'isDeleted'];
@@ -35,7 +35,7 @@ async function getSubtaskColumnPresence() {
   subtaskColumnPresenceCache = presence;
   return presence;
 }
- 
+
 async function buildTenantClause(alias = 't', tenantId) {
   const columnExists = await hasColumn('tasks', 'tenant_id');
   if (!columnExists) return { clause: '', params: [] };
@@ -44,19 +44,19 @@ async function buildTenantClause(alias = 't', tenantId) {
   }
   return { clause: `AND ${alias}.tenant_id IS NULL`, params: [] };
 }
- 
+
 async function buildTaskDeletionClause(alias = 't') {
   const columnExists = await hasColumn('tasks', 'isDeleted');
   if (!columnExists) return { clause: '', params: [] };
   return { clause: `AND (${alias}.isDeleted IS NULL OR ${alias}.isDeleted != 1)`, params: [] };
 }
- 
+
 async function buildSubtaskDeletedClause(alias = 's') {
   const columnExists = await hasColumn('subtasks', 'isDeleted');
   if (!columnExists) return { clause: '', params: [] };
   return { clause: `AND (${alias}.isDeleted IS NULL OR ${alias}.isDeleted != 1)`, params: [] };
 }
- 
+
 async function buildProjectJoinClause() {
   const projectIdExists = await hasColumn('tasks', 'project_id');
   const projectPublicIdExists = await hasColumn('tasks', 'project_public_id');
@@ -94,7 +94,7 @@ async function buildProjectJoinClause() {
   }
   return { join: joinClauses.join(' '), selects };
 }
- 
+
 function formatChecklistItem(row) {
   if (!row) return null;
   return {
@@ -108,7 +108,7 @@ function formatChecklistItem(row) {
     updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null
   };
 }
- 
+
 async function fetchChecklistMap(taskIds = []) {
   if (!taskIds.length) return {};
   const uniqueIds = Array.from(new Set(taskIds));
@@ -135,7 +135,7 @@ async function fetchChecklistMap(taskIds = []) {
   });
   return map;
 }
- 
+
 async function ensureAssignedTask(taskId, userId, tenantId) {
   let internalTaskId = taskId;
   if (typeof taskId === 'string' && !/^\d+$/.test(taskId)) { // if not numeric, assume public_id
@@ -150,7 +150,7 @@ async function ensureAssignedTask(taskId, userId, tenantId) {
     `SELECT t.id
      FROM taskassignments ta
      INNER JOIN tasks t ON t.id = ta.task_Id
-     WHERE ta.task_Id = ? AND ta.user_Id = ? ${clause}
+     WHERE ta.task_Id = ? AND ta.user_Id = ? AND (ta.is_read_only IS NULL OR ta.is_read_only != 1) ${clause}
      LIMIT 1`,
     [internalTaskId, userId, ...params]
   );
@@ -159,7 +159,7 @@ async function ensureAssignedTask(taskId, userId, tenantId) {
   }
   return rows[0];
 }
- 
+
 async function ensureSubtaskPermission(subtaskId, userId, tenantId) {
   const { clause, params } = await buildTenantClause('t', tenantId);
   const rows = await queryAsync(
@@ -167,7 +167,7 @@ async function ensureSubtaskPermission(subtaskId, userId, tenantId) {
      FROM subtasks s
      INNER JOIN tasks t ON t.id = s.task_id
      INNER JOIN taskassignments ta ON ta.task_Id = t.id
-     WHERE s.id = ? AND ta.user_Id = ? ${clause}
+     WHERE s.id = ? AND ta.user_Id = ? AND (ta.is_read_only IS NULL OR ta.is_read_only != 1) ${clause}
      LIMIT 1`,
     [subtaskId, userId, ...params]
   );
@@ -176,13 +176,13 @@ async function ensureSubtaskPermission(subtaskId, userId, tenantId) {
   }
   return rows[0];
 }
- 
+
 function accessDenied(message) {
   const error = new Error(message);
   error.status = 403;
   return error;
 }
- 
+
 async function requireFeatureAccess(req, feature) {
   const resources = await RoleBasedLoginResponse.getAccessibleResources(req.user._id, req.user.role, req.user.tenant_id, req.user.id);
   if (!resources || !Array.isArray(resources.features) || !resources.features.includes(feature)) {
@@ -190,7 +190,7 @@ async function requireFeatureAccess(req, feature) {
   }
   return resources;
 }
- 
+
 async function insertChecklistItem({ taskId, title, description, dueDate, userId, tenantId }) {
   if (!title) {
     const error = new Error('Checklist title is required');
@@ -211,19 +211,19 @@ async function insertChecklistItem({ taskId, title, description, dueDate, userId
   const insertColumns = [];
   const placeholders = [];
   const insertParams = [];
- 
+
   const pushParam = (column, value) => {
     insertColumns.push(column);
     placeholders.push('?');
     insertParams.push(value);
   };
- 
+
   pushParam('task_id', internalTaskId);
   pushParam('title', title);
   if (columnsPresence.description) {
     pushParam('description', description || null);
   }
-  pushParam('status', 'Pending');
+  pushParam('status', 'PENDING');
   pushParam('due_date', dueDate || null);
   if (columnsPresence.created_by) {
     pushParam('created_by', userId);
@@ -239,7 +239,7 @@ async function insertChecklistItem({ taskId, title, description, dueDate, userId
   const insertedRows = await queryAsync('SELECT * FROM subtasks WHERE id = ? LIMIT 1', [result.insertId]);
   return insertedRows[0];
 }
- 
+
 function buildClientPayload(row) {
   if (!row.client_id && !row.client_name) return null;
   return {
@@ -247,7 +247,7 @@ function buildClientPayload(row) {
     name: row.client_name || null
   };
 }
- 
+
 function buildProjectPayload(row) {
   const hasInternal = row.project_internal_id != null;
   const hasPublic = row.project_public_id != null;
@@ -261,9 +261,9 @@ function buildProjectPayload(row) {
     priority: row.project_priority || null
   };
 }
- 
+
 module.exports = {
- 
+
   getMyTasks: async (req, res) => {
     try {
       await requireFeatureAccess(req, 'Assigned Tasks');
@@ -271,7 +271,7 @@ module.exports = {
       const { clause: taskDeletionClause } = await buildTaskDeletionClause('t');
       const projectData = await buildProjectJoinClause();
       const taskDescriptionExists = await hasColumn('tasks', 'description');
- 
+
       const selectParts = [
         't.id',
         't.public_id',
@@ -284,7 +284,7 @@ module.exports = {
         't.client_id',
         'MIN(c.name) AS client_name'
       ].concat(projectData.selects);
- 
+
       const rows = await queryAsync(
         `SELECT
          ${selectParts.join(', ')},
@@ -305,10 +305,10 @@ module.exports = {
        ORDER BY t.updatedAt DESC`,
         [req.user._id, ...tenantParams]
       );
- 
+
       const taskIds = (rows || []).map(r => r.id).filter(Boolean);
       const checklistMap = await fetchChecklistMap(taskIds);
- 
+
       const lockStatuses = {};
       if (taskIds.length > 0) {
         const lockResult = await queryAsync(`
@@ -336,7 +336,7 @@ module.exports = {
           r.responded_at DESC,
           r.requested_at DESC
       `);
- 
+
         const lockRows = Array.isArray(lockResult) ? lockResult : [];
         lockRows.forEach(row => {
           if (!row || !row.task_id || lockStatuses[row.task_id]) return;
@@ -357,7 +357,7 @@ module.exports = {
           };
         });
       }
- 
+
       const tasks = (rows || []).map(r => {
         const taskId = r.id;
         const assignedIds = r.assigned_user_ids ? String(r.assigned_user_ids).split(',') : [];
@@ -370,10 +370,10 @@ module.exports = {
           name: assignedNames[index] || null,
           readOnly: assignedReadOnly[index] === '1' || assignedReadOnly[index] === 'true'
         }));
- 
+
         const lockInfo = lockStatuses[taskId] || {};
         const isLocked = Boolean(lockInfo.is_locked);
- 
+
         let summary = {};
         try {
           const now = new Date();
@@ -385,7 +385,7 @@ module.exports = {
         } catch (e) {
           summary.error = 'Could not calculate summary';
         }
- 
+
         return {
           id: r.public_id ? String(r.public_id) : String(r.id),
           internal_id: taskId,
@@ -422,14 +422,14 @@ module.exports = {
           summary
         };
       });
- 
+
       const statusMap = {};
       tasks.forEach(task => {
         const status = (task.status || task.stage || 'PENDING').toUpperCase();
         if (!statusMap[status]) statusMap[status] = [];
         statusMap[status].push(task);
       });
- 
+
       const possibleStatuses = ['PENDING', 'TO DO', 'IN PROGRESS', 'ON HOLD', 'REVIEW', 'COMPLETED'];
       const kanban = possibleStatuses.map(status => {
         const tasksInStatus = statusMap[status] || [];
@@ -442,12 +442,12 @@ module.exports = {
           ...((tasksInStatus.length === 0) ? { message: `No tasks in ${status.replace('_', ' ').toLowerCase()}` } : {})
         };
       });
- 
+
       const lockSummary = {
         total_locked: tasks.filter(t => t.is_locked).length,
         has_pending_requests: Object.keys(lockStatuses).length > 0
       };
- 
+
       const metrics = {
         totalTasks: tasks.length,
         completedTasks: tasks.filter(t => (t.status || '').toString().toUpperCase() === 'COMPLETED').length,
@@ -457,13 +457,13 @@ module.exports = {
         }).length,
         reassignedTasks: Object.keys(lockStatuses).length
       };
- 
+
       const rules = {
         allowReassignment: true,
         allowMultipleRequestsForSameTask: false,
         allowedStatuses: ['pending', 'in_progress']
       };
- 
+
       return res.json({
         success: true,
         metrics,
@@ -478,7 +478,7 @@ module.exports = {
       return res.status(error.status || 500).json({ success: false, error: error.message });
     }
   },
- 
+
   tasksOverview: async (req, res) => {
     try {
       return res.json({
@@ -496,7 +496,7 @@ module.exports = {
               title: 'Fix login issue',
               description: 'Resolve login redirect bug',
               status: 'pending',
- 
+
               reassignment: {
                 requested: true,
                 status: 'pending',
@@ -510,7 +510,7 @@ module.exports = {
               title: 'Create dashboard UI',
               description: 'Employee dashboard layout',
               status: 'in_progress',
- 
+
               reassignment: {
                 requested: false,
                 status: null
@@ -521,7 +521,7 @@ module.exports = {
               title: 'API integration',
               description: 'Integrate task APIs',
               status: 'completed',
- 
+
               reassignment: {
                 requested: false,
                 status: null
@@ -532,7 +532,7 @@ module.exports = {
               title: 'Write unit tests',
               description: 'Coverage for task module',
               status: 'pending',
- 
+
               reassignment: {
                 requested: true,
                 status: 'approved',
@@ -541,7 +541,7 @@ module.exports = {
               }
             }
           ],
- 
+
           rules: {
             allowReassignment: true,
             allowMultipleRequestsForSameTask: false,
@@ -570,7 +570,7 @@ module.exports = {
       return res.status(error.status || 500).json({ success: false, error: error.message });
     }
   },
- 
+
   updateChecklistItem: async (req, res) => {
     try {
       const { id } = req.params;
@@ -612,7 +612,7 @@ module.exports = {
       return res.status(error.status || 500).json({ success: false, error: error.message });
     }
   },
- 
+
   completeChecklistItem: async (req, res) => {
     try {
       const { id } = req.params;
@@ -622,7 +622,7 @@ module.exports = {
       await ensureSubtaskPermission(id, req.user._id, req.user.tenant_id);
       const columnsPresence = await getSubtaskColumnPresence();
       const updates = ['status = ?'];
-      const params = ['Completed'];
+      const params = ['COMPLETED'];
       if (columnsPresence.completed_at) {
         updates.push('completed_at = NOW()');
       }
@@ -636,7 +636,7 @@ module.exports = {
       return res.status(error.status || 500).json({ success: false, error: error.message });
     }
   },
- 
+
   softDeleteChecklistItem: async (req, res) => {
     try {
       const { id } = req.params;
@@ -646,7 +646,7 @@ module.exports = {
       await ensureSubtaskPermission(id, req.user._id, req.user.tenant_id);
       const columnsPresence = await getSubtaskColumnPresence();
       const updates = ['status = ?'];
-      const params = ['Completed'];
+      const params = ['COMPLETED'];
       if (columnsPresence.isDeleted) {
         updates.push('isDeleted = 1');
       }
@@ -666,7 +666,7 @@ module.exports = {
       return res.status(error.status || 500).json({ success: false, error: error.message });
     }
   },
- 
+
   deleteChecklistItem: async (req, res) => {
     try {
       const { id } = req.params;
@@ -685,7 +685,7 @@ module.exports = {
       return res.status(error.status || 500).json({ success: false, error: error.message });
     }
   },
- 
+
   addSubtask: async (req, res) => {
     try {
       const { taskId, title, description, dueDate } = req.body;
@@ -702,11 +702,11 @@ module.exports = {
       return res.status(error.status || 500).json({ success: false, error: error.message });
     }
   },
- 
+
   updateSubtask: async (req, res) => {
     return module.exports.updateChecklistItem(req, res);
   },
- 
+
   getSettings: (req, res) => {
     const settings = {
       version: "1.0.0",
@@ -737,7 +737,7 @@ module.exports = {
     };
     return res.json({ success: true, data: settings });
   },
- 
+
   putSettings: (req, res) => {
     const updates = req.body;
     const current = {
@@ -775,5 +775,4 @@ module.exports = {
     return res.json({ success: true, data: current });
   }
 };
- 
- 
+

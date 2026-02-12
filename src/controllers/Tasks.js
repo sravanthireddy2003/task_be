@@ -63,12 +63,17 @@ async function ensureProjectOpen(projectId) {
   }
 }
 
-async function assigneeHasActiveTask(userId) {
+async function assigneeHasActiveTask(userId, excludeTaskId = null) {
   if (!userId) return false;
-  const rows = await q(
-    `SELECT COUNT(*) as cnt FROM taskassignments ta JOIN tasks t ON ta.task_Id = t.id WHERE ta.user_Id = ? AND (t.status IS NULL OR UPPER(t.status) != 'COMPLETED') AND (ta.is_read_only IS NULL OR ta.is_read_only != 1)`,
-    [userId]
-  );
+  let sql = `SELECT COUNT(*) as cnt FROM taskassignments ta JOIN tasks t ON ta.task_Id = t.id WHERE ta.user_Id = ? AND (t.status IS NULL OR UPPER(t.status) != 'COMPLETED') AND (ta.is_read_only IS NULL OR ta.is_read_only != 1)`;
+  const params = [userId];
+
+  if (excludeTaskId) {
+    sql += ` AND t.id != ?`;
+    params.push(excludeTaskId);
+  }
+
+  const rows = await q(sql, params);
   return (rows && rows[0] && Number(rows[0].cnt || 0) > 0);
 }
 
@@ -1314,7 +1319,7 @@ router.get('/', async (req, res) => {
 });
 
 
-router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
+router.put('/:id', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   const { id: taskId } = req.params;
   const {
     stage, title, priority, description, client_id, projectId, projectPublicId,
@@ -1346,6 +1351,13 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
 
       (async () => {
         try {
+          // Check if user has permission to edit this task
+          const userCanEdit = await canEditTask(internalTaskId, req.user);
+          if (!userCanEdit) {
+            connection.release();
+            return res.status(403).json(errorResponse.forbidden('You do not have permission to edit this task', 'ACCESS_DENIED'));
+          }
+
           let reassignmentRequest = null;
           let oldAssigneeEmail = null;
           let oldAssigneeName = 'Previous Assignee';
@@ -1451,7 +1463,7 @@ router.put('/:id', requireRole(['Admin', 'Manager']), async (req, res) => {
                 }
 
                 const newAssigneeId = newUserIds[0];
-                const hasActiveForNew = await assigneeHasActiveTask(newAssigneeId);
+                const hasActiveForNew = await assigneeHasActiveTask(newAssigneeId, internalTaskId);
                 if (hasActiveForNew) {
                   connection.release();
                   return res.status(400).json(errorResponse.assignmentError('The selected assignee already has an active task and cannot be reassigned another until it is completed', 'ASSIGNEE_ALREADY_ASSIGNED', { userId: newAssigneeId }));

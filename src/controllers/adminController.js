@@ -131,8 +131,8 @@ module.exports = {
       };
       logger.info(JSON.stringify(logData));
       try {
-        await q("INSERT INTO audit_logs (action, module, performed_by, user_id, tenant_id, ip_address, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)", 
-          [logData.action, logData.module, logData.performedBy, logData.userId, logData.tenantId, logData.ipAddress, logData.timestamp]);
+        const details = JSON.stringify({ performedBy: logData.performedBy, tenantId: logData.tenantId, ipAddress: logData.ipAddress });
+        await q("INSERT INTO audit_logs (actor_id, action, entity, details, createdAt) VALUES (?, ?, ?, ?, NOW())", [logData.userId, logData.action, logData.module || null, details]);
       } catch (e) {
       }
 
