@@ -597,7 +597,7 @@ module.exports = {
       if (userRole === 'admin' || userRole === 'manager') {
 
         documents = await q(`
-          SELECT d.*, da.permissionLevel, da.assignedAt
+          SELECT d.*, da.accessType AS permissionLevel
           FROM documents d
           INNER JOIN document_access da ON d.documentId = da.documentId
           WHERE da.userId = ?
@@ -606,10 +606,10 @@ module.exports = {
       } else {
 
         documents = await q(`
-          SELECT d.*, da.permissionLevel, da.assignedAt
+          SELECT d.*, da.accessType AS permissionLevel
           FROM documents d
           INNER JOIN document_access da ON d.documentId = da.documentId
-          WHERE da.userId = ? AND da.permissionLevel IN ('VIEW', 'EDIT', 'OWNER')
+          WHERE da.userId = ? AND da.accessType IN ('VIEW', 'EDIT', 'OWNER')
           ORDER BY d.createdAt DESC
         `, [userId]);
       }

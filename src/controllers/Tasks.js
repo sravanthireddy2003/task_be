@@ -1323,8 +1323,11 @@ router.put('/:id', requireRole(['Admin', 'Manager', 'Employee']), async (req, re
   const { id: taskId } = req.params;
   const {
     stage, title, priority, description, client_id, projectId, projectPublicId,
-    taskDate, time_alloted, assigned_to, handleResignationRequestId
+    taskDate, time_alloted, estimatedHours, timeAlloted, assigned_to, handleResignationRequestId
   } = req.body;
+
+  // Normalize time_alloted (could come as time_alloted, timeAlloted, or estimatedHours)
+  const finalTimeAlloted = time_alloted || timeAlloted || estimatedHours;
 
   logger.info(`[PUT /tasks/:id] Updating task: taskId=${taskId}`);
 
@@ -1400,9 +1403,11 @@ router.put('/:id', requireRole(['Admin', 'Manager', 'Employee']), async (req, re
           if (description !== undefined) { updates.push('description = ?'); values.push(description); }
           if (client_id !== undefined) { updates.push('client_id = ?'); values.push(client_id); }
           if (taskDate !== undefined) { updates.push('taskDate = ?'); values.push(toMySQLDate(taskDate)); }
-          if (time_alloted !== undefined) { updates.push('time_alloted = ?'); values.push(time_alloted); }
-          if (projectId !== undefined) { updates.push('project_id = ?'); values.push(projectId); }
-          if (projectPublicId !== undefined) { updates.push('project_public_id = ?'); values.push(projectPublicId); }
+          if (finalTimeAlloted !== undefined) { updates.push('time_alloted = ?'); values.push(finalTimeAlloted); }
+          
+          // Only update project fields if they exist as columns
+          if (projectId !== undefined && await hasColumn('tasks', 'project_id')) { updates.push('project_id = ?'); values.push(projectId); }
+          if (projectPublicId !== undefined && await hasColumn('tasks', 'project_public_id')) { updates.push('project_public_id = ?'); values.push(projectPublicId); }
 
           updates.push('updatedAt = ?');
           values.push(toMySQLDate(new Date()));
@@ -1417,8 +1422,8 @@ router.put('/:id', requireRole(['Admin', 'Manager', 'Employee']), async (req, re
           connection.query(updateTaskQuery, values, async (err, result) => {
             if (err) {
               connection.release();
-              logger.error(`Error updating task: ${err.message}`);
-              return res.status(500).json(errorResponse.databaseError('Database update failed', 'DB_UPDATE_ERROR'));
+              logger.error(`Error updating task: ${err.message}`, { err, query: updateTaskQuery });
+              return res.status(500).json(errorResponse.databaseError('Database update failed', 'DB_UPDATE_ERROR', { details: err.message, code: err.code }));
             }
 
             if (result.affectedRows === 0) {
