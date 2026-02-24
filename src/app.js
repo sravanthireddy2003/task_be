@@ -14,7 +14,7 @@ const io = socketIo(server, {
     methods: ["GET", "POST", "PUT", "DELETE"]
   }
 });
-const db = require('./db');
+const db = require('./config/db');
 const ChatService = require('./services/chatService');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -451,7 +451,7 @@ function shutdown(signal) {
     server.close(() => {
       logger.info('HTTP server closed.');
       try {
-        const db = require('./db');
+        const db = require('./config/db');
         if (db && typeof db.end === 'function') {
           db.end(() => {
             logger.info('DB pool closed. Exiting.');

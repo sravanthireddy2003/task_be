@@ -31,81 +31,65 @@ if (smtpConfigured) {
   logger.info('emailService: SMTP not configured, emails will be logged to console');
 }
 
+function getLoginUrl() {
+  const base = (env && (env.FRONTEND_URL || env.BASE_URL)) || process.env.FRONTEND_URL || process.env.BASE_URL || 'http://localhost:3000';
+  return base.endsWith('/') ? `${base}log-in` : `${base}/log-in`;
+}
 
+function generateTemplate(greeting, intro, rows) {
+  let tableRows = rows.filter(r => r).map(r => `
+    <tr>
+      <td style="padding: 12px 10px; color: #989898; font-weight: bold; font-size: 11px; text-transform: uppercase; width: 35%; border-bottom: 1px solid #f0e6de;">${r.label}</td>
+      <td style="padding: 12px 10px; color: #333; font-size: 14px; border-bottom: 1px solid #f0e6de;">${r.value}</td>
+    </tr>
+  `).join('');
+
+  return `
+<div style="font-family: Arial, Helvetica, sans-serif; max-width: 600px; margin: 0 auto; background-color: #ffffff; border: 1px solid #eee;">
+  <div style="background-color: #fcece1; padding: 20px 30px;">
+    <h2 style="margin: 0; color: #7d7d7d; font-size: 18px; font-weight: bold;">${COMPANY_NAME}</h2>
+  </div>
+  <div style="padding: 30px;">
+    <p style="margin-top: 0; font-size: 14px; color: #444; line-height: 1.6;">
+      ${greeting}<br>
+      ${intro}
+    </p>
+    
+    <div style="background-color: #faf4ef; padding: 15px 20px; margin: 25px 0;">
+      <table style="width: 100%; border-collapse: collapse;">
+        ${tableRows}
+      </table>
+    </div>
+
+    <div style="margin-top: 40px; border-top: 1px solid #eee; padding-top: 15px;">
+      <p style="margin: 0; font-size: 12px; color: #a0a0a0; font-style: italic;">
+        This is an automatically generated email. Please do not reply to this email.
+      </p>
+    </div>
+  </div>
+</div>
+`.trim();
+}
 
 function otpTemplate(code, minutes = 5, purpose = "Verification") {
   return {
     subject: `${purpose} Code - ${COMPANY_NAME}`,
-    text: `
-Hello,
-
-Your ${purpose.toLowerCase()} code is: ${code}
-
-This code will expire in ${minutes} minutes.
-
-If you did not request this, please ignore this email.
-
-Thank you,
-${COMPANY_NAME}
-`.trim(),
-    html: `
-<div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width:600px; margin:auto; padding:20px; background:#f9f9f9; border-radius:12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
-  <div style="text-align:center; margin-bottom:20px;">
-    <h1 style="margin:0; font-size:24px; color:#333;">${purpose} Code</h1>
-    <p style="margin:4px 0 0; color:#666;">from <strong>${COMPANY_NAME}</strong></p>
-  </div>
-
-  <div style="background: linear-gradient(135deg, #f0f8ff, #e6f0ff); padding:20px; border-radius:10px; text-align:center; margin:20px 0;">
-    <p style="font-size:18px; margin:0 0 10px;">Your ${purpose.toLowerCase()} code is:</p>
-    <strong style="font-size:32px; letter-spacing:4px; color:#007bff;">${code}</strong>
-    <p style="margin-top:10px; color:#555;">Expires in <strong>${minutes} minutes</strong></p>
-  </div>
-
-  <p style="color:#555; line-height:1.6;">If you did not request this ${purpose.toLowerCase()}, please ignore this email. For assistance, contact our support team.</p>
-
-  <div style="text-align:center; margin-top:30px;">
-    <a href="#" style="background:#007bff; color:white; padding:12px 24px; border-radius:8px; text-decoration:none; font-weight:bold;">Go to ${COMPANY_NAME}</a>
-  </div>
-
-  <p style="font-size:12px; color:#aaa; text-align:center; margin-top:30px;">&copy; ${new Date().getFullYear()} ${COMPANY_NAME}. All rights reserved.</p>
-</div>
-`
+    text: `Hello,\nYour ${purpose.toLowerCase()} code is: ${code}\nThis code will expire in ${minutes} minutes.\nIf you did not request this, please ignore this email.\nThank you,\n${COMPANY_NAME}`,
+    html: generateTemplate('Hello,', `Your ${purpose.toLowerCase()} code has been generated:`, [
+      { label: 'CODE', value: `<strong style="font-size:18px; color:#000; letter-spacing: 2px;">${code}</strong>` },
+      { label: 'EXPIRES IN', value: `${minutes} minutes` }
+    ])
   };
 }
 
 function passwordResetTemplate({ email = "User", code, minutes = 10 }) {
   return {
     subject: `Your ${COMPANY_NAME} Password Reset OTP`,
-    text: `
-Hello ${email},
-
-You requested a password reset.
-
-Your verification code is:
-
-${code}
-
-This code expires in ${minutes} minutes.
-
-If you did not request this, please ignore this email.
-
-Thank you,
-${COMPANY_NAME}
-`.trim(),
-
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:650px;margin:auto;">
-        <h2>Password Reset Request</h2>
-        <p>Hello <strong>${email}</strong>,</p>
-        <p>Your verification code is:</p>
-        <div style="padding:12px;background:#f7f7f7;border-radius:6px;width:max-content;margin:10px 0;">
-          <strong style="font-size:22px;">${code}</strong>
-        </div>
-        <p>This code expires in <strong>${minutes} minutes</strong>.</p>
-        <p>If you did not request a password reset, please ignore this email.</p>
-        <p>Thank you,<br>${COMPANY_NAME}</p>
-      </div>
-    `
+    text: `Hello ${email},\nYou requested a password reset.\nYour verification code is: ${code}\nThis code expires in ${minutes} minutes.\nIf you did not request this, please ignore this email.\nThank you,\n${COMPANY_NAME}`,
+    html: generateTemplate(`Hello ${email},`, 'You requested a password reset. Your verification code is below:', [
+      { label: 'CODE', value: `<strong style="font-size:18px; color:#000; letter-spacing: 2px;">${code}</strong>` },
+      { label: 'EXPIRES IN', value: `${minutes} minutes` }
+    ])
   };
 }
 
@@ -119,199 +103,118 @@ function welcomeTemplate({
   createdAt = new Date(),
   setupLink = "#"
 }) {
-  const createdDate = new Date(createdAt).toLocaleString();
+  let createdDate = createdAt;
+  if (createdAt) {
+    const d = new Date(createdAt);
+    if (!isNaN(d.getTime())) {
+      createdDate = d.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
+    }
+  }
 
   return {
-    subject: `Welcome to ${COMPANY_NAME}, ${name}!`, // FIXED (No HTML)
-    text: `
-Welcome ${name},
-Your account has been created successfully.
-
-Name: ${name}
-Email: ${email}
-Role: ${role}
-Title: ${title}
-Created By: ${createdBy}
-Created At: ${createdDate}
-Temporary Password: ${tempPassword}
-
-Setup Link: ${setupLink}
-`.trim(),
-
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:650px;margin:auto;">
-        <h2>Welcome to ${COMPANY_NAME}, ${name}!</h2>
-        <p>Your account has been created successfully. Below are your details:</p>
-
-        <div style="background:#f5f5f5;padding:16px;border-radius:8px;margin:20px 0;">
-          <p><strong>Name:</strong> ${name}</p>
-          <p><strong>Email:</strong> ${email}</p>
-          <p><strong>Role:</strong> ${role}</p>
-          <p><strong>Title:</strong> ${title}</p>
-          <p><strong>Created By:</strong> ${createdBy}</p>
-          <p><strong>Created At:</strong> ${createdDate}</p>
-          <p><strong>Temporary Password:</strong> ${tempPassword}</p>
-        </div>
-
-        <p>
-          <a href="${setupLink}"
-             style="background:#007bff;color:white;padding:12px 20px;
-             border-radius:6px;text-decoration:none;">
-             Set Password
-          </a>
-        </p>
-      </div>
-    `
+    subject: `Welcome to ${COMPANY_NAME}, ${name}!`,
+    text: `Welcome ${name},\nYour account has been created successfully.\nName: ${name}\nEmail: ${email}\nRole: ${role}\nTitle: ${title}\nCreated By: ${createdBy}\nCreated At: ${createdDate}\nTemporary Password: ${tempPassword}`,
+    html: generateTemplate(`Hello ${name},`, 'Complete your account setup. Below are your account details:', [
+      { label: 'NAME', value: name },
+      { label: 'EMAIL', value: email },
+      { label: 'ROLE', value: role },
+      { label: 'TITLE', value: title },
+      { label: 'CREATED BY', value: createdBy },
+      { label: 'CREATED AT', value: createdDate },
+      { label: 'TEMP PASSWORD', value: `<strong>${tempPassword}</strong>` }
+    ])
   };
 }
 
 function taskAssignedTemplate({ taskTitle, assignedBy, link, assignedTo }) {
   return {
     subject: `New Task Assigned: ${taskTitle}`,
-    text: `
-${assignedBy} assigned you a new task.
-
-Task: ${taskTitle}
-Assigned To: ${assignedTo}
-View Task: ${link}
-`.trim(),
-    html: `
-      <h2>New Task Assigned</h2>
-      <p><strong>${assignedBy}</strong> assigned a task to <strong>${assignedTo}</strong>.</p>
-      <p><strong>Task:</strong> ${taskTitle}</p>
-      <p><a href="${link}">View Task</a></p>
-    `
+    text: `${assignedBy} assigned you a new task.\nTask: ${taskTitle}\nAssigned To: ${assignedTo}`,
+    html: generateTemplate(`Hello ${assignedTo},`, 'The following task has been assigned to you:', [
+      { label: 'TITLE', value: taskTitle },
+      { label: 'ASSIGNED BY', value: assignedBy }
+    ])
   };
 }
 
 function taskStatusTemplate({ taskId, stage, userNames = [] }) {
   return {
     subject: `Task #${taskId} Status Updated: ${stage}`,
-    text: `
-Task #${taskId} has been updated.
-New Status: ${stage}
-Notified: ${userNames.join(', ')}
-`.trim(),
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:650px;margin:auto;">
-        <h3>Task Status Updated</h3>
-        <p>Task <strong>#${taskId}</strong> has been updated to <strong>${stage}</strong>.</p>
-        ${userNames.length ? `<p><strong>Notified:</strong> ${userNames.join(', ')}</p>` : ''}
-      </div>
-    `
+    text: `Task #${taskId} has been updated.\nNew Status: ${stage}\nNotified: ${userNames.join(', ')}`,
+    html: generateTemplate('Hello,', `Task #<strong>${taskId}</strong> status has been updated.`, [
+      { label: 'TASK ID', value: taskId },
+      { label: 'NEW STATUS', value: `<strong>${stage}</strong>` },
+      userNames.length ? { label: 'NOTIFIED', value: userNames.join(', ') } : null
+    ])
   };
 }
-
-
 
 function taskReassignmentRequestTemplate({ taskTitle, requesterName, reason, taskLink }) {
   return {
     subject: `Task Reassignment Requested: ${taskTitle}`,
-    text: `A reassignment request has been submitted.\n\nTask: ${taskTitle}\nRequested by: ${requesterName}\nReason: ${reason}\nReview and take action: ${taskLink}`,
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
-        <h2 style="color:#007bff;">Task Reassignment Requested</h2>
-        <p><strong>Task:</strong> ${taskTitle}</p>
-        <p><strong>Requested by:</strong> ${requesterName}</p>
-        <p><strong>Reason:</strong> ${reason}</p>
-        <p>
-          <a href="${taskLink}" style="background:#007bff;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;">Review Request</a>
-        </p>
-      </div>
-    `
+    text: `A reassignment request has been submitted.\nTask: ${taskTitle}\nRequested by: ${requesterName}\nReason: ${reason}`,
+    html: generateTemplate('Hello,', 'A task reassignment request has been submitted:', [
+      { label: 'TITLE', value: taskTitle },
+      { label: 'REQUESTED BY', value: requesterName },
+      { label: 'REASON', value: reason }
+    ])
   };
 }
 
 function taskReassignmentApprovedTemplate({ taskTitle, oldAssignee, newAssignee, taskLink }) {
   return {
     subject: `Task Reassigned: ${taskTitle}`,
-    text: `You have been assigned a new task.\nTask: ${taskTitle}\nPrevious Assignee: ${oldAssignee}\nTask Link: ${taskLink}`,
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
-        <h2 style="color:#28a745;">Task Reassigned</h2>
-        <p>You have been assigned a new task.</p>
-        <ul>
-          <li><b>Task:</b> ${taskTitle}</li>
-          <li><b>Previous Assignee:</b> ${oldAssignee}</li>
-        </ul>
-        <p><a href="${taskLink}" style="background:#28a745;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;">View Task</a></p>
-      </div>
-    `
+    text: `You have been assigned a new task.\nTask: ${taskTitle}\nPrevious Assignee: ${oldAssignee}`,
+    html: generateTemplate(`Hello ${newAssignee},`, 'You have been assigned a new task:', [
+      { label: 'TITLE', value: taskTitle },
+      { label: 'PREVIOUS ASSIGNEE', value: oldAssignee }
+    ])
   };
 }
 
 function taskReassignmentOldAssigneeTemplate({ taskTitle, newAssignee, taskLink }) {
   return {
     subject: `Task Reassigned (Read-Only): ${taskTitle}`,
-    text: `Your task has been reassigned and is now read-only.\nTask: ${taskTitle}\nNew Assignee: ${newAssignee}\nTask Link: ${taskLink}`,
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
-        <h2 style="color:#ffc107;">Task Reassigned (Read-Only)</h2>
-        <p>Your task has been reassigned and is now <b>read-only</b>.</p>
-        <ul>
-          <li><b>Task:</b> ${taskTitle}</li>
-          <li><b>New Assignee:</b> ${newAssignee}</li>
-        </ul>
-        <p><a href="${taskLink}" style="background:#ffc107;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;">View Task</a></p>
-      </div>
-    `
+    text: `Your task has been reassigned and is now read-only.\nTask: ${taskTitle}\nNew Assignee: ${newAssignee}`,
+    html: generateTemplate('Hello,', 'Your task has been reassigned and is now read-only:', [
+      { label: 'TITLE', value: taskTitle },
+      { label: 'NEW ASSIGNEE', value: newAssignee }
+    ])
   };
 }
 
 function taskReassignmentManagerTemplate({ taskTitle, oldAssignee, newAssignee, taskLink }) {
   return {
     subject: `Task Reassignment Completed: ${taskTitle}`,
-    text: `Task reassignment completed.\nTask: ${taskTitle}\nNew Assignee: ${newAssignee}\nOld Assignee: ${oldAssignee}\nTask Link: ${taskLink}`,
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
-        <h2 style="color:#17a2b8;">Task Reassignment Completed</h2>
-        <ul>
-          <li><b>Task:</b> ${taskTitle}</li>
-          <li><b>New Assignee:</b> ${newAssignee}</li>
-          <li><b>Old Assignee:</b> ${oldAssignee}</li>
-        </ul>
-        <p><a href="${taskLink}" style="background:#17a2b8;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;">View Task</a></p>
-      </div>
-    `
+    text: `Task reassignment completed.\nTask: ${taskTitle}\nNew Assignee: ${newAssignee}\nOld Assignee: ${oldAssignee}`,
+    html: generateTemplate('Hello,', 'Task reassignment completed:', [
+      { label: 'TITLE', value: taskTitle },
+      { label: 'NEW ASSIGNEE', value: newAssignee },
+      { label: 'OLD ASSIGNEE', value: oldAssignee }
+    ])
   };
 }
 
 function taskReassignmentRejectedTemplate({ taskTitle, taskLink }) {
   return {
     subject: `Task Reassignment Rejected: ${taskTitle}`,
-    text: `Your reassignment request was rejected.\nTask: ${taskTitle}\nYou can continue working on this task.\nTask Link: ${taskLink}`,
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
-        <h2 style="color:#dc3545;">Task Reassignment Rejected</h2>
-        <p>Your reassignment request was <b>rejected</b>.</p>
-        <ul>
-          <li><b>Task:</b> ${taskTitle}</li>
-        </ul>
-        <p>You can continue working on this task.</p>
-        <p><a href="${taskLink}" style="background:#dc3545;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;">View Task</a></p>
-      </div>
-    `
+    text: `Your reassignment request was rejected.\nTask: ${taskTitle}\nYou can continue working on this task.`,
+    html: generateTemplate('Hello,', 'Your task reassignment request was rejected. You can continue working on this task.', [
+      { label: 'TITLE', value: taskTitle }
+    ])
   };
 }
 
 function taskReassignmentRejectedManagerTemplate({ taskTitle, oldAssignee, taskLink }) {
   return {
     subject: `Task Reassignment Rejected: ${taskTitle}`,
-    text: `Task reassignment was rejected.\nTask: ${taskTitle}\nOld Assignee: ${oldAssignee}\nTask Link: ${taskLink}`,
-    html: `
-      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;">
-        <h2 style="color:#dc3545;">Task Reassignment Rejected</h2>
-        <ul>
-          <li><b>Task:</b> ${taskTitle}</li>
-          <li><b>Old Assignee:</b> ${oldAssignee}</li>
-        </ul>
-        <p><a href="${taskLink}" style="background:#dc3545;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;">View Task</a></p>
-      </div>
-    `
+    text: `Task reassignment was rejected.\nTask: ${taskTitle}\nOld Assignee: ${oldAssignee}`,
+    html: generateTemplate('Hello,', 'Task reassignment was rejected:', [
+      { label: 'TITLE', value: taskTitle },
+      { label: 'OLD ASSIGNEE', value: oldAssignee }
+    ])
   };
 }
-
-
 
 function projectManagerAssignmentTemplate({
   projectName,
@@ -328,66 +231,17 @@ function projectManagerAssignmentTemplate({
 }) {
   return {
     subject: `Project Assignment: ${projectName}`,
-    text: `
-Dear ${managerName},
-
-You have been assigned as Project Manager for "${projectName}".
-
-Project Details:
-Client: ${clientName}
-Priority: ${priority}
-Start Date: ${startDate || 'TBD'}
-End Date: ${endDate || 'TBD'}
-Budget: ${budget || 'TBD'}
-Project ID: ${publicId}
-Departments: ${departmentNames.length ? departmentNames.join(', ') : 'None'}
-
-Please review the project details and begin planning.
-
-Access the project dashboard: ${projectLink}
-
-Best regards,
-${creatorName}
-${COMPANY_NAME}
-    `.trim(),
-    html: `
-<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"></head>
-<body style="margin:0; padding:20px; font-family:Arial,sans-serif; line-height:1.6; color:#333;">
-  <div style="max-width:600px; margin:0 auto; background:#fff; padding:30px; border:1px solid #ddd; border-radius:5px;">
-    <h2 style="color:#333; margin-top:0;">Project Assignment Notification</h2>
-
-    <p>Dear <strong>${managerName}</strong>,</p>
-
-    <p>You have been assigned as Project Manager for the following project:</p>
-
-    <table style="width:100%; border-collapse:collapse; margin:20px 0;">
-      <tr><td style="padding:8px; border:1px solid #ddd; background:#f9f9f9;"><strong>Project Name:</strong></td><td style="padding:8px; border:1px solid #ddd;">${projectName}</td></tr>
-      <tr><td style="padding:8px; border:1px solid #ddd; background:#f9f9f9;"><strong>Client:</strong></td><td style="padding:8px; border:1px solid #ddd;">${clientName}</td></tr>
-      <tr><td style="padding:8px; border:1px solid #ddd; background:#f9f9f9;"><strong>Priority:</strong></td><td style="padding:8px; border:1px solid #ddd;">${priority}</td></tr>
-      <tr><td style="padding:8px; border:1px solid #ddd; background:#f9f9f9;"><strong>Start Date:</strong></td><td style="padding:8px; border:1px solid #ddd;">${startDate || 'TBD'}</td></tr>
-      <tr><td style="padding:8px; border:1px solid #ddd; background:#f9f9f9;"><strong>End Date:</strong></td><td style="padding:8px; border:1px solid #ddd;">${endDate || 'TBD'}</td></tr>
-      <tr><td style="padding:8px; border:1px solid #ddd; background:#f9f9f9;"><strong>Budget:</strong></td><td style="padding:8px; border:1px solid #ddd;">${budget || 'TBD'}</td></tr>
-      <tr><td style="padding:8px; border:1px solid #ddd; background:#f9f9f9;"><strong>Project ID:</strong></td><td style="padding:8px; border:1px solid #ddd;"><strong>${publicId}</strong></td></tr>
-    </table>
-
-    ${departmentNames.length ? `
-    <p><strong>Assigned Departments:</strong> ${departmentNames.join(', ')}</p>
-    ` : ''}
-
-    <p>Please review the project details and begin the planning phase.</p>
-
-    <p style="text-align:center; margin:30px 0;">
-      <a href="${projectLink}" style="background:#007bff; color:white; padding:12px 24px; text-decoration:none; border-radius:4px; font-weight:bold;">Access Project Dashboard</a>
-    </p>
-
-    <hr style="margin:30px 0;">
-    <p>Best regards,<br><strong>${creatorName}</strong><br>${COMPANY_NAME}</p>
-  </div>
-</body>
-</html>
-    `
+    text: `Dear ${managerName},\nYou have been assigned as Project Manager for "${projectName}".\nClient: ${clientName}\nPriority: ${priority}\nProject ID: ${publicId}`,
+    html: generateTemplate(`Hello ${managerName},`, 'You have been assigned as Project Manager for the following project:', [
+      { label: 'PROJECT NAME', value: projectName },
+      { label: 'CLIENT', value: clientName },
+      { label: 'PRIORITY', value: priority },
+      { label: 'START DATE', value: startDate || 'TBD' },
+      { label: 'END DATE', value: endDate || 'TBD' },
+      { label: 'BUDGET', value: budget || 'TBD' },
+      { label: 'PROJECT ID', value: `<strong>${publicId}</strong>` },
+      departmentNames.length ? { label: 'DEPARTMENTS', value: departmentNames.join(', ') } : null
+    ])
   };
 }
 
@@ -406,65 +260,16 @@ function clientProjectCreationTemplate({
 }) {
   return {
     subject: `Project Created: ${projectName}`,
-    text: `
-Dear ${clientName},
-
-Your project "${projectName}" has been successfully created.
-
-Project Summary:
-Project Manager: ${managerName}
-Priority: ${priority}
-Start Date: ${startDate || 'TBD'}
-End Date: ${endDate || 'TBD'}
-Budget: ${budget || 'TBD'}
-Project ID: ${publicId}
-
-You can track project progress through the client portal.
-
-Access your project: ${projectLink}
-
-Thank you,
-${creatorName}
-${COMPANY_NAME}
-    `.trim(),
-    html: `
-<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"></head>
-<body style="margin:0; padding:20px; font-family:Arial,sans-serif; line-height:1.6; color:#333;">
-  <div style="max-width:600px; margin:0 auto; background:#fff; padding:30px; border:1px solid #ddd; border-radius:5px;">
-    <h2 style="color:#333; margin-top:0;">Project Creation Confirmation</h2>
-
-    <p>Dear <strong>${clientName}</strong>,</p>
-
-    <p>We are pleased to inform you that your project has been successfully created:</p>
-
-    <div style="background:#f8f9fa; padding:20px; border-radius:5px; margin:20px 0;">
-      <h3 style="margin-top:0; color:#495057;">Project Summary</h3>
-      <p><strong>Project:</strong> ${projectName}</p>
-      <p><strong>Project Manager:</strong> ${managerName}</p>
-      <p><strong>Priority:</strong> ${priority}</p>
-      <p><strong>Timeline:</strong> ${startDate || 'TBD'} to ${endDate || 'TBD'}</p>
-      <p><strong>Budget:</strong> ${budget || 'TBD'}</p>
-      <p><strong>Project ID:</strong> <strong>${publicId}</strong></p>
-    </div>
-
-    ${departmentNames.length ? `
-    <p><strong>Our Teams:</strong> ${departmentNames.join(', ')}</p>
-    ` : ''}
-
-    <p>You can now track project progress and communicate with your project manager through our client portal.</p>
-
-    <p style="text-align:center; margin:30px 0;">
-      <a href="${projectLink}" style="background:#28a745; color:white; padding:12px 24px; text-decoration:none; border-radius:4px; font-weight:bold;">View Project Status</a>
-    </p>
-
-    <hr style="margin:30px 0;">
-    <p>Thank you,<br><strong>${creatorName}</strong><br>${COMPANY_NAME}</p>
-  </div>
-</body>
-</html>
-    `
+    text: `Dear ${clientName},\nYour project "${projectName}" has been successfully created.\nProject Manager: ${managerName}\nPriority: ${priority}\nProject ID: ${publicId}`,
+    html: generateTemplate(`Hello ${clientName},`, 'We are pleased to inform you that your project has been successfully created:', [
+      { label: 'PROJECT NAME', value: projectName },
+      { label: 'PROJECT MANAGER', value: managerName },
+      { label: 'PRIORITY', value: priority },
+      { label: 'TIMELINE', value: `${startDate || 'TBD'} to ${endDate || 'TBD'}` },
+      { label: 'BUDGET', value: budget || 'TBD' },
+      { label: 'PROJECT ID', value: `<strong>${publicId}</strong>` },
+      departmentNames.length ? { label: 'OUR TEAMS', value: departmentNames.join(', ') } : null
+    ])
   };
 }
 
@@ -518,7 +323,7 @@ async function sendProjectNotifications({
       creatorName,
       managerName: projectManagerInfo.name
     });
-   
+
     results.manager = await sendEmail({
       to: projectManagerInfo.email,
       ...pmTemplate
@@ -539,13 +344,13 @@ async function sendProjectNotifications({
       creatorName,
       clientName: clientInfo.name
     });
-   
+
     results.client = await sendEmail({
       to: clientInfo.email,
       ...clientTemplate
     });
   }
- 
+
   return results;
 }
 
@@ -561,82 +366,27 @@ function taskAssignedToEmployeeTemplate({
   taskLink,
   employeeName,
 }) {
+  let formattedDate = taskDate;
+  if (taskDate) {
+    const d = new Date(taskDate);
+    if (!isNaN(d.getTime())) {
+      formattedDate = d.toLocaleString('en-US', {
+        dateStyle: 'medium',
+        timeStyle: 'short'
+      });
+    }
+  }
+
   return {
     subject: `New Task Assigned: ${taskTitle} (Priority: ${priority})`,
-    html: `
-      <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px;">
-        <p>Dear <strong>${employeeName}</strong>,</p>
-
-        <p>
-          You have been assigned a new task. Please review the details below:
-        </p>
-
-        <table style="border-collapse: collapse; width: 100%; margin-top: 12px;">
-          <tr>
-            <td style="padding: 8px; font-weight: bold;">Task Title</td>
-            <td style="padding: 8px;">${taskTitle}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px; font-weight: bold;">Task ID</td>
-            <td style="padding: 8px;">#${taskId}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px; font-weight: bold;">Priority</td>
-            <td style="padding: 8px;">${priority}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px; font-weight: bold;">Due Date</td>
-            <td style="padding: 8px;">${taskDate}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px; font-weight: bold;">Assigned By</td>
-            <td style="padding: 8px;">${assignedBy}</td>
-          </tr>
-          ${
-            projectName
-              ? `
-          <tr>
-            <td style="padding: 8px; font-weight: bold;">Project</td>
-            <td style="padding: 8px;">${projectName}</td>
-          </tr>`
-              : ''
-          }
-        </table>
-
-        ${
-          description
-            ? `
-          <p style="margin-top: 16px;">
-            <strong>Description:</strong><br />
-            ${description}
-          </p>`
-            : ''
-        }
-
-        <p style="margin-top: 20px;">
-          <a href="${taskLink}"
-             style="
-               background-color: #ff8c00;
-               color: #ffffff;
-               padding: 10px 16px;
-               text-decoration: none;
-               border-radius: 4px;
-               display: inline-block;
-             ">
-            View Task Details
-          </a>
-        </p>
-
-        <p style="margin-top: 20px;">
-          If you have any questions or need clarification, please contact your manager or the support team.
-        </p>
-
-        <p style="margin-top: 24px;">
-          Best regards,<br />
-          <strong>Task Management System</strong>
-        </p>
-      </div>
-    `,
+    text: `Dear ${employeeName},\nYou have been assigned a new task: ${taskTitle}\nID: #${taskId}\nPriority: ${priority}\nDue Date: ${formattedDate}\nAssigned By: ${assignedBy}`,
+    html: generateTemplate(`Hello ${employeeName},`, 'The following task has been assigned to you:', [
+      { label: 'TITLE', value: taskTitle },
+      description ? { label: 'DESCRIPTION', value: description } : null,
+      { label: 'DUE DATE', value: formattedDate },
+      { label: 'PRIORITY', value: priority },
+      projectName ? { label: 'PROJECT', value: projectName } : null
+    ])
   };
 }
 
@@ -658,7 +408,6 @@ async function sendTaskAssignmentEmails({
   const results = {};
 
   try {
-
     if (!connection) {
       logger.warn('⚠️ Database connection not provided');
       return results;
@@ -703,91 +452,65 @@ async function sendTaskAssignmentEmails({
     });
 
     if (users.length === 0) {
-      logger.info('ℹ️ No matching users found for email notification');
+      logger.info('ℹ️ No matching users found in DB for the assigned IDs');
       return results;
     }
 
-    logger.info(`📧 Preparing to send ${users.length} task assignment emails`);
+    const emailPromises = users.map((user) => {
+      if (!user.email) return Promise.resolve({ sent: false, error: 'No email address' });
+      const tpl = taskAssignedToEmployeeTemplate({
+        taskTitle,
+        taskId,
+        priority,
+        taskDate,
+        description,
+        projectName,
+        projectPublicId,
+        assignedBy,
+        taskLink,
+        employeeName: user.name || 'User',
+      });
+      return sendEmail({
+        to: user.email,
+        subject: tpl.subject,
+        text: tpl.text,
+        html: tpl.html,
+      });
+    });
 
-    
-    for (const user of users) {
-      if (!user.email) continue;
-
-      try {
-        const emailTemplate = taskAssignedToEmployeeTemplate({
-          taskTitle,
-          taskId,
-          priority,
-          taskDate,
-          description,
-          projectName,
-          projectPublicId,
-          assignedBy,
-          taskLink,
-          employeeName: user.name || 'Team Member',
-        });
-
-        const mailResult = await sendEmail({
-          to: user.email,
-          ...emailTemplate,
-        });
-
-        results[user.email] = {
-          sent: true,
-          messageId: mailResult?.messageId || null,
-        };
-
-        logger.info(`Email sent to ${user.name} (${user.email})`);
-      } catch (mailError) {
-        results[user.email] = {
-          sent: false,
-          error: mailError.message,
-        };
-
-        logger.error(`Failed to send email to ${user.email}:`, mailError.message);
+    const outcomes = await Promise.allSettled(emailPromises);
+    outcomes.forEach((outcome, idx) => {
+      const u = users[idx];
+      if (outcome.status === 'fulfilled') {
+        results[u.email] = outcome.value;
+      } else {
+        results[u.email] = { sent: false, error: outcome.reason };
       }
-    }
+    });
 
-    return results;
-    } catch (error) {
-    logger.error('Task assignment email process failed:', error.message);
-    return results;
+  } catch (error) {
+    logger.error('❌ Error sending task assignment emails:', error);
   }
+
+  return results;
 }
- 
+
 module.exports = {
   sendEmail,
+  sendTaskAssignmentEmails,
+  sendProjectNotifications,
   otpTemplate,
   passwordResetTemplate,
   welcomeTemplate,
   taskAssignedTemplate,
   taskStatusTemplate,
-  sendCredentials,
+  taskReassignmentRequestTemplate,
+  taskReassignmentApprovedTemplate,
+  taskReassignmentOldAssigneeTemplate,
+  taskReassignmentManagerTemplate,
+  taskReassignmentRejectedTemplate,
+  taskReassignmentRejectedManagerTemplate,
   projectManagerAssignmentTemplate,
   clientProjectCreationTemplate,
-  sendProjectNotifications,
-  taskAssignedToEmployeeTemplate,
-  sendTaskAssignmentEmails
-  ,taskReassignmentRequestTemplate
-  ,taskReassignmentApprovedTemplate
-  ,taskReassignmentOldAssigneeTemplate
-  ,taskReassignmentManagerTemplate
-  ,taskReassignmentRejectedTemplate
-  ,taskReassignmentRejectedManagerTemplate
+  taskAssignedToEmployeeTemplate
 };
-
-async function sendCredentials(to, name, publicId, tempPassword, setupLink) {
-  try {
-    const link = setupLink || `${env.BASE_URL || env.FRONTEND_URL}/auth/setup?uid=${encodeURIComponent(publicId)}`;
-    const tpl = welcomeTemplate(name || '', to || '', tempPassword || '', link);
-    const r = await sendEmail({ to, subject: tpl.subject, text: tpl.text, html: tpl.html });
-    return r;
-  } catch (e) {
-    logger.error('emailService.sendCredentials error', e && e.message);
-    return { sent: false, error: e && e.message };
-  }
-}
- 
-module.exports.sendCredentials = sendCredentials;
- 
- 

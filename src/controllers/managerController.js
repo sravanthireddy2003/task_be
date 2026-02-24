@@ -1,5 +1,5 @@
 const db = require(__root + 'db');
-const RoleBasedLoginResponse = require(__root + 'controller/utils/RoleBasedLoginResponse');
+const RoleBasedLoginResponse = require(__root + 'controllers/utils/RoleBasedLoginResponse');
 const { normalizeProjectStatus } = require(__root + 'utils/projectStatus');
 const errorResponse = require(__root + 'utils/errorResponse');
 
