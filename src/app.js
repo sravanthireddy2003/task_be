@@ -54,6 +54,15 @@ app.use(rateLimit(globalRateLimitConfig));
 
 app.use(morgan('combined', { stream: { write: msg => logger.info(msg.trim()) } }));
 
+// Our custom structured JSON request logger
+const requestLogger = require('./middleware/requestLogger');
+app.use(requestLogger);
+
+const auditExpress = require('./middleware/auditExpress');
+app.use(auditExpress);
+
+
+
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
@@ -365,6 +374,9 @@ app.use((req, res, next) => {
 
 const errorHandler = require(__root + 'middleware/errorHandler');
 app.use(errorHandler);
+
+const errorLogger = require(__root + 'middleware/errorLogger');
+app.use(errorLogger);
 
 app.get('/api', function (req, res) {
   res.status(200).send('API working...');
