@@ -96,8 +96,8 @@ router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (re
           : 'SELECT COALESCE(SUM(hours), 0) as h FROM timelogs WHERE DATE(log_date) BETWEEN DATE(?) AND DATE(?)',
         params: isEmployee ? [startStr, endStr, ...taskScopeParams] : [startStr, endStr]
       },
-      { sql: `SELECT COALESCE(SUM(t.total_duration), 0) as h FROM tasks t ${taskJoin} WHERE DATE(t.taskDate) BETWEEN DATE(?) AND DATE(?) ${taskScopeWhere}`, params: [startStr, endStr, ...taskScopeParams] },
-      { sql: `SELECT COALESCE(SUM(t.total_duration), 0) as h FROM tasks t ${taskJoin} WHERE DATE(t.createdAt) BETWEEN DATE(?) AND DATE(?) ${taskScopeWhere}`, params: [startStr, endStr, ...taskScopeParams] }
+      { sql: `SELECT COALESCE((SUM(t.total_duration) / 3600), 0) as h FROM tasks t ${taskJoin} WHERE DATE(t.taskDate) BETWEEN DATE(?) AND DATE(?) ${taskScopeWhere}`, params: [startStr, endStr, ...taskScopeParams] },
+      { sql: `SELECT COALESCE((SUM(t.total_duration) / 3600), 0) as h FROM tasks t ${taskJoin} WHERE DATE(t.createdAt) BETWEEN DATE(?) AND DATE(?) ${taskScopeWhere}`, params: [startStr, endStr, ...taskScopeParams] }
     ];
     for (const v of hoursVariants) {
       try { const r = await q(v.sql, v.params); hoursLogged = Number(r[0].h) || 0; break; } catch (e) { continue; }
@@ -134,16 +134,17 @@ router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (re
         [endStr, ...taskScopeParams]
       );
       taskStatus.overdue = Number(odRows[0].c) || 0;
-    } catch (_) {  }
+    } catch (_) { }
 
     let userRows = [];
     const userScopeWhere = isEmployee ? ' AND ta.user_Id = ?' : '';
     const userVariants = [
-      { sql: `SELECT u._id as userId, u.name as userName, LOWER(u.role) as role,
+      {
+        sql: `SELECT u._id as userId, u.name as userName, LOWER(u.role) as role,
                COUNT(t.id) as totalTasks,
                SUM(CASE WHEN LOWER(t.status) = 'completed' THEN 1 ELSE 0 END) as completed,
                SUM(CASE WHEN LOWER(t.status) IN ('in progress','doing','inprogress') THEN 1 ELSE 0 END) as inProgress,
-               COALESCE(SUM(tl.hours), SUM(t.total_duration), 0) as hoursLogged
+               COALESCE(SUM(tl.hours), (SUM(t.total_duration) / 3600), 0) as hoursLogged
              FROM taskassignments ta
              JOIN users u ON ta.user_Id = u._id
              JOIN tasks t ON ta.task_Id = t.id
@@ -151,19 +152,22 @@ router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (re
              WHERE (DATE(t.taskDate) BETWEEN DATE(?) AND DATE(?)) OR (DATE(t.createdAt) BETWEEN DATE(?) AND DATE(?))
              ${userScopeWhere}
              GROUP BY u._id, u.name, u.role
-             ORDER BY u.name ASC`, params: isEmployee ? [startStr, endStr, startStr, endStr, employeeId] : [startStr, endStr, startStr, endStr] },
-      { sql: `SELECT u._id as userId, u.name as userName, LOWER(u.role) as role,
+             ORDER BY u.name ASC`, params: isEmployee ? [startStr, endStr, startStr, endStr, employeeId] : [startStr, endStr, startStr, endStr]
+      },
+      {
+        sql: `SELECT u._id as userId, u.name as userName, LOWER(u.role) as role,
                COUNT(t.id) as totalTasks,
                SUM(CASE WHEN LOWER(t.status) = 'completed' THEN 1 ELSE 0 END) as completed,
                SUM(CASE WHEN LOWER(t.status) IN ('in progress','doing','inprogress') THEN 1 ELSE 0 END) as inProgress,
-               COALESCE(SUM(t.total_duration), 0) as hoursLogged
+               COALESCE((SUM(t.total_duration) / 3600), 0) as hoursLogged
              FROM taskassignments ta
              JOIN users u ON ta.user_Id = u._id
              JOIN tasks t ON ta.task_Id = t.id
              WHERE (DATE(t.taskDate) BETWEEN DATE(?) AND DATE(?)) OR (DATE(t.createdAt) BETWEEN DATE(?) AND DATE(?))
              ${userScopeWhere}
              GROUP BY u._id, u.name, u.role
-             ORDER BY u.name ASC`, params: isEmployee ? [startStr, endStr, startStr, endStr, employeeId] : [startStr, endStr, startStr, endStr] }
+             ORDER BY u.name ASC`, params: isEmployee ? [startStr, endStr, startStr, endStr, employeeId] : [startStr, endStr, startStr, endStr]
+      }
     ];
     for (const v of userVariants) {
       try { userRows = await q(v.sql, v.params); break; } catch (e) { continue; }
@@ -181,7 +185,8 @@ router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (re
     const clientJoin = isEmployee ? 'LEFT JOIN taskassignments ta ON ta.task_Id = t.id' : '';
     const clientScopeWhere = isEmployee ? 'AND ta.user_Id = ?' : '';
     const clientVariants = [
-      { sql: `SELECT c.id as clientId, c.name as clientName,
+      {
+        sql: `SELECT c.id as clientId, c.name as clientName,
                COUNT(DISTINCT p.id) as projects,
                COUNT(DISTINCT t.id) as totalTasks,
                SUM(CASE WHEN LOWER(t.status) = 'completed' THEN 1 ELSE 0 END) as completed,
@@ -194,8 +199,10 @@ router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (re
              WHERE c.isDeleted IS NULL OR c.isDeleted != 1
              ${clientScopeWhere}
              GROUP BY c.id, c.name
-             ORDER BY clientName ASC`, params: isEmployee ? [endStr, employeeId] : [endStr] },
-      { sql: `SELECT c.id as clientId, c.name as clientName,
+             ORDER BY clientName ASC`, params: isEmployee ? [endStr, employeeId] : [endStr]
+      },
+      {
+        sql: `SELECT c.id as clientId, c.name as clientName,
                COUNT(DISTINCT p.id) as projectss,
                COUNT(DISTINCT t.id) as totalTasks,
                SUM(CASE WHEN LOWER(t.status) = 'completed' THEN 1 ELSE 0 END) as completed,
@@ -208,7 +215,8 @@ router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (re
              WHERE c.isDeleted IS NULL OR c.isDeleted != 1
              ${clientScopeWhere}
              GROUP BY c.id, c.name
-             ORDER BY clientName ASC`, params: isEmployee ? [endStr, employeeId] : [endStr] }
+             ORDER BY clientName ASC`, params: isEmployee ? [endStr, employeeId] : [endStr]
+      }
     ];
     for (const v of clientVariants) {
       try { clientRows = await q(v.sql, v.params); break; } catch (e) { continue; }
@@ -225,7 +233,7 @@ router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (re
          ${isEmployee ? 'AND ta.user_Id = ?' : ''}`,
         isEmployee ? [startStr, endStr, startStr, endStr, employeeId] : [startStr, endStr, startStr, endStr]
       );
-    } catch (e) {  }
+    } catch (e) { }
 
     const clientSummary = (clientRows || []).map(c => {
       const clientTasks = allTasks.filter(t => String(t.clientId) === String(c.clientId)).map(t => ({
@@ -248,13 +256,15 @@ router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (re
       };
     });
 
-    return res.json({ success: true, data: {
-      summary: { tasksCreated, tasksCompleted, hoursLogged, activeProjects },
-      taskStatus,
-      userProductivity,
-      clientSummary,
-      dateRange: { startDate: startStr, endDate: endStr }
-    }});
+    return res.json({
+      success: true, data: {
+        summary: { tasksCreated, tasksCompleted, hoursLogged, activeProjects },
+        taskStatus,
+        userProductivity,
+        clientSummary,
+        dateRange: { startDate: startStr, endDate: endStr }
+      }
+    });
   } catch (err) {
     logger.error('Reports overview error:', err && err.stack ? err.stack : err);
     return res.status(500).json({ success: false, message: 'Failed to generate overview', error: err && err.message });

@@ -185,7 +185,7 @@ module.exports = {
 
       let assignedClientIds = [];
       try {
-        const RoleBasedLoginResponse = require('../controller/utils/RoleBasedLoginResponse');
+        const RoleBasedLoginResponse = require('../controllers/utils/RoleBasedLoginResponse');
         const resources = await RoleBasedLoginResponse.getAccessibleResources(managerInternalId, req.user.role, req.user.tenant_id, managerPublicId);
         if (resources && Array.isArray(resources.assignedClientIds)) assignedClientIds = resources.assignedClientIds;
       } catch (e) {

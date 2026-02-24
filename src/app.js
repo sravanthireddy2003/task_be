@@ -14,7 +14,7 @@ const io = socketIo(server, {
     methods: ["GET", "POST", "PUT", "DELETE"]
   }
 });
-const db = require('./db');
+const db = require('./config/db');
 const ChatService = require('./services/chatService');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -88,157 +88,53 @@ io.on('connection', async (socket) => {
     const userName = userResult[0].name || 'Unknown User';
     const userRole = userResult[0].role || 'Employee';
 
-  logger.info(`User ${userName} (${userId}) connected`);
+    logger.info(`User ${userName} (${userId}) connected`);
 
-  socket.join(`user_${userId}`);
+    socket.join(`user_${userId}`);
 
-  socket.on('join_project_chat', async (projectId) => {
-    try {
+    socket.on('join_project_chat', async (projectId) => {
+      try {
 
-      const hasAccess = await ChatService.validateProjectAccess(userId, projectId);
+        const hasAccess = await ChatService.validateProjectAccess(userId, projectId);
 
-      if (!hasAccess) {
-        socket.emit('error', { message: 'You do not have access to this project chat' });
-        return;
-      }
+        if (!hasAccess) {
+          socket.emit('error', { message: 'You do not have access to this project chat' });
+          return;
+        }
 
-      const chatRoom = await ChatService.getOrCreateProjectChat(projectId);
-      const roomName = chatRoom.room_name;
+        const chatRoom = await ChatService.getOrCreateProjectChat(projectId);
+        const roomName = chatRoom.room_name;
 
-      socket.join(roomName);
+        socket.join(roomName);
 
-      await ChatService.addParticipant(projectId, userId, userName, userRole);
+        await ChatService.addParticipant(projectId, userId, userName, userRole);
 
-      socket.to(roomName).emit('user_joined', {
-        userId,
-        userName,
-        userRole,
-        timestamp: new Date()
-      });
-
-      await ChatService.emitUserPresence(projectId, userName, 'joined');
-
-      const onlineParticipants = await ChatService.getOnlineParticipants(projectId);
-      socket.emit('online_participants', onlineParticipants);
-
-      logger.info(`User ${userName} joined project chat: ${roomName}`);
-
-    } catch (error) {
-      logger.error('Error joining project chat:', error);
-      socket.emit('error', { message: 'Failed to join project chat' });
-    }
-  });
-
-  socket.on('leave_project_chat', async (projectId) => {
-    try {
-      const roomName = `project_${projectId}`;
-
-      socket.leave(roomName);
-
-      await ChatService.removeParticipant(projectId, userId);
-
-      socket.to(roomName).emit('user_left', {
-        userId,
-        userName,
-        timestamp: new Date()
-      });
-
-      await ChatService.emitUserPresence(projectId, userName, 'left');
-
-      logger.info(`User ${userName} left project chat: ${roomName}`);
-
-    } catch (error) {
-      logger.error('Error leaving project chat:', error);
-    }
-  });
-
-  socket.on('send_message', async (data) => {
-    try {
-      const { projectId, message } = data;
-
-      const hasAccess = await ChatService.validateProjectAccess(userId, projectId);
-      if (!hasAccess) {
-        socket.emit('error', { message: 'You do not have access to send messages in this project' });
-        return;
-      }
-
-      let messageType = 'text';
-      let responseMessage = message;
-
-      if (message.startsWith('/')) {
-
-        const botResponse = await ChatService.handleChatbotCommand(projectId, message, userName, userId);
-
-        const botMessage = await ChatService.saveMessage(
-          projectId,
-          0, // System user ID for bot
-          'ChatBot',
-          botResponse,
-          'bot'
-        );
-
-        const userMessage = await ChatService.saveMessage(
-          projectId,
+        socket.to(roomName).emit('user_joined', {
           userId,
           userName,
-          message,
-          'text'
-        );
+          userRole,
+          timestamp: new Date()
+        });
 
-        const roomName = `project_${projectId}`;
-        io.to(roomName).emit('chat_message', userMessage);
-        io.to(roomName).emit('chat_message', botMessage);
+        await ChatService.emitUserPresence(projectId, userName, 'joined');
 
-        logger.info(`Bot command processed in ${roomName}: ${userName}`);
-        return; // Don't send the original message
+        const onlineParticipants = await ChatService.getOnlineParticipants(projectId);
+        socket.emit('online_participants', onlineParticipants);
+
+        logger.info(`User ${userName} joined project chat: ${roomName}`);
+
+      } catch (error) {
+        logger.error('Error joining project chat:', error);
+        socket.emit('error', { message: 'Failed to join project chat' });
       }
-
-      const savedMessage = await ChatService.saveMessage(
-        projectId,
-        userId,
-        userName,
-        responseMessage,
-        messageType
-      );
-
-      const roomName = `project_${projectId}`;
-      io.to(roomName).emit('chat_message', savedMessage);
-
-      logger.info(`Message sent in ${roomName}: ${userName}`);
-
-    } catch (error) {
-      logger.error('Error sending message:', error);
-      socket.emit('error', { message: 'Failed to send message' });
-    }
-  });
-
-  socket.on('typing_start', (projectId) => {
-    const roomName = `project_${projectId}`;
-    socket.to(roomName).emit('user_typing', {
-      userId,
-      userName,
-      isTyping: true
     });
-  });
 
-  socket.on('typing_stop', (projectId) => {
-    const roomName = `project_${projectId}`;
-    socket.to(roomName).emit('user_typing', {
-      userId,
-      userName,
-      isTyping: false
-    });
-  });
-
-  socket.on('disconnect', async () => {
-    logger.info(`User ${userName} disconnected`);
-
-    const rooms = Array.from(socket.rooms).filter(room => room.startsWith('project_'));
-
-    for (const roomName of rooms) {
-      const projectId = roomName.replace('project_', '');
-
+    socket.on('leave_project_chat', async (projectId) => {
       try {
+        const roomName = `project_${projectId}`;
+
+        socket.leave(roomName);
+
         await ChatService.removeParticipant(projectId, userId);
 
         socket.to(roomName).emit('user_left', {
@@ -247,11 +143,115 @@ io.on('connection', async (socket) => {
           timestamp: new Date()
         });
 
+        await ChatService.emitUserPresence(projectId, userName, 'left');
+
+        logger.info(`User ${userName} left project chat: ${roomName}`);
+
       } catch (error) {
-        logger.error('Error updating participant status on disconnect: ' + (error && error.stack ? error.stack : String(error)));
+        logger.error('Error leaving project chat:', error);
       }
-    }
-  });
+    });
+
+    socket.on('send_message', async (data) => {
+      try {
+        const { projectId, message } = data;
+
+        const hasAccess = await ChatService.validateProjectAccess(userId, projectId);
+        if (!hasAccess) {
+          socket.emit('error', { message: 'You do not have access to send messages in this project' });
+          return;
+        }
+
+        let messageType = 'text';
+        let responseMessage = message;
+
+        if (message.startsWith('/')) {
+
+          const botResponse = await ChatService.handleChatbotCommand(projectId, message, userName, userId);
+
+          const botMessage = await ChatService.saveMessage(
+            projectId,
+            0, // System user ID for bot
+            'ChatBot',
+            botResponse,
+            'bot'
+          );
+
+          const userMessage = await ChatService.saveMessage(
+            projectId,
+            userId,
+            userName,
+            message,
+            'text'
+          );
+
+          const roomName = `project_${projectId}`;
+          io.to(roomName).emit('chat_message', userMessage);
+          io.to(roomName).emit('chat_message', botMessage);
+
+          logger.info(`Bot command processed in ${roomName}: ${userName}`);
+          return; // Don't send the original message
+        }
+
+        const savedMessage = await ChatService.saveMessage(
+          projectId,
+          userId,
+          userName,
+          responseMessage,
+          messageType
+        );
+
+        const roomName = `project_${projectId}`;
+        io.to(roomName).emit('chat_message', savedMessage);
+
+        logger.info(`Message sent in ${roomName}: ${userName}`);
+
+      } catch (error) {
+        logger.error('Error sending message:', error);
+        socket.emit('error', { message: 'Failed to send message' });
+      }
+    });
+
+    socket.on('typing_start', (projectId) => {
+      const roomName = `project_${projectId}`;
+      socket.to(roomName).emit('user_typing', {
+        userId,
+        userName,
+        isTyping: true
+      });
+    });
+
+    socket.on('typing_stop', (projectId) => {
+      const roomName = `project_${projectId}`;
+      socket.to(roomName).emit('user_typing', {
+        userId,
+        userName,
+        isTyping: false
+      });
+    });
+
+    socket.on('disconnect', async () => {
+      logger.info(`User ${userName} disconnected`);
+
+      const rooms = Array.from(socket.rooms).filter(room => room.startsWith('project_'));
+
+      for (const roomName of rooms) {
+        const projectId = roomName.replace('project_', '');
+
+        try {
+          await ChatService.removeParticipant(projectId, userId);
+
+          socket.to(roomName).emit('user_left', {
+            userId,
+            userName,
+            timestamp: new Date()
+          });
+
+        } catch (error) {
+          logger.error('Error updating participant status on disconnect: ' + (error && error.stack ? error.stack : String(error)));
+        }
+      }
+    });
 
   } catch (error) {
     logger.error('Error in socket connection: ' + (error && error.stack ? error.stack : String(error)));
@@ -271,7 +271,7 @@ app.use((req, res, next) => {
     if (ct.indexOf('text/x-vite-ping') === 0) {
       return res.status(200).send('pong');
     }
-  } catch (e) {  }
+  } catch (e) { }
   return next();
 });
 app.use(cors());
@@ -303,7 +303,7 @@ app.use('/uploads', async (req, res, next) => {
       const basename = path.basename(rel);
       const q = (sql, params = []) => new Promise((resolve, reject) => db.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows))));
       // search by exact fileName
-      let rows = await q('SELECT filePath FROM documents WHERE fileName = ? OR filePath LIKE ? LIMIT 1', [basename, '%'+basename]);
+      let rows = await q('SELECT filePath FROM documents WHERE fileName = ? OR filePath LIKE ? LIMIT 1', [basename, '%' + basename]);
       if (rows && rows.length) {
         let p = rows[0].filePath || '';
         if (String(p).startsWith('/uploads/')) {
@@ -383,12 +383,12 @@ const clientViewerAccessControl = require(__root + 'middleware/clientViewerAcces
 const StaffUser = require(__root + 'controllers/User');
 app.use('/api/users', clientViewerAccessControl, StaffUser);
 
-const tasksCRUD=require(__root + 'controllers/Tasks');
+const tasksCRUD = require(__root + 'controllers/Tasks');
 app.use('/api/tasks', clientViewerAccessControl, tasksCRUD);
 
 
-const uploadCRUD=require(__root + 'controllers/Uploads');
-app.use('/api/uploads',uploadCRUD);
+const uploadCRUD = require(__root + 'controllers/Uploads');
+app.use('/api/uploads', uploadCRUD);
 
 const clientRoutes = require(__root + 'routes/clientRoutes');
 app.use('/api/clients', clientRoutes);
@@ -439,7 +439,7 @@ function shutdown(signal) {
     server.close(() => {
       logger.info('HTTP server closed.');
       try {
-        const db = require('./db');
+        const db = require('./config/db');
         if (db && typeof db.end === 'function') {
           db.end(() => {
             logger.info('DB pool closed. Exiting.');
@@ -472,8 +472,8 @@ process.on('unhandledRejection', (reason, promise) => {
   try {
     const details = (reason && reason.stack) ? String(reason.stack) : String(reason);
     logger.error('Unhandled Rejection: ' + details);
-    try { console.error('Unhandled Rejection:', details); } catch (e) {}
-    try { fs.appendFileSync(path.join(__root, 'logs', 'error_stacks.log'), `[UNHANDLED_REJECTION] ${new Date().toISOString()}\n${details}\n\n`); } catch (e) {}
+    try { console.error('Unhandled Rejection:', details); } catch (e) { }
+    try { fs.appendFileSync(path.join(__root, 'logs', 'error_stacks.log'), `[UNHANDLED_REJECTION] ${new Date().toISOString()}\n${details}\n\n`); } catch (e) { }
   } catch (logErr) {
     logger.error('Unhandled Rejection (failed to serialize): ' + String(logErr));
   }
@@ -484,8 +484,8 @@ process.on('uncaughtException', (err) => {
   try {
     const details = (err && err.stack) ? String(err.stack) : String(err);
     logger.error('Uncaught Exception: ' + details);
-    try { console.error('Uncaught Exception:', details); } catch (e) {}
-    try { fs.appendFileSync(path.join(__root, 'logs', 'error_stacks.log'), `[UNCAUGHT_EXCEPTION] ${new Date().toISOString()}\n${details}\n\n`); } catch (e) {}
+    try { console.error('Uncaught Exception:', details); } catch (e) { }
+    try { fs.appendFileSync(path.join(__root, 'logs', 'error_stacks.log'), `[UNCAUGHT_EXCEPTION] ${new Date().toISOString()}\n${details}\n\n`); } catch (e) { }
   } catch (logErr) {
     logger.error('Uncaught Exception (failed to serialize): ' + String(logErr));
   }

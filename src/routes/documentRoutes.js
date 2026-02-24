@@ -13,18 +13,15 @@ router.post('/upload', ruleEngine('DOCUMENT_UPLOAD'), DocumentController.uploadD
 
 router.get('/', DocumentController.listDocuments);
 
-router.get('/my', DocumentController.getMyDocuments);
+// Consolidated Delete
+router.delete('/:documentId', ruleEngine('DOCUMENT_DELETE'), DocumentController.deleteDocument);
 
-router.get('/project/:projectId/members', DocumentController.getProjectMembers);
-
+// Previews
 router.get('/:id/preview', ruleEngine('DOCUMENT_PREVIEW'), DocumentController.getDocumentPreview);
 router.get('/:id/download', ruleEngine('DOCUMENT_DOWNLOAD'), DocumentController.downloadDocument);
 
-router.get('/preview/:id', ruleEngine('DOCUMENT_PREVIEW'), DocumentController.getDocumentPreview);
-router.get('/download/:id', ruleEngine('DOCUMENT_DOWNLOAD'), DocumentController.downloadDocument);
-
-router.post('/:id/assign-access', ruleEngine('DOCUMENT_ASSIGN_ACCESS'), DocumentController.assignDocumentAccess);
-
+// Legacy/Compat
+router.get('/my', DocumentController.getMyDocuments);
 router.post('/access', ruleEngine('DOCUMENT_ASSIGN_ACCESS'), DocumentController.assignDocumentAccess);
 
 module.exports = router;

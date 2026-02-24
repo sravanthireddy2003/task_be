@@ -49,7 +49,7 @@ async function requireAuth(req, res, next) {
         const tokenId = payload.id;
         const isNumeric = /^\d+$/.test(String(tokenId));
         const sql = isNumeric ? 'SELECT * FROM users WHERE _id = ? LIMIT 1' : 'SELECT * FROM users WHERE public_id = ? LIMIT 1';
-        return db.query(sql, [tokenId], (err, results) => {
+        db.query(sql, [tokenId], (err, results) => {
           if (err) return next(new HttpError(500, 'DB error', 'DB_ERROR'));
           if (!results || results.length === 0) return next(new HttpError(401, 'User not found', 'AUTH_USER_NOT_FOUND'));
           const user = results[0];

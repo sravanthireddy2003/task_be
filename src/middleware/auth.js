@@ -1,13 +1,15 @@
 const jwt = require('jsonwebtoken');
 const db = require(__root + 'db');
 const HttpError = require('../errors/HttpError');
-const env = require('../config/env');
+const env = require('../config/env');
 module.exports = function (req, res, next) {
   const auth = req.headers.authorization || req.headers.Authorization;
   if (!auth || !auth.startsWith('Bearer ')) return next(new HttpError(401, 'Unauthorized', 'AUTH_MISSING'));
   const token = auth.split(' ')[1];
   try {
     const secret = env.JWT_SECRET || env.SECRET || process.env.SECRET || 'secret';
+    // Debug log
+    // console.log('Verifying token with secret:', secret.substring(0, 5) + '...');
     const decoded = jwt.verify(token, secret);
     const tokenId = decoded.id;
     if (!tokenId) return next(new HttpError(401, 'Invalid token', 'AUTH_INVALID'));
@@ -24,8 +26,9 @@ module.exports = function (req, res, next) {
       req.user = { _id: u._id, id: u.public_id || String(u._id), name: u.name, email: u.email, role: u.role, tenant_id: u.tenant_id };
       next();
     });
-  } catch (e) {
+  } catch (e) {
+    console.error('Auth Middleware Error:', e.message);
     if (e && e.name === 'TokenExpiredError') return next(new HttpError(401, 'Token expired', 'AUTH_EXPIRED'));
-    return next(new HttpError(401, 'Invalid token', 'AUTH_INVALID'));
+    return next(new HttpError(401, 'Invalid token: ' + e.message, 'AUTH_INVALID'));
   }
 };

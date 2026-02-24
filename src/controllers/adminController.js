@@ -34,7 +34,7 @@ function writeModules(arr) {
   } catch (e) { logger.error('writeModules error', e && e.message); return false; }
 }
 
-function buildSelect(table, baseCols, optionalCols=[]) {
+function buildSelect(table, baseCols, optionalCols = []) {
   return new Promise((resolve) => {
     db.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", [table], (err, cols) => {
       try {
@@ -77,7 +77,7 @@ async function fetchClientDocuments(clientIds = []) {
         const parts = rel.split('/').map(p => encodeURIComponent(p));
         row.file_url = base + '/uploads/' + parts.join('/');
       }
-    } catch (e) {}
+    } catch (e) { }
     memo[row.client_id].push(row);
     return memo;
   }, {});
@@ -92,12 +92,12 @@ function getColumnType(table, column) {
   });
 }
 
-function safeSelect(table, baseCols, optionalCols=[], whereClause='', params=[], cb) {
+function safeSelect(table, baseCols, optionalCols = [], whereClause = '', params = [], cb) {
   (async () => {
     try {
       const selectCols = await buildSelect(table, baseCols, optionalCols).catch(() => baseCols.join(', '));
       const sql = `SELECT ${selectCols} FROM ${table} ${whereClause || ''}`;
-      return db.query(sql, params, (err, rows) => {
+      db.query(sql, params, (err, rows) => {
         if (!err) return cb(null, rows);
         if (err && err.code === 'ER_BAD_FIELD_ERROR') {
           db.query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", [table], (colErr, cols) => {
@@ -106,7 +106,7 @@ function safeSelect(table, baseCols, optionalCols=[], whereClause='', params=[],
             const colsToSelect = baseCols.concat(optionalCols.filter(c => present.has(c))).filter(c => present.has(c));
             if (colsToSelect.length === 0) return cb(err);
             const sql2 = `SELECT ${colsToSelect.join(', ')} FROM ${table} ${whereClause || ''}`;
-            return db.query(sql2, params, (err2, rows2) => cb(err2, rows2));
+            db.query(sql2, params, (err2, rows2) => cb(err2, rows2));
           });
         } else return cb(err);
       });
@@ -117,7 +117,7 @@ function safeSelect(table, baseCols, optionalCols=[], whereClause='', params=[],
 module.exports = {
   getDashboard: async (req, res) => {
     try {
-      const q = (sql, params=[]) => new Promise((r, rej) => db.query(sql, params, (e, rows) => e ? rej(e) : r(rows)));
+      const q = (sql, params = []) => new Promise((r, rej) => db.query(sql, params, (e, rows) => e ? rej(e) : r(rows)));
 
       const logData = {
         logId: `LOG-${Date.now()}`,
@@ -293,7 +293,7 @@ module.exports = {
   },
 
   manageUsers: async (req, res) => {
-    const cols = await buildSelect('users', ['_id','public_id','name','email','role','isActive'], ['tenant_id']).catch(() => '_id, public_id, name, email, role, isActive');
+    const cols = await buildSelect('users', ['_id', 'public_id', 'name', 'email', 'role', 'isActive'], ['tenant_id']).catch(() => '_id, public_id, name, email, role, isActive');
     db.query(`SELECT ${cols} FROM users`, [], (err, rows) => {
       if (err) return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: err.message }));
       const out = rows.map(r => { r.id = r.public_id || r._id; delete r.public_id; return r; });
@@ -397,9 +397,9 @@ module.exports = {
     const filterUserParam = req.query.userId;
 
     const runQuery = async (resolvedUserId) => {
-    const hasPublic = await tableHasColumn('departments', 'public_id');
-    const optional = [].concat(hasPublic ? ['public_id'] : []).concat(['manager_id','head_id']);
-    safeSelect('departments', ['id','name','created_at'], optional, '', [], (err, rows) => {
+      const hasPublic = await tableHasColumn('departments', 'public_id');
+      const optional = [].concat(hasPublic ? ['public_id'] : []).concat(['manager_id', 'head_id']);
+      safeSelect('departments', ['id', 'name', 'created_at'], optional, '', [], (err, rows) => {
         if (err) return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: err.message }));
         const finishWith = (outRows) => {
           try {
@@ -438,9 +438,9 @@ module.exports = {
           const whereParts = colNames.map(n => `${n} = ?`).join(' OR ');
           const params = colNames.map(() => resolvedUserId);
           const hasPublic2 = colNames.includes('public_id');
-          const optional2 = [].concat(hasPublic2 ? ['public_id'] : []).concat(['manager_id','head_id']);
+          const optional2 = [].concat(hasPublic2 ? ['public_id'] : []).concat(['manager_id', 'head_id']);
 
-          safeSelect('departments', ['id','name','created_at'], optional2, `WHERE ${whereParts}`, params, (fErr, fRows) => {
+          safeSelect('departments', ['id', 'name', 'created_at'], optional2, `WHERE ${whereParts}`, params, (fErr, fRows) => {
             if (fErr) return finishWith(rows);
             return finishWith(fRows);
           });
@@ -505,7 +505,7 @@ module.exports = {
         }
         if ((manager_id === null || manager_id === undefined) && managerId) {
           const colType = await getColumnType('departments', 'manager_id').catch(() => null);
-          if (colType && ['varchar','char','text'].includes(String(colType).toLowerCase())) {
+          if (colType && ['varchar', 'char', 'text'].includes(String(colType).toLowerCase())) {
             manager_id = managerId;
           } else {
             return res.status(400).json(errorResponse.badRequest('managerId could not be resolved to a user', 'BAD_REQUEST'));
@@ -520,7 +520,7 @@ module.exports = {
         }
         if ((head_id === null || head_id === undefined) && headId) {
           const colType = await getColumnType('departments', 'head_id').catch(() => null);
-          if (colType && ['varchar','char','text'].includes(String(colType).toLowerCase())) head_id = headId;
+          if (colType && ['varchar', 'char', 'text'].includes(String(colType).toLowerCase())) head_id = headId;
         }
       }
       const created_by = hasCreatedBy ? (req.user && req.user._id ? req.user._id : null) : null;
@@ -551,65 +551,65 @@ module.exports = {
             logger.error('Department creation notification error:', notifErr);
           }
           const selOptional = [].concat(hasPublic ? ['public_id'] : [])
-            .concat(['manager_id','head_id'])
+            .concat(['manager_id', 'head_id'])
             .concat(hasManagerNameCol ? ['manager_name'] : [])
             .concat(hasHeadNameCol ? ['head_name'] : []);
-          safeSelect('departments', ['id','name'], selOptional, 'WHERE id = ? LIMIT 1', [insertId], (sErr, rows) => {
+          safeSelect('departments', ['id', 'name'], selOptional, 'WHERE id = ? LIMIT 1', [insertId], (sErr, rows) => {
             if (sErr) return res.status(201).json({ success: true, data: { id: hasPublic ? publicId : insertId, name, manager_id, head_id } });
-          const row = (rows && rows[0]) || { id: insertId, name, manager_id, head_id, public_id: publicId, manager_name: manager_name_val, head_name: head_name_val };
-          if ((row.manager_name || row.head_name) && (row.manager_name || row.head_name).length >= 0) {
-            const outRow = {
-              id: row.public_id || row.id,
-              name: row.name,
-              manager_id: row.manager_id ? String(row.manager_id) : null,
-              manager_name: row.manager_name || null,
-              head_id: row.head_id ? String(row.head_id) : null,
-              head_name: row.head_name || null
-            };
-            const uids = [];
-            if (row.manager_id) uids.push(row.manager_id);
-            if (row.head_id) uids.push(row.head_id);
-            if (uids.length === 0) return res.status(201).json({ success: true, data: outRow });
-            db.query('SELECT _id, public_id, name FROM users WHERE _id IN (?) OR public_id IN (?)', [uids, uids], (uErr, uRows) => {
-              if (uErr || !Array.isArray(uRows)) return res.status(201).json({ success: true, data: outRow });
-              const mapId = {};
-              uRows.forEach(u => {
-                if (u._id) mapId[String(u._id)] = u.public_id || String(u._id);
-                if (u.public_id) mapId[String(u.public_id)] = u.public_id || String(u._id);
-              });
-              outRow.manager_id = row.manager_id ? (mapId[String(row.manager_id)] || String(row.manager_id)) : null;
-              outRow.head_id = row.head_id ? (mapId[String(row.head_id)] || String(row.head_id)) : null;
-              return res.status(201).json({ success: true, data: outRow });
-            });
-          } else {
-
-            const uids = [];
-            if (row.manager_id) uids.push(row.manager_id);
-            if (row.head_id) uids.push(row.head_id);
-            if (uids.length === 0) return res.status(201).json({ success: true, data: { id: row.public_id || row.id, name: row.name, manager_id: row.manager_id, manager_name: null, head_id: row.head_id, head_name: null } });
-            db.query('SELECT _id, public_id, name FROM users WHERE _id IN (?) OR public_id IN (?)', [uids, uids], (uErr, uRows) => {
-              if (uErr || !Array.isArray(uRows)) return res.status(201).json({ success: true, data: { id: row.public_id || row.id, name: row.name, manager_id: row.manager_id, manager_name: null, head_id: row.head_id, head_name: null } });
-              const mapId = {};
-              const mapName = {};
-              uRows.forEach(u => {
-                if (u._id) mapId[String(u._id)] = u.public_id || String(u._id);
-                if (u.public_id) mapId[String(u.public_id)] = u.public_id || String(u._id);
-                if (u._id) mapName[String(u._id)] = u.name || null;
-                if (u.public_id) mapName[String(u.public_id)] = u.name || null;
-              });
+            const row = (rows && rows[0]) || { id: insertId, name, manager_id, head_id, public_id: publicId, manager_name: manager_name_val, head_name: head_name_val };
+            if ((row.manager_name || row.head_name) && (row.manager_name || row.head_name).length >= 0) {
               const outRow = {
                 id: row.public_id || row.id,
                 name: row.name,
-                manager_id: row.manager_id ? (mapId[String(row.manager_id)] || row.manager_id) : null,
-                manager_name: row.manager_name ? row.manager_name : (row.manager_id ? (mapName[String(row.manager_id)] || null) : null),
-                head_id: row.head_id ? (mapId[String(row.head_id)] || row.head_id) : null,
-                head_name: row.head_name ? row.head_name : (row.head_id ? (mapName[String(row.head_id)] || null) : null)
+                manager_id: row.manager_id ? String(row.manager_id) : null,
+                manager_name: row.manager_name || null,
+                head_id: row.head_id ? String(row.head_id) : null,
+                head_name: row.head_name || null
               };
-              return res.status(201).json({ success: true, data: outRow });
-            });
-          }
-        });
-          })();
+              const uids = [];
+              if (row.manager_id) uids.push(row.manager_id);
+              if (row.head_id) uids.push(row.head_id);
+              if (uids.length === 0) return res.status(201).json({ success: true, data: outRow });
+              db.query('SELECT _id, public_id, name FROM users WHERE _id IN (?) OR public_id IN (?)', [uids, uids], (uErr, uRows) => {
+                if (uErr || !Array.isArray(uRows)) return res.status(201).json({ success: true, data: outRow });
+                const mapId = {};
+                uRows.forEach(u => {
+                  if (u._id) mapId[String(u._id)] = u.public_id || String(u._id);
+                  if (u.public_id) mapId[String(u.public_id)] = u.public_id || String(u._id);
+                });
+                outRow.manager_id = row.manager_id ? (mapId[String(row.manager_id)] || String(row.manager_id)) : null;
+                outRow.head_id = row.head_id ? (mapId[String(row.head_id)] || String(row.head_id)) : null;
+                return res.status(201).json({ success: true, data: outRow });
+              });
+            } else {
+
+              const uids = [];
+              if (row.manager_id) uids.push(row.manager_id);
+              if (row.head_id) uids.push(row.head_id);
+              if (uids.length === 0) return res.status(201).json({ success: true, data: { id: row.public_id || row.id, name: row.name, manager_id: row.manager_id, manager_name: null, head_id: row.head_id, head_name: null } });
+              db.query('SELECT _id, public_id, name FROM users WHERE _id IN (?) OR public_id IN (?)', [uids, uids], (uErr, uRows) => {
+                if (uErr || !Array.isArray(uRows)) return res.status(201).json({ success: true, data: { id: row.public_id || row.id, name: row.name, manager_id: row.manager_id, manager_name: null, head_id: row.head_id, head_name: null } });
+                const mapId = {};
+                const mapName = {};
+                uRows.forEach(u => {
+                  if (u._id) mapId[String(u._id)] = u.public_id || String(u._id);
+                  if (u.public_id) mapId[String(u.public_id)] = u.public_id || String(u._id);
+                  if (u._id) mapName[String(u._id)] = u.name || null;
+                  if (u.public_id) mapName[String(u.public_id)] = u.name || null;
+                });
+                const outRow = {
+                  id: row.public_id || row.id,
+                  name: row.name,
+                  manager_id: row.manager_id ? (mapId[String(row.manager_id)] || row.manager_id) : null,
+                  manager_name: row.manager_name ? row.manager_name : (row.manager_id ? (mapName[String(row.manager_id)] || null) : null),
+                  head_id: row.head_id ? (mapId[String(row.head_id)] || row.head_id) : null,
+                  head_name: row.head_name ? row.head_name : (row.head_id ? (mapName[String(row.head_id)] || null) : null)
+                };
+                return res.status(201).json({ success: true, data: outRow });
+              });
+            }
+          });
+        })();
       });
     } catch (e) {
       logger.error('createDepartment catch', e && e.message);
@@ -648,7 +648,7 @@ module.exports = {
         let finalM = m;
         if ((finalM === null || finalM === undefined) && managerId) {
           const colType = await getColumnType('departments', 'manager_id').catch(() => null);
-          if (colType && ['varchar','char','text'].includes(String(colType).toLowerCase())) finalM = managerId;
+          if (colType && ['varchar', 'char', 'text'].includes(String(colType).toLowerCase())) finalM = managerId;
         }
         updates.push('manager_id = ?'); params.push(finalM);
       }
@@ -657,7 +657,7 @@ module.exports = {
         let finalH = h;
         if ((finalH === null || finalH === undefined) && headId) {
           const colType = await getColumnType('departments', 'head_id').catch(() => null);
-          if (colType && ['varchar','char','text'].includes(String(colType).toLowerCase())) finalH = headId;
+          if (colType && ['varchar', 'char', 'text'].includes(String(colType).toLowerCase())) finalH = headId;
         }
         updates.push('head_id = ?'); params.push(finalH);
       }
@@ -678,34 +678,34 @@ module.exports = {
             logger.error('Department update notification error:', notifErr);
           }
           const hasPublic = await tableHasColumn('departments', 'public_id');
-          const selOptional = [].concat(hasPublic ? ['public_id'] : []).concat(['manager_id','head_id']);
-          safeSelect('departments', ['id','name'], selOptional, 'WHERE id = ? LIMIT 1', [id], (sErr, rows) => {
+          const selOptional = [].concat(hasPublic ? ['public_id'] : []).concat(['manager_id', 'head_id']);
+          safeSelect('departments', ['id', 'name'], selOptional, 'WHERE id = ? LIMIT 1', [id], (sErr, rows) => {
             if (sErr) return res.status(200).json({ success: true, message: 'Department updated' });
             const row = (rows && rows[0]) || {};
-          const uids = [];
-          if (row.manager_id) uids.push(row.manager_id);
-          if (row.head_id) uids.push(row.head_id);
-          if (uids.length === 0) return res.status(200).json({ success: true, data: { id: row.public_id || row.id, name: row.name, manager_id: row.manager_id, manager_name: null, head_id: row.head_id, head_name: null } });
-          db.query('SELECT _id, public_id, name FROM users WHERE _id IN (?) OR public_id IN (?)', [uids, uids], (uErr, uRows) => {
-            if (uErr || !Array.isArray(uRows)) return res.status(200).json({ success: true, data: { id: row.public_id || row.id, name: row.name, manager_id: row.manager_id, manager_name: null, head_id: row.head_id, head_name: null } });
-            const mapId = {};
-            const mapName = {};
-            uRows.forEach(u => {
-              if (u._id) mapId[String(u._id)] = u.public_id || String(u._id);
-              if (u.public_id) mapId[String(u.public_id)] = u.public_id || String(u._id);
-              if (u._id) mapName[String(u._id)] = u.name || null;
-              if (u.public_id) mapName[String(u.public_id)] = u.name || null;
+            const uids = [];
+            if (row.manager_id) uids.push(row.manager_id);
+            if (row.head_id) uids.push(row.head_id);
+            if (uids.length === 0) return res.status(200).json({ success: true, data: { id: row.public_id || row.id, name: row.name, manager_id: row.manager_id, manager_name: null, head_id: row.head_id, head_name: null } });
+            db.query('SELECT _id, public_id, name FROM users WHERE _id IN (?) OR public_id IN (?)', [uids, uids], (uErr, uRows) => {
+              if (uErr || !Array.isArray(uRows)) return res.status(200).json({ success: true, data: { id: row.public_id || row.id, name: row.name, manager_id: row.manager_id, manager_name: null, head_id: row.head_id, head_name: null } });
+              const mapId = {};
+              const mapName = {};
+              uRows.forEach(u => {
+                if (u._id) mapId[String(u._id)] = u.public_id || String(u._id);
+                if (u.public_id) mapId[String(u.public_id)] = u.public_id || String(u._id);
+                if (u._id) mapName[String(u._id)] = u.name || null;
+                if (u.public_id) mapName[String(u.public_id)] = u.name || null;
+              });
+              const outRow = {
+                id: row.public_id || row.id,
+                name: row.name,
+                manager_id: row.manager_id ? (mapId[String(row.manager_id)] || row.manager_id) : null,
+                manager_name: row.manager_id ? (mapName[String(row.manager_id)] || null) : null,
+                head_id: row.head_id ? (mapId[String(row.head_id)] || row.head_id) : null,
+                head_name: row.head_id ? (mapName[String(row.head_id)] || null) : null
+              };
+              return res.status(200).json({ success: true, data: outRow });
             });
-            const outRow = {
-              id: row.public_id || row.id,
-              name: row.name,
-              manager_id: row.manager_id ? (mapId[String(row.manager_id)] || row.manager_id) : null,
-              manager_name: row.manager_id ? (mapName[String(row.manager_id)] || null) : null,
-              head_id: row.head_id ? (mapId[String(row.head_id)] || row.head_id) : null,
-              head_name: row.head_id ? (mapName[String(row.head_id)] || null) : null
-            };
-            return res.status(200).json({ success: true, data: outRow });
-          });
           });
         })();
       });
@@ -757,20 +757,20 @@ module.exports = {
     const filterUserParam = req.query.userId;
 
     const runQuery = async (resolvedUserId) => {
-      safeSelect('projects', ['id','name','description','status','manager_id'], ['tenant_id'], '', [], (err, rows) => {
+      safeSelect('projects', ['id', 'name', 'description', 'status', 'manager_id'], ['tenant_id'], '', [], (err, rows) => {
         if (err) return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: err.message }));
 
         try {
           const managerIds = new Set();
           rows.forEach(r => { if (r.manager_id) managerIds.add(r.manager_id); });
-            if (managerIds.size === 0) {
+          if (managerIds.size === 0) {
 
-              if (resolvedUserId) {
-                const filtered = rows.filter(r => String(r.manager_id) === String(resolvedUserId));
-                return res.json({ success: true, data: filtered });
-              }
-              return res.json({ success: true, data: rows });
+            if (resolvedUserId) {
+              const filtered = rows.filter(r => String(r.manager_id) === String(resolvedUserId));
+              return res.json({ success: true, data: filtered });
             }
+            return res.json({ success: true, data: rows });
+          }
           db.query('SELECT _id, public_id FROM users WHERE _id IN (?)', [Array.from(managerIds)], (uErr, uRows) => {
             if (uErr) return res.json({ success: true, data: rows });
             const map = {};
@@ -802,39 +802,56 @@ module.exports = {
   manageTasks: async (req, res) => {
     safeSelect(
       'tasks',
-      ['id','title','description','status','assigned_to'],
-      ['tenant_id','taskDate','started_at','live_timer','total_duration','completed_at','time_alloted','priority','stage'],
+      ['id', 'title', 'description', 'status', 'assigned_to'],
+      ['tenant_id', 'taskDate', 'started_at', 'live_timer', 'total_duration', 'completed_at', 'time_alloted', 'priority', 'stage'],
       '',
       [],
       (err, rows) => {
-      if (err) return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: err.message }));
-      try {
-        const userIdSet = new Set();
-        rows.forEach(r => {
-          if (!r.assigned_to) return;
-          try {
-            const arr = typeof r.assigned_to === 'string' ? JSON.parse(r.assigned_to) : r.assigned_to;
-            if (Array.isArray(arr)) arr.forEach(id => userIdSet.add(id));
-          } catch (e) {
-            const parts = String(r.assigned_to).split(',').map(s=>s.trim()).filter(Boolean);
-            parts.forEach(id => userIdSet.add(id));
-          }
-        });
-
-        if (userIdSet.size === 0) return res.json({ success: true, data: rows });
-        const idsArr = Array.from(userIdSet);
-        db.query('SELECT _id, public_id FROM users WHERE _id IN (?)', [idsArr], (uErr, uRows) => {
-          if (uErr || !Array.isArray(uRows)) return res.json({ success: true, data: rows });
-          const map = {};
-          uRows.forEach(u => { if (u && u._id) map[u._id] = u.public_id || u._id; });
-          const out = rows.map(r => {
-            if (!r.assigned_to) return r;
+        if (err) return res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: err.message }));
+        try {
+          const userIdSet = new Set();
+          rows.forEach(r => {
+            if (!r.assigned_to) return;
             try {
               const arr = typeof r.assigned_to === 'string' ? JSON.parse(r.assigned_to) : r.assigned_to;
-              if (Array.isArray(arr)) { r.assigned_to = arr.map(id => map[id] || id); return r; }
+              if (Array.isArray(arr)) arr.forEach(id => userIdSet.add(id));
             } catch (e) {
-              const parts = String(r.assigned_to).split(',').map(s=>s.trim()).filter(Boolean);
-              r.assigned_to = parts.map(id => map[id] || id);
+              const parts = String(r.assigned_to).split(',').map(s => s.trim()).filter(Boolean);
+              parts.forEach(id => userIdSet.add(id));
+            }
+          });
+
+          if (userIdSet.size === 0) return res.json({ success: true, data: rows });
+          const idsArr = Array.from(userIdSet);
+          db.query('SELECT _id, public_id FROM users WHERE _id IN (?)', [idsArr], (uErr, uRows) => {
+            if (uErr || !Array.isArray(uRows)) return res.json({ success: true, data: rows });
+            const map = {};
+            uRows.forEach(u => { if (u && u._id) map[u._id] = u.public_id || u._id; });
+            const out = rows.map(r => {
+              if (!r.assigned_to) return r;
+              try {
+                const arr = typeof r.assigned_to === 'string' ? JSON.parse(r.assigned_to) : r.assigned_to;
+                if (Array.isArray(arr)) { r.assigned_to = arr.map(id => map[id] || id); return r; }
+              } catch (e) {
+                const parts = String(r.assigned_to).split(',').map(s => s.trim()).filter(Boolean);
+                r.assigned_to = parts.map(id => map[id] || id);
+
+                try {
+                  const now = new Date();
+                  const taskDate = r.taskDate ? new Date(r.taskDate) : null;
+                  const totalSecs = Number(r.total_duration || 0);
+                  const hh = String(Math.floor(totalSecs / 3600)).padStart(2, '0');
+                  const mm = String(Math.floor((totalSecs % 3600) / 60)).padStart(2, '0');
+                  const ss = String(totalSecs % 60).padStart(2, '0');
+                  r.started_at = r.started_at ? new Date(r.started_at).toISOString() : null;
+                  r.live_timer = r.live_timer ? new Date(r.live_timer).toISOString() : null;
+                  r.total_time_seconds = totalSecs;
+                  r.total_time_hours = Number((totalSecs / 3600).toFixed(2));
+                  r.total_time_hhmmss = `${hh}:${mm}:${ss}`;
+                  r.summary = taskDate ? { dueStatus: taskDate < now ? 'Overdue' : 'On Time', dueDate: taskDate.toISOString() } : {};
+                } catch (er) { }
+                return r;
+              }
 
               try {
                 const now = new Date();
@@ -849,97 +866,80 @@ module.exports = {
                 r.total_time_hours = Number((totalSecs / 3600).toFixed(2));
                 r.total_time_hhmmss = `${hh}:${mm}:${ss}`;
                 r.summary = taskDate ? { dueStatus: taskDate < now ? 'Overdue' : 'On Time', dueDate: taskDate.toISOString() } : {};
-              } catch (er) {  }
+              } catch (er) { }
               return r;
-            }
+            });
 
             try {
-              const now = new Date();
-              const taskDate = r.taskDate ? new Date(r.taskDate) : null;
-              const totalSecs = Number(r.total_duration || 0);
-              const hh = String(Math.floor(totalSecs / 3600)).padStart(2, '0');
-              const mm = String(Math.floor((totalSecs % 3600) / 60)).padStart(2, '0');
-              const ss = String(totalSecs % 60).padStart(2, '0');
-              r.started_at = r.started_at ? new Date(r.started_at).toISOString() : null;
-              r.live_timer = r.live_timer ? new Date(r.live_timer).toISOString() : null;
-              r.total_time_seconds = totalSecs;
-              r.total_time_hours = Number((totalSecs / 3600).toFixed(2));
-              r.total_time_hhmmss = `${hh}:${mm}:${ss}`;
-              r.summary = taskDate ? { dueStatus: taskDate < now ? 'Overdue' : 'On Time', dueDate: taskDate.toISOString() } : {};
-            } catch (er) {  }
-            return r;
-          });
+              const taskIds = out.map(r => r.id).filter(Boolean);
+              if (!taskIds.length) return res.json({ success: true, data: out });
 
-          try {
-            const taskIds = out.map(r => r.id).filter(Boolean);
-            if (!taskIds.length) return res.json({ success: true, data: out });
-
-            db.query(
-              'SELECT id, task_id, title, description, due_date, tag, created_at, updated_at, status, estimated_hours, completed_at FROM subtasks WHERE task_id IN (?)',
-              [taskIds],
-              (scErr, scRows) => {
-                if (scErr) return res.json({ success: true, data: out });
-                const checklistMap = {};
-                (scRows || []).forEach(subtask => {
-                  if (!subtask || subtask.task_id === undefined || subtask.task_id === null) return;
-                  const key = String(subtask.task_id);
-                  if (!checklistMap[key]) checklistMap[key] = [];
-                  checklistMap[key].push({
-                    id: subtask.id != null ? String(subtask.id) : null,
-                    title: subtask.title || null,
-                    description: subtask.description || null,
-                    status: subtask.status || null,
-                    dueDate: subtask.due_date ? new Date(subtask.due_date).toISOString() : null,
-                    completedAt: subtask.completed_at ? new Date(subtask.completed_at).toISOString() : null,
-                    createdAt: subtask.created_at ? new Date(subtask.created_at).toISOString() : null,
-                    updatedAt: subtask.updated_at ? new Date(subtask.updated_at).toISOString() : null,
-                    tag: subtask.tag || null,
-                    estimatedHours: subtask.estimated_hours != null ? Number(subtask.estimated_hours) : null
+              db.query(
+                'SELECT id, task_id, title, description, due_date, tag, created_at, updated_at, status, estimated_hours, completed_at FROM subtasks WHERE task_id IN (?)',
+                [taskIds],
+                (scErr, scRows) => {
+                  if (scErr) return res.json({ success: true, data: out });
+                  const checklistMap = {};
+                  (scRows || []).forEach(subtask => {
+                    if (!subtask || subtask.task_id === undefined || subtask.task_id === null) return;
+                    const key = String(subtask.task_id);
+                    if (!checklistMap[key]) checklistMap[key] = [];
+                    checklistMap[key].push({
+                      id: subtask.id != null ? String(subtask.id) : null,
+                      title: subtask.title || null,
+                      description: subtask.description || null,
+                      status: subtask.status || null,
+                      dueDate: subtask.due_date ? new Date(subtask.due_date).toISOString() : null,
+                      completedAt: subtask.completed_at ? new Date(subtask.completed_at).toISOString() : null,
+                      createdAt: subtask.created_at ? new Date(subtask.created_at).toISOString() : null,
+                      updatedAt: subtask.updated_at ? new Date(subtask.updated_at).toISOString() : null,
+                      tag: subtask.tag || null,
+                      estimatedHours: subtask.estimated_hours != null ? Number(subtask.estimated_hours) : null
+                    });
                   });
-                });
 
-                db.query(
-                  `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt, u._id AS user_id, u.name AS user_name
+                  db.query(
+                    `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt, u._id AS user_id, u.name AS user_name
                    FROM task_activities ta
                    LEFT JOIN users u ON ta.user_id = u._id
                    WHERE ta.task_id IN (?)
                    ORDER BY ta.createdAt DESC`,
-                  [taskIds],
-                  (taErr, taRows) => {
-                    const activityMap = {};
-                    if (!taErr && Array.isArray(taRows)) {
-                      (taRows || []).forEach(activity => {
-                        if (!activity || activity.task_id === undefined || activity.task_id === null) return;
-                        const key = String(activity.task_id);
-                        if (!activityMap[key]) activityMap[key] = [];
-                        activityMap[key].push({
-                          type: activity.type || null,
-                          activity: activity.activity || null,
-                          createdAt: activity.createdAt ? new Date(activity.createdAt).toISOString() : null,
-                          user: activity.user_id ? { id: String(activity.user_id), name: activity.user_name || null } : null
+                    [taskIds],
+                    (taErr, taRows) => {
+                      const activityMap = {};
+                      if (!taErr && Array.isArray(taRows)) {
+                        (taRows || []).forEach(activity => {
+                          if (!activity || activity.task_id === undefined || activity.task_id === null) return;
+                          const key = String(activity.task_id);
+                          if (!activityMap[key]) activityMap[key] = [];
+                          activityMap[key].push({
+                            type: activity.type || null,
+                            activity: activity.activity || null,
+                            createdAt: activity.createdAt ? new Date(activity.createdAt).toISOString() : null,
+                            user: activity.user_id ? { id: String(activity.user_id), name: activity.user_name || null } : null
+                          });
                         });
-                      });
-                    }
+                      }
 
-                    const final = out.map(r => {
-                      const key = String(r.id);
-                      r.checklist = checklistMap[key] || [];
-                      r.activityTimeline = activityMap[key] || [];
-                      return r;
-                    });
-                    return res.json({ success: true, data: final });
-                  }
-                );
-              }
-            );
-          } catch (e) {
-            return res.json({ success: true, data: out });
-          }
-        });
-      } catch (e) {
-        return res.json({ success: true, data: rows });
-      }
-    });
+                      const final = out.map(r => {
+                        const key = String(r.id);
+                        r.checklist = checklistMap[key] || [];
+                        r.activityTimeline = activityMap[key] || [];
+                        return r;
+                      });
+                      return res.json({ success: true, data: final });
+                    }
+                  );
+                }
+              );
+            } catch (e) {
+              return res.json({ success: true, data: out });
+            }
+          });
+        } catch (e) {
+          return res.json({ success: true, data: rows });
+        }
+      });
   },
 
   getModules: (req, res) => {

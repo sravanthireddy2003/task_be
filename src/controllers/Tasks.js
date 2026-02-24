@@ -143,6 +143,37 @@ async function ensureTaskTimeLogsTable() {
   }
 }
 
+async function ensureTaskActivitiesTable() {
+  try {
+    // Try to access the table to check if it's corrupted (e.g. "doesn't exist in engine")
+    await q('SELECT 1 FROM task_activities LIMIT 1');
+  } catch (e) {
+    // If table doesn't exist or is corrupted (error 1146 or 1932), recreate it
+    if (e.message.includes("doesn't exist") || e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1932) {
+      try {
+        await q('DROP TABLE IF EXISTS task_activities');
+        await q(`
+          CREATE TABLE task_activities (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            task_id INT NOT NULL,
+            user_id INT NULL,
+            type VARCHAR(50) NULL,
+            activity TEXT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_task_activities_task_id (task_id),
+            INDEX idx_task_activities_created_at (created_at)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `);
+        logger.info('Created/Recreated task_activities table');
+      } catch (createError) {
+        logger.warn('Failed to ensure task_activities table: ' + createError.message);
+      }
+    } else {
+      logger.warn('Unexpected error checking task_activities table: ' + e.message);
+    }
+  }
+}
+
 async function canEditTask(taskId, user) {
 
   if (user.role === 'Admin' || user.role === 'Manager') return true;
@@ -262,11 +293,11 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
       ));
 
       const activities = await new Promise((resolve, reject) => db.query(
-        `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt, u._id AS user_id, u.public_id AS user_public_id, u.name AS user_name
+        `SELECT ta.task_id, ta.type, ta.activity, ta.created_at AS createdAt, u._id AS user_id, u.public_id AS user_public_id, u.name AS user_name
          FROM task_activities ta
          LEFT JOIN users u ON ta.user_id = u._id
          WHERE ta.task_id IN (?)
-         ORDER BY ta.createdAt DESC`,
+         ORDER BY ta.created_at DESC`,
         [internalIds], (e, r) => e ? reject(e) : resolve(r)
       ));
 
@@ -1404,7 +1435,7 @@ router.put('/:id', requireRole(['Admin', 'Manager', 'Employee']), async (req, re
           if (client_id !== undefined) { updates.push('client_id = ?'); values.push(client_id); }
           if (taskDate !== undefined) { updates.push('taskDate = ?'); values.push(toMySQLDate(taskDate)); }
           if (finalTimeAlloted !== undefined) { updates.push('time_alloted = ?'); values.push(finalTimeAlloted); }
-          
+
           // Only update project fields if they exist as columns
           if (projectId !== undefined && await hasColumn('tasks', 'project_id')) { updates.push('project_id = ?'); values.push(projectId); }
           if (projectPublicId !== undefined && await hasColumn('tasks', 'project_public_id')) { updates.push('project_public_id = ?'); values.push(projectPublicId); }
@@ -3226,12 +3257,12 @@ router.get("/taskdetail/getactivity/:id", async (req, res) => {
       SELECT 
         ta.type, 
         ta.activity, 
-        ta.createdAt, 
+        ta.created_at AS createdAt, 
         u.name AS user_name
       FROM task_activities ta
       INNER JOIN users u ON ta.user_id = u._id
       WHERE ta.task_id = ?
-      ORDER BY ta.createdAt DESC
+      ORDER BY ta.created_at DESC
     `;
 
     db.query(sql, [id], (err, result) => {
@@ -3907,11 +3938,12 @@ router.post('/:id/resume', requireRole(['Employee']), async (req, res) => {
 router.get('/:id/timeline', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     await ensureTaskTimeLogsTable();
+    await ensureTaskActivitiesTable();
 
     let id = req.params.id;
     if (req.headers['x-task-public-id']) id = req.headers['x-task-public-id'];
 
-    const taskResult = await db.query('SELECT id FROM tasks WHERE id = ? OR public_id = CAST(? AS CHAR)', [id, id]);
+    const taskResult = await q('SELECT id FROM tasks WHERE id = ? OR public_id = CAST(? AS CHAR)', [id, id]);
     if (!taskResult?.length) return res.status(404).json({ success: false, error: 'Task not found' });
 
     const taskId = taskResult[0].id;

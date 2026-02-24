@@ -432,8 +432,9 @@ router.get('/stats', async (req, res) => {
       totalSubtasks += ss.count;
     });
 
-    const hoursResult = taskIds.length > 0 ? await q('SELECT SUM(total_duration) as totalHours FROM tasks WHERE id IN (?)', [taskIds]) : [{ totalHours: 0 }];
-    const totalHours = hoursResult[0].totalHours || 0;
+    const hoursResult = taskIds.length > 0 ? await q('SELECT SUM(total_duration) as totalSecs FROM tasks WHERE id IN (?)', [taskIds]) : [{ totalSecs: 0 }];
+    const totalSecsRaw = hoursResult[0].totalSecs || 0;
+    const totalHours = Number((totalSecsRaw / 3600).toFixed(2));
 
     res.json({
       success: true,
@@ -774,23 +775,27 @@ router.get('/:id/summary', async (req, res) => {
       return res.status(404).json(errorResponse.notFound('Project not found', 'PROJECT_NOT_FOUND'));
     }
     const projectId = project[0].id;
+    const projectPublicId = project[0].public_id;
 
-    const taskStats = await q('SELECT status, COUNT(*) as count FROM tasks WHERE project_id = ? GROUP BY status', [projectId]);
+    const taskStats = await q('SELECT status, COUNT(*) as count FROM tasks WHERE project_id = ? OR project_public_id = ? GROUP BY status', [projectId, projectPublicId]);
     const tasksByStatus = {};
     let totalTasks = 0;
     taskStats.forEach(ts => {
-      tasksByStatus[ts.status] = ts.count;
+      // Normalize REVIEW to Review to prevent duplicate counts
+      const tStatus = ts.status ? (ts.status.toUpperCase() === 'REVIEW' ? 'Review' : ts.status) : 'Unknown';
+      tasksByStatus[tStatus] = (tasksByStatus[tStatus] || 0) + ts.count;
       totalTasks += ts.count;
     });
 
-    const completedTasks = await q('SELECT COUNT(*) as count FROM tasks WHERE project_id = ? AND status IN (?, ?)', [projectId, 'Completed', 'Review']);
+    const completedTasks = await q('SELECT COUNT(*) as count FROM tasks WHERE (project_id = ? OR project_public_id = ?) AND UPPER(status) IN (?)', [projectId, projectPublicId, 'COMPLETED']);
     const completedCount = completedTasks[0].count;
 
-    const inProgressTasks = await q('SELECT COUNT(*) as count FROM tasks WHERE project_id = ? AND status IN (?, ?, ?)', [projectId, 'In Progress', 'On Hold', 'Review']);
+    const inProgressTasks = await q('SELECT COUNT(*) as count FROM tasks WHERE (project_id = ? OR project_public_id = ?) AND UPPER(status) IN (?, ?, ?)', [projectId, projectPublicId, 'IN PROGRESS', 'ON HOLD', 'REVIEW']);
     const inProgressCount = inProgressTasks[0].count;
 
-    const hoursResult = await q('SELECT SUM(total_duration) as totalHours FROM tasks WHERE project_id = ?', [projectId]);
-    const totalHours = hoursResult[0].totalHours || 0;
+    const hoursResult = await q('SELECT SUM(total_duration) as totalSecs FROM tasks WHERE project_id = ? OR project_public_id = ?', [projectId, projectPublicId]);
+    const totalSecsRaw = hoursResult[0].totalSecs || 0;
+    const totalHours = Number((totalSecsRaw / 3600).toFixed(2));
 
     const progressPercentage = totalTasks > 0 ? Math.round((completedCount / totalTasks) * 100) : 0;
 
@@ -822,13 +827,14 @@ router.get('/:id/summary', async (req, res) => {
 router.get('/:id/tasks', async (req, res) => {
   try {
     const { id } = req.params;
-    const project = await q('SELECT id FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
+    const project = await q('SELECT id, public_id FROM projects WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
 
     if (!project || project.length === 0) {
       return res.status(404).json(errorResponse.notFound('Project not found', 'PROJECT_NOT_FOUND'));
     }
 
     const projectId = project[0].id;
+    const projectPublicId = project[0].public_id;
     let tasks;
 
     if (req.user.role === 'Admin' || req.user.role === 'Manager') {
@@ -853,10 +859,10 @@ router.get('/:id/tasks', async (req, res) => {
         FROM tasks t
         LEFT JOIN taskassignments ta ON t.id = ta.task_id
         LEFT JOIN users u ON ta.user_id = u._id
-        WHERE t.project_id = ?
+        WHERE (t.project_id = ? OR t.project_public_id = ?)
         GROUP BY t.id
         ORDER BY t.createdAt DESC
-      `, [projectId]);
+      `, [projectId, projectPublicId]);
     } else if (req.user.role === 'Employee') {
 
       tasks = await q(`
@@ -879,10 +885,10 @@ router.get('/:id/tasks', async (req, res) => {
         FROM tasks t
         JOIN taskassignments ta ON t.id = ta.task_id
         LEFT JOIN users u ON ta.user_id = u._id
-        WHERE t.project_id = ? AND ta.user_id = ?
+        WHERE (t.project_id = ? OR t.project_public_id = ?) AND ta.user_id = ?
         GROUP BY t.id
         ORDER BY t.createdAt DESC
-      `, [projectId, req.user._id]);
+      `, [projectId, projectPublicId, req.user._id]);
     } else {
       return res.status(403).json(errorResponse.forbidden('Access denied', 'ACCESS_DENIED'));
     }
