@@ -32,6 +32,18 @@ const ruleEngineMiddleware = (ruleCode = null) => {
           if (code === 'task_creation' && (role === 'admin' || role === 'manager')) {
             return next();
           }
+          if (code === 'project_creation' && (role === 'admin' || role === 'manager')) {
+            return next();
+          }
+          if (code === 'client_creation' && role === 'admin') {
+            return next();
+          }
+          if (code === 'user_creation' && role === 'admin') {
+            return next();
+          }
+          if (code === 'subtask_creation' && (role === 'admin' || role === 'manager' || role === 'employee')) {
+            return next();
+          }
 
           try {
             const isProjectRule = String(ruleCode || '').toLowerCase().includes('project') || (req.baseUrl && req.baseUrl.includes('/projects'));

@@ -48,16 +48,17 @@ class RuleEngine {
     }
 
     const context = buildRuleContext(req, user, resource);
-    
+
     let rulesToEvaluate = this.rules;
     if (ruleCode) {
       rulesToEvaluate = this.rules.filter(rule => rule.ruleCode === ruleCode);
       if (rulesToEvaluate.length === 0) {
-
         rulesToEvaluate = this.rules;
       }
     }
-    
+
+    console.log('[RuleEngine] Evaluating with context:', JSON.stringify(context, null, 2));
+
     const decision = evaluateRules(rulesToEvaluate, context);
 
     logger.info('Rule Evaluation', {

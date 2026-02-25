@@ -159,9 +159,9 @@ async function ensureTaskActivitiesTable() {
             user_id INT NULL,
             type VARCHAR(50) NULL,
             activity TEXT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
             INDEX idx_task_activities_task_id (task_id),
-            INDEX idx_task_activities_created_at (created_at)
+            INDEX idx_task_activities_createdAt (createdAt)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         `);
         logger.info('Created/Recreated task_activities table');
@@ -293,11 +293,11 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
       ));
 
       const activities = await new Promise((resolve, reject) => db.query(
-        `SELECT ta.task_id, ta.type, ta.activity, ta.created_at AS createdAt, u._id AS user_id, u.public_id AS user_public_id, u.name AS user_name
+        `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt AS createdAt, u._id AS user_id, u.public_id AS user_public_id, u.name AS user_name
          FROM task_activities ta
          LEFT JOIN users u ON ta.user_id = u._id
          WHERE ta.task_id IN (?)
-         ORDER BY ta.created_at DESC`,
+         ORDER BY ta.createdAt DESC`,
         [internalIds], (e, r) => e ? reject(e) : resolve(r)
       ));
 
@@ -3257,12 +3257,12 @@ router.get("/taskdetail/getactivity/:id", async (req, res) => {
       SELECT 
         ta.type, 
         ta.activity, 
-        ta.created_at AS createdAt, 
+        ta.createdAt AS createdAt, 
         u.name AS user_name
       FROM task_activities ta
       INNER JOIN users u ON ta.user_id = u._id
       WHERE ta.task_id = ?
-      ORDER BY ta.created_at DESC
+      ORDER BY ta.createdAt DESC
     `;
 
     db.query(sql, [id], (err, result) => {
