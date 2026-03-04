@@ -343,6 +343,13 @@ router.post('/login', [
         const ok = await bcrypt.compare(password, user.password);
         if (!ok) {
           await recordFailedAttempt(`${tenantId}::${email}`);
+          try {
+            const auditController = require('./auditController');
+            auditController.log({
+              user_id: user._id, tenant_id, action: 'LOGIN_FAILED', entity: 'User',
+              details: { email, reason: 'Invalid password', ip: req.ip || (req.connection && req.connection.remoteAddress) }
+            });
+          } catch (e) { }
           return res.status(401).json({ message: 'Invalid email or password' });
         }
 
@@ -407,6 +414,13 @@ router.post('/login', [
     const ok = await bcrypt.compare(password, user.password);
     if (!ok) {
       await recordFailedAttempt(lockKey);
+      try {
+        const auditController = require('./auditController');
+        auditController.log({
+          user_id: user._id, tenant_id: user.tenant_id, action: 'LOGIN_FAILED', entity: 'User',
+          details: { email, reason: 'Invalid password', ip: req.ip || (req.connection && req.connection.remoteAddress) }
+        });
+      } catch (e) { }
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 

@@ -14,7 +14,7 @@
 
 1. Navigate to **Stack Management** > **Index Patterns**
 2. Click **Create index pattern**
-3. Enter index pattern: `audit-logs-*`
+3. Enter index pattern: `demo-logs-audit-*`
 4. Click **Next step**
 5. Select **@timestamp** as time field
 6. Click **Create index pattern**
@@ -24,7 +24,7 @@
 ## Step 2: Verify Data
 
 1. Go to **Discover**
-2. Select `audit-logs-*` index pattern
+2. Select `demo-logs-audit-*` index pattern
 3. Set time range to **Last 7 days**
 4. Verify data is appearing
 
@@ -145,6 +145,34 @@
 
 ---
 
+### H) App Health - API Response Times
+
+1. Go to **Visualize** > **Create visualization**
+2. Select **Line** chart
+3. Choose `demo-logs-app-*` index pattern
+4. **Metrics:**
+   - Y-axis: Average bucket (`durationMs`)
+5. **Buckets:**
+   - X-axis: Date Histogram (@timestamp, Auto)
+6. Save as: **"API Response Times"**
+
+---
+
+### I) App Health - Error Rates
+
+1. Create **Pie** chart
+2. Index pattern: `demo-logs-app-*`
+3. **Metrics:**
+   - Slice size: Count
+4. **Buckets:**
+   - Split slices: Terms
+   - Field: statusCode
+5. **Filters:**
+   - `statusCode >= 400`
+6. Save as: **"Error Code Distribution"**
+
+---
+
 ## Step 4: Create Dashboard
 
 1. Go to **Dashboard** > **Create dashboard**
@@ -156,6 +184,8 @@
    - Top Active Users
    - Approval Workflow Transitions
    - Escalation Count
+   - API Response Times
+   - Error Code Distribution
 3. Arrange panels in grid layout
 4. Save dashboard as: **"Audit Analytics Dashboard"**
 
@@ -208,7 +238,7 @@ Add these as **Controls** (optional):
 
 ### Search 1: Failed Logins Last Hour
 1. Go to **Discover**
-2. Index: `audit-logs-*`
+2. Index: `demo-logs-audit-*`
 3. Query: `action: LOGIN_FAILED`
 4. Time: Last 1 hour
 5. Save as: **"Recent Failed Logins"**

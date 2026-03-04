@@ -25,47 +25,95 @@ const queryAsync = (sql, params = []) =>
 router.use(requireAuth);
 
 router.get("/getusers", ruleEngine(RULES.USER_LIST), requireRole('Admin', 'Manager'), async (req, res) => {
-  const query = `
-    SELECT 
-      u._id, u.public_id, u.name, u.title, u.email, u.role, u.isActive, u.phone, u.isGuest,
-      u.department_public_id, d.name AS department_name
-    FROM users u
-    LEFT JOIN departments d ON d.public_id = u.department_public_id
-  `;
-
   try {
-    const results = await queryAsync(query);
+    // Discover which columns actually exist in each table
+    const colsOf = async (tbl) => {
+      try {
+        const r = await queryAsync("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", [tbl]);
+        return new Set((r || []).map(c => c.COLUMN_NAME));
+      } catch (e) { return new Set(); }
+    };
+    const tblExists = async (tbl) => {
+      try {
+        const r = await queryAsync("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", [tbl]);
+        return r && r.length > 0;
+      } catch (e) { return false; }
+    };
+
+    // ── Build users query dynamically ──
+    const uCols = await colsOf('users');
+    const hasDeptTable = await tblExists('departments');
+
+    const uSelect = ['u._id', 'u.name', 'u.email', 'u.role', 'u.isActive'];
+    if (uCols.has('public_id')) uSelect.push('u.public_id');
+    if (uCols.has('title')) uSelect.push('u.title');
+    if (uCols.has('phone')) uSelect.push('u.phone');
+    if (uCols.has('isGuest')) uSelect.push('u.isGuest');
+    if (uCols.has('department_public_id')) uSelect.push('u.department_public_id');
+
+    let uJoin = '';
+    if (hasDeptTable && uCols.has('department_public_id')) {
+      const dCols = await colsOf('departments');
+      if (dCols.has('public_id') && dCols.has('name')) {
+        uSelect.push('d.name AS department_name');
+        uJoin = 'LEFT JOIN departments d ON d.public_id = u.department_public_id';
+      }
+    }
+
+    const userQuery = 'SELECT ' + uSelect.join(', ') + ' FROM users u ' + uJoin;
+    const results = await queryAsync(userQuery);
+
     const employeeIds = (results || [])
       .filter(r => r.role === 'Employee' && r._id)
       .map(r => r._id);
 
+    // ── Build tasks query dynamically ──
     let taskRows = [];
     if (employeeIds.length) {
-      const placeholders = employeeIds.map(() => '?').join(',');
-      const taskQuery = `
-        SELECT
-          ta.user_id,
-          t.id AS task_internal_id,
-          t.public_id AS task_public_id,
-          t.title,
-          t.status,
-          t.stage,
-          t.priority,
-          t.taskDate,
-          t.project_id AS task_project_internal_id,
-          t.project_public_id AS task_project_public_id,
-          p.id AS project_internal_id,
-          p.public_id AS project_public_id,
-          p.name AS project_name
-        FROM taskassignments ta
-        JOIN tasks t ON t.id = ta.task_id
-        LEFT JOIN projects p ON p.id = t.project_id
-        WHERE ta.user_id IN (${placeholders})
-        ORDER BY t.updatedAt DESC
-      `;
-      taskRows = await queryAsync(taskQuery, employeeIds);
+      const tCols = await colsOf('tasks');
+      const taCols = await colsOf('taskassignments');
+      const hasProjects = await tblExists('projects');
+
+      // Figure out the correct column names in taskassignments (case-sensitive)
+      const taUserCol = taCols.has('user_id') ? 'user_id' : (taCols.has('user_Id') ? 'user_Id' : null);
+      const taTaskCol = taCols.has('task_id') ? 'task_id' : (taCols.has('task_Id') ? 'task_Id' : null);
+
+      if (taUserCol && taTaskCol) {
+        const tSelect = ['ta.' + taUserCol + ' AS user_id', 't.id AS task_internal_id'];
+        if (tCols.has('public_id')) tSelect.push('t.public_id AS task_public_id');
+        if (tCols.has('title')) tSelect.push('t.title');
+        if (tCols.has('status')) tSelect.push('t.status');
+        if (tCols.has('stage')) tSelect.push('t.stage');
+        if (tCols.has('priority')) tSelect.push('t.priority');
+        if (tCols.has('taskDate')) tSelect.push('t.taskDate');
+        if (tCols.has('project_id')) tSelect.push('t.project_id AS task_project_internal_id');
+        if (tCols.has('project_public_id')) tSelect.push('t.project_public_id AS task_project_public_id');
+
+        let tJoin = '';
+        if (hasProjects && tCols.has('project_id')) {
+          const pCols = await colsOf('projects');
+          if (pCols.has('id')) {
+            tSelect.push('p.id AS project_internal_id');
+            if (pCols.has('public_id')) tSelect.push('p.public_id AS project_public_id');
+            if (pCols.has('name')) tSelect.push('p.name AS project_name');
+            tJoin = 'LEFT JOIN projects p ON p.id = t.project_id';
+          }
+        }
+
+        const orderBy = tCols.has('updatedAt') ? 't.updatedAt' : (tCols.has('updated_at') ? 't.updated_at' : 't.id');
+        const ph = employeeIds.map(() => '?').join(',');
+        const taskQuery = 'SELECT ' + tSelect.join(', ') +
+          ' FROM taskassignments ta' +
+          ' JOIN tasks t ON t.id = ta.' + taTaskCol +
+          (tJoin ? ' ' + tJoin : '') +
+          ' WHERE ta.' + taUserCol + ' IN (' + ph + ')' +
+          ' ORDER BY ' + orderBy + ' DESC';
+
+        taskRows = await queryAsync(taskQuery, employeeIds);
+      }
     }
 
+    // ── Build response (same logic as before) ──
     const tasksByUser = {};
     const projectTrackers = {};
     taskRows.forEach(row => {
@@ -120,14 +168,14 @@ router.get("/getusers", ruleEngine(RULES.USER_LIST), requireRole('Admin', 'Manag
       return {
         id: r.public_id || r._id,
         name: r.name,
-        title: r.title,
+        title: r.title || null,
         email: r.email,
         role: r.role,
         isActive: Boolean(r.isActive),
-        isGuest: Boolean(r.isGuest),
-        phone: r.phone,
-        departmentPublicId: r.department_public_id,
-        departmentName: r.department_name,
+        isGuest: r.isGuest !== undefined ? Boolean(r.isGuest) : false,
+        phone: r.phone || null,
+        departmentPublicId: r.department_public_id || null,
+        departmentName: r.department_name || null,
         projects: userProjects,
         tasks: userTasks
       };
@@ -135,8 +183,14 @@ router.get("/getusers", ruleEngine(RULES.USER_LIST), requireRole('Admin', 'Manag
 
     res.status(200).json(out);
   } catch (err) {
-    logger.error(`Error fetching users: ${err.message}`);
-    res.status(500).json({ error: "Failed to fetch users" });
+    logger.error('Error fetching users: ' + (err.message || err));
+    logger.error('SQL details - code: ' + (err.code || 'N/A') + ', sqlMessage: ' + (err.sqlMessage || 'N/A'));
+    res.status(500).json({
+      error: "Failed to fetch users",
+      details: err.sqlMessage || err.message || 'Unknown error',
+      code: err.code || null,
+      stack: err.stack
+    });
   }
 });
 
