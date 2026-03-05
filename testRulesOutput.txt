@@ -1,0 +1,29 @@
+[11:36:59] [32minfo[39m: DB connected (threadId=799) {"message":"DB connected (threadId=799)","level":"\u001b[32minfo\u001b[39m","service":"task-backend","timestamp":"11:36:59"}
+[11:36:59] [32minfo[39m: DB connected (threadId=800) {"message":"DB connected (threadId=800)","level":"\u001b[32minfo\u001b[39m","service":"task-backend","timestamp":"11:36:59"}
+[
+  {
+    "rule_code": "project_creation",
+    "conditions": "{\"userRole\":{\"$in\":[\"ADMIN\",\"MANAGER\"]},\"action\":\"POST_\",\"payload\":{\"name\":{\"$exists\":true},\"client_id\":{\"$exists\":true}}}",
+    "action": "ALLOW"
+  },
+  {
+    "rule_code": "project_update",
+    "conditions": "{\"userRole\":{\"$in\":[\"ADMIN\",\"MANAGER\"]},\"action\":\"PUT_:ID\"}",
+    "action": "ALLOW"
+  },
+  {
+    "rule_code": "project_delete",
+    "conditions": "{\"userRole\":{\"$in\":[\"ADMIN\",\"MANAGER\"]},\"action\":\"DELETE_:ID\"}",
+    "action": "ALLOW"
+  },
+  {
+    "rule_code": "project_department_add",
+    "conditions": "{\"userRole\":{\"$in\":[\"ADMIN\",\"MANAGER\"]},\"action\":\"POST_:ID_DEPARTMENTS\"}",
+    "action": "ALLOW"
+  },
+  {
+    "rule_code": "project_department_delete",
+    "conditions": "{\"userRole\":{\"$in\":[\"ADMIN\",\"MANAGER\"]},\"action\":\"DELETE_:ID_DEPARTMENTS_:DEPTID\"}",
+    "action": "ALLOW"
+  }
+]
