@@ -261,10 +261,10 @@ async function fetchTaskTimeline(projectIds = [], projectPublicIds = []) {
       OR (t.project_public_id IS NOT NULL AND p.public_id COLLATE utf8mb4_unicode_ci = t.project_public_id COLLATE utf8mb4_unicode_ci)
 
     LEFT JOIN taskassignments ta 
-      ON ta.task_id = t.id
+      ON ta.task_Id = t.id
 
     LEFT JOIN users u 
-      ON u._id = ta.user_id
+      ON u._id = ta.user_Id
 
     WHERE (${filter.expression})
     ${hasIsDeletedFlag ? `AND (t.isDeleted IS NULL OR t.isDeleted != 1)` : ''}
@@ -650,19 +650,19 @@ module.exports = {
       if (taskInternalIds.length) {
 
         taskChecklists = await queryAsync(
-          `SELECT s.id, s.task_Id AS task_id, s.title, s.description, s.due_date, s.tag, s.created_at, s.updated_at, s.status, s.estimated_hours, s.completed_at, s.created_by,
+          `SELECT s.id, s.task_id AS task_id, s.title, s.description, s.due_date, s.tag, s.created_at, s.updated_at, s.status, s.estimated_hours, s.completed_at, s.created_by,
                 u.public_id AS creator_public_id, u.name AS creator_name
          FROM subtasks s
          LEFT JOIN users u ON u._id = s.created_by
-         WHERE s.task_Id IN (?)`,
+         WHERE s.task_id IN (?)`,
           [taskInternalIds]
         );
 
         taskActivities = await queryAsync(
-          `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt, u._id AS user_id, u.name AS user_name
+          `SELECT ta.task_Id, ta.type, ta.activity, ta.createdAt, u._id AS user_id, u.name AS user_name
          FROM task_activities ta
-         LEFT JOIN users u ON ta.user_id = u._id
-         WHERE ta.task_id IN (?)
+         LEFT JOIN users u ON ta.user_Id = u._id
+         WHERE ta.task_Id IN (?)
          ORDER BY ta.createdAt DESC`,
           [taskInternalIds]
         );

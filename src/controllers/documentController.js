@@ -60,8 +60,8 @@ async function employeeHasTaskInProject(projectId, user) {
 
     const rows = await q(`
       SELECT 1 FROM taskassignments ta 
-      JOIN tasks t ON ta.task_id = t.id 
-      WHERE ta.user_id = ? AND (t.project_id = ? OR t.project_public_id = ?) LIMIT 1
+      JOIN tasks t ON ta.task_Id = t.id 
+      WHERE ta.user_Id = ? AND (t.project_id = ? OR t.project_public_id = ?) LIMIT 1
     `, [userId, pid, projectId]);
     return rows && rows.length > 0;
   } catch (e) { return false; }
@@ -298,7 +298,7 @@ module.exports = {
         }
 
       } else if (isEmployee(req.user)) {
-        const myTasks = await q('SELECT project_id FROM tasks t JOIN taskassignments ta ON ta.task_id = t.id WHERE ta.user_id = ?', [userId]);
+        const myTasks = await q('SELECT project_id FROM tasks t JOIN taskassignments ta ON ta.task_Id = t.id WHERE ta.user_Id = ?', [userId]);
         const pIds = [...new Set(myTasks.map(t => t.project_id))];
 
         if (pIds.length === 0) {
@@ -363,9 +363,9 @@ module.exports = {
       } else if (isEmployee(req.user)) {
         const eRows = await q(`
             SELECT 1 FROM taskassignments ta 
-            JOIN tasks t ON ta.task_id = t.id 
+            JOIN tasks t ON ta.task_Id = t.id 
             JOIN projects p ON t.project_id = p.id
-            WHERE ta.user_id = ? AND p.client_id = ? LIMIT 1
+            WHERE ta.user_Id = ? AND p.client_id = ? LIMIT 1
          `, [req.user._id, clientId]);
         allowed = eRows.length > 0;
       }
@@ -430,9 +430,9 @@ module.exports = {
         else if (doc.clientId) {
           const eRows = await q(`
               SELECT 1 FROM taskassignments ta 
-              JOIN tasks t ON ta.task_id = t.id 
+              JOIN tasks t ON ta.task_Id = t.id 
               JOIN projects p ON t.project_id = p.id
-              WHERE ta.user_id = ? AND p.client_id = ? LIMIT 1
+              WHERE ta.user_Id = ? AND p.client_id = ? LIMIT 1
            `, [req.user._id, doc.clientId]);
           if (eRows.length > 0) allowed = true;
         }
@@ -471,9 +471,9 @@ module.exports = {
         else if (doc.clientId) {
           const eRows = await q(`
               SELECT 1 FROM taskassignments ta 
-              JOIN tasks t ON ta.task_id = t.id 
+              JOIN tasks t ON ta.task_Id = t.id 
               JOIN projects p ON t.project_id = p.id
-              WHERE ta.user_id = ? AND p.client_id = ? LIMIT 1
+              WHERE ta.user_Id = ? AND p.client_id = ? LIMIT 1
            `, [req.user._id, doc.clientId]);
           if (eRows.length > 0) allowed = true;
         }

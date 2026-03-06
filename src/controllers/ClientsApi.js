@@ -796,8 +796,8 @@ router.get('/:id', ruleEngine(RULES.CLIENT_VIEW), requireRole(['Admin', 'Manager
             GROUP_CONCAT(DISTINCT u.name) AS assigned_user_names
           FROM tasks t
           LEFT JOIN projects p ON t.project_id = p.id
-          LEFT JOIN taskassignments ta ON ta.task_id = t.id
-          LEFT JOIN users u ON u._id = ta.user_id
+          LEFT JOIN taskassignments ta ON ta.task_Id = t.id
+          LEFT JOIN users u ON u._id = ta.user_Id
           ${whereClause}
           GROUP BY t.id
           ORDER BY t.createdAt DESC
@@ -839,7 +839,7 @@ router.get('/:id', ruleEngine(RULES.CLIENT_VIEW), requireRole(['Admin', 'Manager
         const taskIds = tasks.map(t => t.id).filter(Boolean);
         if (taskIds.length) {
           try {
-            const subs = await q(`SELECT id, COALESCE(task_id, task_Id) AS task_id, COALESCE(project_id, project_Id) AS project_id, title, description, due_date, tag, status, estimated_hours, completed_at, created_at, updated_at, created_by FROM subtasks WHERE COALESCE(task_id, task_Id) IN (?)`, [taskIds]);
+            const subs = await q(`SELECT id, COALESCE(task_id, task_Id) AS task_id, COALESCE(project_id, project_Id) AS project_id, title, description, due_date, tag, status, estimated_hours, completed_at, created_at, updated_at, created_by FROM subtasks WHERE COALESCE(task_id, task_id) IN (?)`, [taskIds]);
             const subMap = {};
             (subs || []).forEach(s => {
               if (!s || s.task_id === undefined || s.task_id === null) return;

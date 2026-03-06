@@ -293,10 +293,10 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
       ));
 
       const activities = await new Promise((resolve, reject) => db.query(
-        `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt AS createdAt, u._id AS user_id, u.public_id AS user_public_id, u.name AS user_name
+        `SELECT ta.task_Id, ta.type, ta.activity, ta.createdAt AS createdAt, u._id AS user_id, u.public_id AS user_public_id, u.name AS user_name
          FROM task_activities ta
-         LEFT JOIN users u ON ta.user_id = u._id
-         WHERE ta.task_id IN (?)
+         LEFT JOIN users u ON ta.user_Id = u._id
+         WHERE ta.task_Id IN (?)
          ORDER BY ta.createdAt DESC`,
         [internalIds], (e, r) => e ? reject(e) : resolve(r)
       ));
@@ -329,7 +329,7 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
       (subtasks || []).forEach((s) => {
         if (!s) return;
         const rawTaskId = (s.task_id !== undefined && s.task_id !== null) ? s.task_id
-          : (s.task_Id !== undefined && s.task_Id !== null) ? s.task_Id
+          : (s.task_id !== undefined && s.task_id !== null) ? s.task_id
             : (s.taskId !== undefined && s.taskId !== null) ? s.taskId
               : (s.task !== undefined && s.task !== null) ? s.task
                 : null;
@@ -1726,7 +1726,7 @@ router.patch('/:taskId/reassign/:userId', ruleEngine('task_reassign'), requireRo
       return res.json({ success: true });
     } else {
 
-      await q('UPDATE taskassignments SET status = ?, is_read_only = 0 WHERE task_id = ? AND user_id = ?', ['ACTIVE', taskId, userId]);
+      await q('UPDATE taskassignments SET status = ?, is_read_only = 0 WHERE task_Id = ? AND user_id = ?', ['ACTIVE', taskId, userId]);
 
       const [[oldUser], [task]] = await Promise.all([
         q('SELECT name, email FROM users WHERE _id = ?', [userId]),
@@ -1800,14 +1800,14 @@ router.patch('/:id/status', ruleEngine('task_status_update'), requireRole(['Empl
     }
 
     const hasReadOnlyColumn = await hasColumn('taskassignments', 'is_read_only');
-    const selectColumns = hasReadOnlyColumn ? 't.*, ta.user_id, ta.is_read_only, p.public_id as project_public_id' : 't.*, ta.user_id, p.public_id as project_public_id';
+    const selectColumns = hasReadOnlyColumn ? 't.*, ta.user_Id, ta.is_read_only, p.public_id as project_public_id' : 't.*, ta.user_Id, p.public_id as project_public_id';
     const readOnlyCondition = hasReadOnlyColumn ? ' AND (ta.is_read_only IS NULL OR ta.is_read_only != 1)' : '';
     const taskQuery = `
       SELECT ${selectColumns}
       FROM tasks t
-      JOIN taskassignments ta ON t.id = ta.task_id
+      JOIN taskassignments ta ON t.id = ta.task_Id
       LEFT JOIN projects p ON t.project_id = p.id
-      WHERE t.id = ? AND ta.user_id = ? AND t.project_id = ?${readOnlyCondition}
+      WHERE t.id = ? AND ta.user_Id = ? AND t.project_id = ?${readOnlyCondition}
       LIMIT 1
     `;
     const tasks = await q(taskQuery, [resolvedTaskId, req.user._id, resolvedProjectId]);
@@ -2027,8 +2027,8 @@ router.delete('/:id', ruleEngine('task_delete'), requireRole(['Admin', 'Manager'
           }
 
           const tasksToRun = [
-            { sql: 'DELETE FROM taskassignments WHERE task_id = ?', params: [internalTaskId] },
-            { sql: 'DELETE FROM task_assignments WHERE task_id = ?', params: [internalTaskId] },
+            { sql: 'DELETE FROM taskassignments WHERE task_Id = ?', params: [internalTaskId] },
+            { sql: 'DELETE FROM task_assignments WHERE task_Id = ?', params: [internalTaskId] },
             { sql: 'DELETE FROM subtasks WHERE task_id = ?', params: [internalTaskId] },
             { sql: 'DELETE FROM task_hours WHERE task_id = ?', params: [internalTaskId] },
             { sql: 'DELETE FROM task_activities WHERE task_id = ?', params: [internalTaskId] },
@@ -2079,8 +2079,8 @@ router.get("/taskdropdownfortaskHrs", async (req, res) => {
     const query = `
       SELECT t.id, t.title 
       FROM tasks t
-      JOIN taskassignments ta ON t.id = ta.task_id
-      WHERE ta.user_id = ?
+      JOIN taskassignments ta ON t.id = ta.task_Id
+      WHERE ta.user_Id = ?
     `;
 
     db.query(query, [userId], (err, results) => {
@@ -2128,9 +2128,9 @@ router.get("/gettaskss", (req, res) => {
       FROM 
           tasks t
       LEFT JOIN 
-          taskassignments ta ON t.id = ta.task_id
+          taskassignments ta ON t.id = ta.task_Id
       LEFT JOIN 
-          users u ON ta.user_id = u._id
+          users u ON ta.user_Id = u._id
       LEFT JOIN 
           clientss c ON t.client_id = c.id
       LEFT JOIN
@@ -2139,16 +2139,16 @@ router.get("/gettaskss", (req, res) => {
 
     if (role === 'Employee') {
       query += ` WHERE t.id IN (
-          SELECT task_id FROM taskassignments WHERE user_id = ?
+          SELECT task_id FROM taskassignments WHERE user_Id = ?
       )`;
     }
 
     if (resolvedUserId && role !== 'Employee') {
       if (query.includes('WHERE')) {
         query = query.replace(/ORDER BY[\s\S]*$/m, '');
-        query += ` AND t.id IN (SELECT task_id FROM taskassignments WHERE user_id = ?)`;
+        query += ` AND t.id IN (SELECT task_id FROM taskassignments WHERE user_Id = ?)`;
       } else {
-        query += ` WHERE t.id IN (SELECT task_id FROM taskassignments WHERE user_id = ?)`;
+        query += ` WHERE t.id IN (SELECT task_id FROM taskassignments WHERE user_Id = ?)`;
       }
     }
     query += ` 
@@ -2369,9 +2369,9 @@ router.get("/gettasks", (req, res) => {
           FROM 
               tasks t
           LEFT JOIN 
-              taskassignments ta ON t.id = ta.task_id
+              taskassignments ta ON t.id = ta.task_Id
           LEFT JOIN 
-              users u ON ta.user_id = u._id
+              users u ON ta.user_Id = u._id
           LEFT JOIN 
             clientss c ON t.client_id = c.id
           LEFT JOIN
@@ -2385,11 +2385,11 @@ router.get("/gettasks", (req, res) => {
          t.rejection_reason, t.rejected_at,
          u._id AS user_id, u.name AS user_name, u.role AS user_role, rj.name AS rejected_by_name, rj.public_id AS rejected_by_public_id
       FROM tasks t
-      JOIN taskassignments ta ON t.id = ta.task_id
-      LEFT JOIN users u ON ta.user_id = u._id
+      JOIN taskassignments ta ON t.id = ta.task_Id
+      LEFT JOIN users u ON ta.user_Id = u._id
       LEFT JOIN clientss c ON t.client_id = c.id
       LEFT JOIN users rj ON t.rejected_by = rj._id
-      WHERE ta.user_id = ?
+      WHERE ta.user_Id = ?
       ORDER BY t.createdAt
     `;
     }
@@ -2397,7 +2397,7 @@ router.get("/gettasks", (req, res) => {
     if (resolvedUserId && role !== 'Employee') {
 
       query = query.replace(/ORDER BY[\s\S]*$/m, '');
-      query += ` WHERE t.id IN (SELECT task_id FROM taskassignments WHERE user_id = ?)`;
+      query += ` WHERE t.id IN (SELECT task_id FROM taskassignments WHERE user_Id = ?)`;
       query += ` ORDER BY t.createdAt`;
     }
 
@@ -2580,8 +2580,8 @@ router.get('/:id', (req, res) => {
           ap.public_id AS approved_by_public_id
       FROM 
           tasks t
-      LEFT JOIN taskassignments ta ON t.id = ta.task_id
-      LEFT JOIN users u ON ta.user_id = u._id
+      LEFT JOIN taskassignments ta ON t.id = ta.task_Id
+      LEFT JOIN users u ON ta.user_Id = u._id
       LEFT JOIN clientss c ON t.client_id = c.id
       LEFT JOIN users rj ON t.rejected_by = rj._id
       LEFT JOIN users ap ON t.approved_by = ap._id
@@ -2689,8 +2689,8 @@ router.get("/gettaskbyId/:task_id", (req, res) => {
           ap.public_id AS approved_by_public_id
       FROM 
           tasks t
-      LEFT JOIN taskassignments ta ON t.id = ta.task_id
-      LEFT JOIN users u ON ta.user_id = u._id
+      LEFT JOIN taskassignments ta ON t.id = ta.task_Id
+      LEFT JOIN users u ON ta.user_Id = u._id
       LEFT JOIN clientss c ON t.client_id = c.id
       LEFT JOIN users rj ON t.rejected_by = rj._id
       LEFT JOIN users ap ON t.approved_by = ap._id
@@ -2786,8 +2786,8 @@ router.delete("/deltask/:task_id", requireRole(['Admin', 'Manager']), (req, res)
       }
 
       const tasksToRun = [
-        { sql: 'DELETE FROM taskassignments WHERE task_id = ?', params: [task_id] },
-        { sql: 'DELETE FROM task_assignments WHERE task_id = ?', params: [task_id] },
+        { sql: 'DELETE FROM taskassignments WHERE task_Id = ?', params: [task_Id] },
+        { sql: 'DELETE FROM task_assignments WHERE task_Id = ?', params: [task_Id] },
         { sql: 'DELETE FROM subtasks WHERE task_id = ?', params: [task_id] },
         { sql: 'DELETE FROM task_hours WHERE task_id = ?', params: [task_id] },
         { sql: 'DELETE FROM task_activities WHERE task_id = ?', params: [task_id] },
@@ -2878,7 +2878,7 @@ router.post("/createsub/:task_id", requireRole(['Admin', 'Manager', 'Employee'])
 
 router.get("/getsubtasks/:task_id", (req, res) => {
   const { task_id } = req.params;
-  const getsubtasks = `SELECT title, due_date, tag FROM subtasks WHERE task_Id = ? ORDER BY id ASC`;
+  const getsubtasks = `SELECT title, due_date, tag FROM subtasks WHERE task_id = ? ORDER BY id ASC`;
   try {
     db.query(getsubtasks, [task_id], (err, results) => {
       if (err) {
@@ -2941,16 +2941,27 @@ router.post("/working-hours", requireRole(['Admin', 'Manager', 'Employee']), asy
       if (isRO) return res.status(403).json({ success: false, message: 'Read-only users cannot add working hours' });
     }
 
+    // Convert start and end times to proper datetimes to calculate duration in seconds
+    const startDt = new Date(`${workingDate}T${start_time}`);
+    const endDt = new Date(`${workingDate}T${end_time}`);
+    let durationSeconds = 0;
+    if (!isNaN(startDt) && !isNaN(endDt)) {
+      durationSeconds = Math.floor((endDt - startDt) / 1000);
+      if (durationSeconds < 0) durationSeconds = 0;
+    }
+
     const query = `
-      INSERT INTO WorkingHours (task_id, working_date, start_time, end_time, created_at, updated_at)
-      VALUES (?, ?, ?, ?, NOW(), NOW())
+      INSERT INTO timelogs (user_id, task_id, start_time, end_time, duration_seconds, notes, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())
     `;
-    const values = [task_id, workingDate, start_time, end_time];
+    const userIdVal = (req.user && req.user._id) ? req.user._id : null;
+    const values = [userIdVal, task_id, startDt, endDt, durationSeconds, "Manual working hours entry"];
 
     await q(query, values);
 
     res.status(201).json({ message: "Working hours added successfully" });
   } catch (error) {
+    logger.error("Failed to add working hours: " + error.message);
     res.status(500).json({ error: "Failed to add working hours" });
   }
 });
@@ -3119,8 +3130,8 @@ router.put("/updatetask/:id", requireRole(['Admin', 'Manager']), async (req, res
         const assignedUsersQuery = `
           SELECT u.email, u.name 
           FROM users u
-          JOIN taskassignments ta ON u._id = ta.user_id
-          WHERE ta.task_id = ?
+          JOIN taskassignments ta ON u._id = ta.user_Id
+          WHERE ta.task_Id = ?
         `;
 
         db.query(assignedUsersQuery, [taskId], async (err, userResults) => {
@@ -3234,7 +3245,7 @@ router.post("/taskdetail/Postactivity", async (req, res) => {
     // enforce assignment and read-only checks for non-admin/manager
     if (req.user && req.user.role !== 'Admin' && req.user.role !== 'Manager') {
       if (String(req.user._id) !== String(user_id)) return res.status(403).json({ success: false, error: 'Not authorized' });
-      const assignRows = await q('SELECT is_read_only FROM taskassignments WHERE task_Id = ? AND user_Id = ? LIMIT 1', [task_id, user_id]);
+      const assignRows = await q('SELECT is_read_only FROM taskassignments WHERE task_Id = ? AND user_Id = ? LIMIT 1', [task_id, user_Id]);
       if (!assignRows || assignRows.length === 0) return res.status(403).json({ success: false, error: 'Not assigned' });
       const isRO = assignRows[0] && (assignRows[0].is_read_only === 1 || String(assignRows[0].is_read_only) === '1');
       if (isRO) return res.status(403).json({ success: false, error: 'Read-only users cannot add activities' });
@@ -3260,8 +3271,8 @@ router.get("/taskdetail/getactivity/:id", async (req, res) => {
         ta.createdAt AS createdAt, 
         u.name AS user_name
       FROM task_activities ta
-      INNER JOIN users u ON ta.user_id = u._id
-      WHERE ta.task_id = ?
+      INNER JOIN users u ON ta.user_Id = u._id
+      WHERE ta.task_Id = ?
       ORDER BY ta.createdAt DESC
     `;
 
@@ -3501,7 +3512,7 @@ router.post('/:taskId/reassign-requests/:requestId/:action(approve|reject)', req
 
     // Capture previous assignment flags so we don't accidentally elevate read-only users
     const prevAssignments = await new Promise((resolve, reject) =>
-      db.query('SELECT user_Id as user_id, is_read_only FROM taskassignments WHERE task_id = ?', [taskId], (err, rows) => err ? reject(err) : resolve(rows))
+      db.query('SELECT user_Id as user_id, is_read_only FROM taskassignments WHERE task_Id = ?', [taskId], (err, rows) => err ? reject(err) : resolve(rows))
     );
 
     const prevAssigneeUser = await new Promise((resolve, reject) =>
@@ -3796,7 +3807,7 @@ router.post('/:id/start', requireRole(['Employee']), async (req, res) => {
       });
     }
 
-    const assignment = await q('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [taskId, userId]);
+    const assignment = await q('SELECT * FROM taskassignments WHERE task_Id = ? AND user_id = ?', [taskId, userId]);
     if (assignment.length === 0) return res.status(403).json({ success: false, error: 'Not assigned' });
     // Enforce read-only flag: assigned users with is_read_only must not start the task
     try {
@@ -3809,7 +3820,7 @@ router.post('/:id/start', requireRole(['Employee']), async (req, res) => {
     const [taskRow] = await q('SELECT is_locked FROM tasks WHERE id = ?', [taskId]);
     if (taskRow && taskRow.is_locked && req.user.role !== 'Admin' && req.user.role !== 'Manager') {
 
-      const [assn] = await q('SELECT user_id FROM taskassignments WHERE task_id = ?', [taskId]);
+      const [assn] = await q('SELECT user_id FROM taskassignments WHERE task_Id = ?', [taskId]);
       if (!assn || String(assn.user_id) !== String(userId)) {
         return res.status(403).json({ success: false, error: 'Task is read-only for you (reassigned).' });
       }
@@ -3858,7 +3869,7 @@ router.post('/:id/pause', requireRole(['Employee']), async (req, res) => {
       return res.status(400).json({ success: false, error: `Cannot pause '${task[0].status}'. Only 'IN PROGRESS'.` });
     }
 
-    const assignment = await q('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [taskId, userId]);
+    const assignment = await q('SELECT * FROM taskassignments WHERE task_Id = ? AND user_id = ?', [taskId, userId]);
     if (assignment.length === 0) return res.status(403).json({ success: false, error: 'Not assigned' });
     // Enforce read-only flag for pause
     try {
@@ -3907,7 +3918,7 @@ router.post('/:id/resume', requireRole(['Employee']), async (req, res) => {
       return res.status(400).json({ success: false, error: `Cannot resume '${task[0].status}'. Only 'ON HOLD'.` });
     }
 
-    const assignment = await q('SELECT * FROM taskassignments WHERE task_id = ? AND user_id = ?', [taskId, userId]);
+    const assignment = await q('SELECT * FROM taskassignments WHERE task_Id = ? AND user_id = ?', [taskId, userId]);
     if (assignment.length === 0) return res.status(403).json({ success: false, error: 'Not assigned' });
     // Enforce read-only flag for resume
     try {

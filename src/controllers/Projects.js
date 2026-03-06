@@ -304,8 +304,8 @@ router.get('/', async (req, res) => {
       projects = await q(`
         SELECT DISTINCT p.* FROM projects p
         JOIN tasks t ON p.id = t.project_id
-        JOIN taskassignments ta ON t.id = ta.task_id
-        WHERE ta.user_id = ?
+        JOIN taskassignments ta ON t.id = ta.task_Id
+        WHERE ta.user_Id = ?
         ORDER BY p.created_at DESC
       `, [req.user._id]);
     } else {
@@ -377,8 +377,8 @@ router.get('/stats', async (req, res) => {
       const projects = await q(`
         SELECT DISTINCT p.id FROM projects p
         JOIN tasks t ON p.id = t.project_id
-        JOIN taskassignments ta ON t.id = ta.task_id
-        WHERE ta.user_id = ?
+        JOIN taskassignments ta ON t.id = ta.task_Id
+        WHERE ta.user_Id = ?
       `, [req.user._id]);
       projectIds = projects.map(p => p.id);
     }
@@ -396,7 +396,7 @@ router.get('/stats', async (req, res) => {
 
     if (req.user.role === 'Employee') {
 
-      const tasks = projectIds.length > 0 ? await q('SELECT t.id FROM tasks t JOIN taskassignments ta ON t.id = ta.task_id WHERE ta.user_id = ? AND t.project_id IN (?)', [req.user._id, projectIds]) : [];
+      const tasks = projectIds.length > 0 ? await q('SELECT t.id FROM tasks t JOIN taskassignments ta ON t.id = ta.task_Id WHERE ta.user_Id = ? AND t.project_id IN (?)', [req.user._id, projectIds]) : [];
       taskIds = tasks.map(t => t.id);
     } else {
 
@@ -857,8 +857,8 @@ router.get('/:id/tasks', async (req, res) => {
           GROUP_CONCAT(DISTINCT u.name) as assigned_users,
           GROUP_CONCAT(DISTINCT u._id) as assigned_user_ids
         FROM tasks t
-        LEFT JOIN taskassignments ta ON t.id = ta.task_id
-        LEFT JOIN users u ON ta.user_id = u._id
+        LEFT JOIN taskassignments ta ON t.id = ta.task_Id
+        LEFT JOIN users u ON ta.user_Id = u._id
         WHERE (t.project_id = ? OR t.project_public_id = ?)
         GROUP BY t.id
         ORDER BY t.createdAt DESC
@@ -883,9 +883,9 @@ router.get('/:id/tasks', async (req, res) => {
           GROUP_CONCAT(DISTINCT u.name) as assigned_users,
           GROUP_CONCAT(DISTINCT u._id) as assigned_user_ids
         FROM tasks t
-        JOIN taskassignments ta ON t.id = ta.task_id
-        LEFT JOIN users u ON ta.user_id = u._id
-        WHERE (t.project_id = ? OR t.project_public_id = ?) AND ta.user_id = ?
+        JOIN taskassignments ta ON t.id = ta.task_Id
+        LEFT JOIN users u ON ta.user_Id = u._id
+        WHERE (t.project_id = ? OR t.project_public_id = ?) AND ta.user_Id = ?
         GROUP BY t.id
         ORDER BY t.createdAt DESC
       `, [projectId, projectPublicId, req.user._id]);
@@ -917,7 +917,7 @@ router.get('/:id/tasks', async (req, res) => {
     try {
       const taskIds = formattedTasks.map(t => t.id).filter(Boolean);
       if (taskIds.length) {
-        const subs = await q(`SELECT id, COALESCE(task_id, task_Id) AS task_id, COALESCE(project_id, project_Id) AS project_id, title, description, due_date, tag, status, estimated_hours, completed_at, created_at, updated_at, created_by FROM subtasks WHERE COALESCE(task_id, task_Id) IN (?) AND COALESCE(project_id, project_Id) = ?`, [taskIds, projectId]);
+        const subs = await q(`SELECT id, COALESCE(task_id, task_Id) AS task_id, COALESCE(project_id, project_Id) AS project_id, title, description, due_date, tag, status, estimated_hours, completed_at, created_at, updated_at, created_by FROM subtasks WHERE COALESCE(task_id, task_id) IN (?) AND COALESCE(project_id, project_Id) = ?`, [taskIds, projectId]);
         const subMap = {};
         (subs || []).forEach(s => {
           if (!s || s.task_id === undefined || s.task_id === null) return;

@@ -206,7 +206,7 @@ module.exports = {
         SELECT u.name, COUNT(CASE WHEN LOWER(t.status) = 'completed' THEN 1 END) as completed, COUNT(CASE WHEN LOWER(t.status) = 'in progress' THEN 1 END) as inProgress
         FROM users u
         LEFT JOIN taskassignments ta ON u._id = ta.user_Id
-        LEFT JOIN tasks t ON ta.task_id = t.id
+        LEFT JOIN tasks t ON ta.task_Id = t.id
         WHERE u.role = 'employee' AND (t.id IS NULL OR LOWER(t.status) != 'closed')
         GROUP BY u._id, u.name
         ORDER BY completed DESC, inProgress DESC
@@ -899,10 +899,10 @@ module.exports = {
                   });
 
                   db.query(
-                    `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt, u._id AS user_id, u.name AS user_name
+                    `SELECT ta.task_Id, ta.type, ta.activity, ta.createdAt, u._id AS user_id, u.name AS user_name
                    FROM task_activities ta
-                   LEFT JOIN users u ON ta.user_id = u._id
-                   WHERE ta.task_id IN (?)
+                   LEFT JOIN users u ON ta.user_Id = u._id
+                   WHERE ta.task_Id IN (?)
                    ORDER BY ta.createdAt DESC`,
                     [taskIds],
                     (taErr, taRows) => {

@@ -741,7 +741,7 @@ const getRequests = async ({ tenantId, role, status, userId }) => {
                 const subtasksSql = `
                     SELECT title, status, due_date
                     FROM subtasks
-                    WHERE task_Id = ?
+                    WHERE task_id = ?
                 `;
                 task.checklists = await q(subtasksSql, [task.id]);
 

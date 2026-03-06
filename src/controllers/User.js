@@ -44,7 +44,7 @@ router.get("/getusers", ruleEngine(RULES.USER_LIST), requireRole('Admin', 'Manag
       const placeholders = employeeIds.map(() => '?').join(',');
       const taskQuery = `
         SELECT
-          ta.user_id,
+          ta.user_Id,
           t.id AS task_internal_id,
           t.public_id AS task_public_id,
           t.title,
@@ -58,9 +58,9 @@ router.get("/getusers", ruleEngine(RULES.USER_LIST), requireRole('Admin', 'Manag
           p.public_id AS project_public_id,
           p.name AS project_name
         FROM taskassignments ta
-        JOIN tasks t ON t.id = ta.task_id
+        JOIN tasks t ON t.id = ta.task_Id
         LEFT JOIN projects p ON p.id = t.project_id
-        WHERE ta.user_id IN (${placeholders})
+        WHERE ta.user_Id IN (${placeholders})
         ORDER BY t.updatedAt DESC
       `;
       taskRows = await queryAsync(taskQuery, employeeIds);
@@ -136,7 +136,9 @@ router.get("/getusers", ruleEngine(RULES.USER_LIST), requireRole('Admin', 'Manag
     res.status(200).json(out);
   } catch (err) {
     logger.error(`Error fetching users: ${err.message}`);
-    res.status(500).json({ error: "Failed to fetch users" });
+    if (err.sqlMessage) logger.error(`SQL Error: ${err.sqlMessage}`);
+    if (err.sql) logger.error(`Failing Query: ${err.sql}`);
+    res.status(500).json({ error: "Failed to fetch users", details: err.message });
   }
 });
 
